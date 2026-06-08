@@ -6,11 +6,18 @@ import './i18n'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppShell from './components/AppShell'
 import LoginPage from './pages/LoginPage'
-import PlaceholderPage from './pages/PlaceholderPage'
 import HomePage from './pages/HomePage'
 import FinancesPage from './pages/FinancesPage'
 import ActionsPage from './pages/ActionsPage'
 import MeetingsPage from './pages/MeetingsPage'
+import UpdatesPage from './pages/UpdatesPage'
+import MembersPage from './pages/MembersPage'
+import ProjectsPage from './pages/ProjectsPage'
+import EquityPage from './pages/EquityPage'
+import LoansPage from './pages/LoansPage'
+import DocsPage from './pages/DocsPage'
+import AskPage from './pages/AskPage'
+import AdminPage from './pages/AdminPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -34,17 +41,17 @@ function AuthGate() {
     <AppShell>
       <Routes>
         <Route path="/"         element={<HomePage />} />
-        <Route path="/updates"  element={<PlaceholderPage navKey="updates"  icon="📰" />} />
+        <Route path="/updates"  element={<UpdatesPage />} />
         <Route path="/actions"  element={<ActionsPage />} />
         <Route path="/finances" element={<FinancesPage />} />
-        <Route path="/members"  element={<PlaceholderPage navKey="members"  icon="👨‍👩‍👧‍👦" />} />
-        <Route path="/projects" element={<PlaceholderPage navKey="projects" icon="🌾" />} />
-        <Route path="/equity"   element={<PlaceholderPage navKey="equity"   icon="⚖️" />} />
-        <Route path="/loans"    element={<PlaceholderPage navKey="loans"    icon="🏦" />} />
+        <Route path="/members"  element={<MembersPage />} />
+        <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/equity"   element={<EquityPage />} />
+        <Route path="/loans"    element={<LoansPage />} />
         <Route path="/meetings" element={<MeetingsPage />} />
-        <Route path="/docs"     element={<PlaceholderPage navKey="docs"     icon="📁" />} />
-        <Route path="/ask"      element={<PlaceholderPage navKey="ask"      icon="🤖" />} />
-        <Route path="/admin"    element={<PlaceholderPage navKey="admin"    icon="⚙️" />} />
+        <Route path="/docs"     element={<DocsPage />} />
+        <Route path="/ask"      element={<AskPage />} />
+        <Route path="/admin"    element={<AdminPage />} />
         <Route path="*"         element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
