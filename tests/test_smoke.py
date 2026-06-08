@@ -25,7 +25,10 @@ def _get(path, **kwargs):
 def token():
     r = _post("/api/auth/login", json={"name": "Hillary", "password": TEST_PASSWORD})
     assert r.status_code == 200, f"Login failed: {r.status_code} {r.text[:200]}"
-    return r.json()["token"]
+    # Token lives in httponly cookie (SESSION already stores it); also extract for header use
+    tok = SESSION.cookies.get("kimfam_token", "")
+    assert tok, "No kimfam_token cookie after login"
+    return tok
 
 @pytest.fixture(scope="module")
 def auth_headers(token):
@@ -58,7 +61,7 @@ class TestPublicRoutes:
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 class TestAuth:
-    def test_login_returns_token(self, token):
+    def test_login_sets_cookie(self, token):
         assert token and len(token) > 20
 
     def test_me_returns_profile(self, auth_headers):

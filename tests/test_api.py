@@ -42,9 +42,14 @@ def seed_db():
 
 
 def _login(name, password):
+    """Login and return the JWT token (extracted from the httponly cookie)."""
     r = client.post("/api/auth/login", json={"name": name, "password": password})
     assert r.status_code == 200, f"Login failed for {name}: {r.text}"
-    return r.json()["token"]
+    # Token is set as httponly cookie; TestClient stores it in its cookie jar.
+    # Extract it so callers can pass it as an Authorization header when needed.
+    token = r.cookies.get("kimfam_token") or client.cookies.get("kimfam_token", "")
+    assert token, f"No kimfam_token cookie in login response for {name}"
+    return token
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -57,10 +62,11 @@ class TestAuth:
         r = client.post("/api/auth/login", json={"name":"Hillary","password":"TestPass1"})
         assert r.status_code == 200
         d = r.json()
-        assert "token" in d
+        # Token is in the httponly cookie, not the body
         assert d["name"] == "Hillary"
         assert d["role"] == "admin"
         assert d["must_change_password"] is False
+        assert "kimfam_token" in r.cookies
 
     def test_login_wrong_password(self):
         r = client.post("/api/auth/login", json={"name":"Hillary","password":"wrong"})
@@ -81,7 +87,10 @@ class TestAuth:
         assert r.json()["name"] == "Hillary"
 
     def test_me_no_token(self):
-        assert client.get("/api/auth/me").status_code == 401
+        # Use a fresh client with no cookies to simulate unauthenticated request
+        from fastapi.testclient import TestClient as _TC
+        fresh = _TC(app, raise_server_exceptions=True)
+        assert fresh.get("/api/auth/me").status_code == 401
 
     def test_me_bad_token(self):
         r = client.get("/api/auth/me", headers={"Authorization":"Bearer rubbish"})
