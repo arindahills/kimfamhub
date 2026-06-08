@@ -93,7 +93,10 @@ class TestAuth:
         assert fresh.get("/api/auth/me").status_code == 401
 
     def test_me_bad_token(self):
-        r = client.get("/api/auth/me", headers={"Authorization":"Bearer rubbish"})
+        # Fresh client: no cookie, only a bad bearer — must be rejected
+        from fastapi.testclient import TestClient as _TC
+        fresh = _TC(app, raise_server_exceptions=True)
+        r = fresh.get("/api/auth/me", headers={"Authorization": "Bearer rubbish"})
         assert r.status_code == 401
 
     def test_change_password_valid(self):
@@ -184,7 +187,8 @@ class TestFamilyProfiles:
             assert expected in ids
 
     def test_get_unauthenticated(self):
-        assert client.get("/api/family-profiles").status_code == 401
+        from fastapi.testclient import TestClient as _TC
+        assert _TC(app, raise_server_exceptions=True).get("/api/family-profiles").status_code == 401
 
     def test_kikangis_has_six_children(self):
         token = _login("Hillary", "TestPass1")
@@ -214,8 +218,10 @@ class TestFamilyProfiles:
                           ).status_code == 403
 
     def test_update_unauthenticated(self):
-        assert client.put("/api/family-profiles/arindas",
-                          json={"children": []}).status_code == 401
+        from fastapi.testclient import TestClient as _TC
+        assert _TC(app, raise_server_exceptions=True).put(
+            "/api/family-profiles/arindas", json={"children": []}
+        ).status_code == 401
 
     def test_hellen_edits_kofunas(self):
         token = _login("Hellen", "TestPass2")
