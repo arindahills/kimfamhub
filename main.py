@@ -1089,7 +1089,7 @@ def view_doc(category: str, filename: str):
 
 
 # ── Profile Picture Upload ─────────────────────────────────────────────────────
-from fastapi import UploadFile, File as FastAPIFile
+from fastapi import UploadFile, File as FastAPIFile, Form
 
 AVATARS_DIR = Path("/var/www/kimfamhub/static/avatars")
 AVATARS_DIR.mkdir(exist_ok=True)
@@ -1170,6 +1170,58 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
             f_out.write(contents)
     url = f"/static/avatars/{safe_name}.jpg"
     return {"url": url}
+
+# ── Document Upload (admin) ───────────────────────────────────────────────────
+import r2_storage as _r2
+
+_ALLOWED_DOC_CATEGORIES = {"minutes", "governance", "projects", "financial", "receipts"}
+_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".jpg", ".jpeg", ".png"}
+
+@app.post("/api/admin/upload-doc")
+async def admin_upload_doc(
+    request: Request,
+    category: str = Form(...),
+    file: UploadFile = FastAPIFile(...),
+):
+    from fastapi import HTTPException as _HE
+    token = _get_tok(request)
+    payload = _auth_verify(token) if token else None
+    if not payload or payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admin only")
+    if category not in _ALLOWED_DOC_CATEGORIES:
+        raise _HE(status_code=400, detail=f"Unknown category: {category}")
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _ALLOWED_DOC_SUFFIXES:
+        raise _HE(status_code=400, detail=f"File type not allowed: {suffix}")
+
+    safe_filename = "".join(c for c in (file.filename or "upload") if c.isalnum() or c in "._- ")
+    contents = await file.read()
+
+    # Write to local filesystem (keeps existing list/serve endpoints working)
+    local_path = DOCS_DIR / category / safe_filename
+    (DOCS_DIR / category).mkdir(parents=True, exist_ok=True)
+    with open(str(local_path), "wb") as fh:
+        fh.write(contents)
+
+    # Also upload to R2 for durable storage
+    r2_key  = f"{category}/{safe_filename}"
+    r2_url  = None
+    if _r2.is_configured():
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        try:
+            public = category in {"governance", "minutes"}
+            r2_url = _r2.upload(tmp_path, r2_key, public=public)
+        finally:
+            _os.unlink(tmp_path)
+
+    # Invalidate doc cache so new file appears immediately
+    _doc_cache.clear()
+
+    return {"ok": True, "filename": safe_filename, "r2_key": r2_key, "r2_url": r2_url}
+
 
 # ── Contributions (Sprint 1) ──────────────────────────────────────────────────
 from contributions import router as contributions_router
