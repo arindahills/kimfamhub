@@ -134,7 +134,7 @@ export default function ActionsPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
 
       {/* Filter tabs */}
       <div className="flex gap-2 flex-wrap">

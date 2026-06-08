@@ -64,11 +64,12 @@ export default function MembersPage() {
   const members = membersData?.members || []
 
   return (
-    <div className="max-w-2xl mx-auto space-y-3">
+    <div className="max-w-2xl md:max-w-5xl mx-auto">
       {membersData?.as_of && (
-        <p className="text-xs" style={{ color: '#475569' }}>As of {membersData.as_of}</p>
+        <p className="text-xs mb-3" style={{ color: '#475569' }}>As of {membersData.as_of}</p>
       )}
 
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
       {members.map(m => {
         const col = FAMILY_COLORS[m.name] || '#94a3b8'
         const profile = profiles.find(p => p.family_name === m.name || p.family_name.startsWith(m.name))
@@ -124,6 +125,7 @@ export default function MembersPage() {
           </div>
         )
       })}
+      </div>
     </div>
   )
 }

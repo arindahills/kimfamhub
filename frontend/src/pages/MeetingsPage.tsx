@@ -104,7 +104,7 @@ export default function MeetingsPage() {
   )
 
   return (
-    <div className="max-w-2xl mx-auto space-y-3">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-3">
       <h2 className="text-sm font-semibold" style={{ color: 'var(--text-muted)' }}>
         {t('meetings.title')} ({meetings.length})
       </h2>

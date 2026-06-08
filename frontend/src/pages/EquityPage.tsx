@@ -30,7 +30,7 @@ export default function EquityPage() {
   const total = data?.total_club_value_ugx || 0
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
 
       {/* Total pot */}
       <div className="rounded-xl p-5 text-center" style={{ background: 'var(--bg-card)' }}>

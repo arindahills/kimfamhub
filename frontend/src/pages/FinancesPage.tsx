@@ -255,7 +255,7 @@ export default function FinancesPage() {
   if (summLoading) return <div className="text-center py-10 text-sm" style={{ color: 'var(--text-muted)' }}>{t('common.loading')}</div>
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
 
       {/* Admin: pending confirmations */}
       {isAdmin && pending && pending.length > 0 && (
@@ -350,7 +350,7 @@ export default function FinancesPage() {
           <h3 className="font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>
             {t('finances.family')} {t('finances.balance')}s
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {ledger.map(f => <FamilyCard key={f.family_name} f={f} />)}
           </div>
         </div>

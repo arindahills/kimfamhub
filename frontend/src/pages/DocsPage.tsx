@@ -43,7 +43,7 @@ export default function DocsPage() {
   const categories = Object.entries(data || {})
 
   return (
-    <div className="max-w-2xl mx-auto space-y-2">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-2">
       {categories.map(([key, cat]) => {
         const isOpen = openCat === key
         return (

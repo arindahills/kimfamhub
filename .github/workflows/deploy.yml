@@ -265,6 +265,14 @@ jobs:
       success() &&
       github.ref == 'refs/heads/main'
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Build React frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
@@ -272,11 +280,23 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H $HETZNER_HOST >> ~/.ssh/known_hosts
 
-      - name: Deploy to prod via deploy.sh
+      - name: Rsync code + built dist to prod
+        run: |
+          rsync -az --delete \
+            --exclude='.env' --exclude='venv/' --exclude='__pycache__/' \
+            --exclude='*.db' --exclude='.git/' --exclude='data/' \
+            --exclude='static/avatars/' --exclude='static/receipts/' \
+            --exclude='static/expenditures/' --exclude='static/project-pics/' \
+            --exclude='docs/minutes/' --exclude='docs/financial/' \
+            --exclude='docs/receipts/' --exclude='docs/projects/' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            ./ $HETZNER_USER@$HETZNER_HOST:$PROD_DIR/
+
+      - name: Restart prod service
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             $HETZNER_USER@$HETZNER_HOST \
-            "cd $PROD_DIR && bash deploy.sh"
+            "systemctl restart kimfamhub && sleep 4"
 
       - name: Verify prod is healthy
         run: |

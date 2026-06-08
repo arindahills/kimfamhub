@@ -61,7 +61,7 @@ export default function AskPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto flex flex-col h-full" style={{ minHeight: '70vh' }}>
+    <div className="max-w-2xl md:max-w-5xl mx-auto flex flex-col h-full" style={{ minHeight: '70vh' }}>
       {/* Header */}
       <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--bg-card)' }}>
         <div className="flex items-center gap-2 mb-1">

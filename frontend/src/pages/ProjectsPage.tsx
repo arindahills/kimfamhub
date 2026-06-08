@@ -124,7 +124,7 @@ export default function ProjectsPage() {
   const visible = cat === 'All' ? projects : projects.filter(p => p.category === cat)
 
   return (
-    <div className="max-w-2xl mx-auto space-y-3">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-3">
       <div className="flex gap-1.5 flex-wrap">
         {CATEGORIES.map(c => (
           <button key={c} onClick={() => setCat(c)}
@@ -141,7 +141,9 @@ export default function ProjectsPage() {
 
       {isLoading && <p className="text-xs text-center py-6" style={{ color: 'var(--text-muted)' }}>Loading...</p>}
 
-      {visible.map(p => <ProjectCard key={p.id} p={p} />)}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {visible.map(p => <ProjectCard key={p.id} p={p} />)}
+      </div>
     </div>
   )
 }

@@ -79,7 +79,7 @@ export default function HomePage() {
   const bal = summary?.confirmed_bank_balance ?? 0
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl md:max-w-5xl mx-auto">
       {/* Header */}
       <div className="text-center py-6">
         <div className="text-4xl mb-2">🌾</div>

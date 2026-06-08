@@ -58,7 +58,7 @@ export default function LoansPage() {
 
   if (!loan || !loan.id) {
     return (
-      <div className="max-w-2xl mx-auto">
+      <div className="max-w-2xl md:max-w-5xl mx-auto">
         <div className="rounded-xl p-8 text-center" style={{ background: 'var(--bg-card)' }}>
           <div className="text-3xl mb-2">🏦</div>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active loans at this time.</p>
@@ -71,7 +71,7 @@ export default function LoansPage() {
   const daysColor = daysNum < 0 ? '#f87171' : daysNum <= 14 ? '#fbbf24' : '#4ade80'
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
       {/* Loan summary card */}
       <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
         <div className="flex justify-between items-start mb-3">

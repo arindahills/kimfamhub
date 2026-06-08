@@ -99,7 +99,7 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
       <h2 className="font-semibold" style={{ color: 'var(--text-primary)' }}>Admin Panel</h2>
 
       {/* Member passwords */}

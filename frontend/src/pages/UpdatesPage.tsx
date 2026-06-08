@@ -149,7 +149,7 @@ export default function UpdatesPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
       <div className="flex gap-2 items-center">
         <select value={filterProject} onChange={e => setFilterProject(e.target.value)}
           className="flex-1 rounded-lg px-3 py-2 text-sm"
