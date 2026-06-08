@@ -11,7 +11,13 @@ os.environ["JWT_SECRET"]      = "test-secret-for-pytest-32-chars!!"
 os.environ["WASHING_BAY_PIN"] = "99999"
 os.environ["INTERNAL_API_KEY"]= "test-internal-key"
 
-sys.path.insert(0, "/var/www/kimfamhub")
+# Support running from Hetzner prod dir, staging dir, or local Mac checkout.
+# KIMFAM_APP_ROOT can be set explicitly; otherwise derive from this file's location.
+_APP_ROOT = os.environ.get(
+    "KIMFAM_APP_ROOT",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+sys.path.insert(0, _APP_ROOT)
 import auth, family_profiles
 auth.DB_PATH = os.environ["KIMFAM_DB_PATH"]
 family_profiles.DB_PATH = os.environ["KIMFAM_DB_PATH"]

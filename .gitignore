@@ -37,3 +37,8 @@ docs/receipts/
 
 # Keep markdown docs (app_guide.md, financial_snapshot.md)
 !docs/governance/*.md
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
