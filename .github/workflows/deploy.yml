@@ -43,7 +43,7 @@ jobs:
             fi
           done
           echo "fix_count=$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -ge 3 ]; then
+          if [ "$COUNT" -ge 10 ]; then
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Self-heal loop limit reached ($COUNT consecutive auto-fix commits). Manual intervention required."
           else
