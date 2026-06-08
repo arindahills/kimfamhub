@@ -1,0 +1,39 @@
+# Secrets — never commit these
+.env
+.env.*
+service-account.json
+
+# Python runtime
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Databases and generated data
+data/
+kimfam.db
+*.db
+
+# Backup files (use git history instead)
+*.bak
+*.bak.*
+*.broken
+*_backup
+*_staging_backup
+
+# Media and documents — live in Cloudflare R2, not git
+static/project-pics/
+static/expenditures/
+static/receipts/
+static/avatars/
+docs/minutes/
+docs/governance/*.docx
+docs/governance/*.pdf
+docs/governance/*.pptx
+docs/projects/
+docs/financial/
+docs/receipts/
+
+# Keep markdown docs (app_guide.md, financial_snapshot.md)
+!docs/governance/*.md
