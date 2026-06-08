@@ -1,1 +1,2 @@
 apscheduler>=3.10
+boto3>=1.34
