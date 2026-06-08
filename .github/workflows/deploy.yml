@@ -84,6 +84,12 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$STAGING_DIR/
 
+      - name: Promote React index to staging root
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            $HETZNER_USER@$HETZNER_HOST \
+            "cp $STAGING_DIR/frontend/dist/index.html $STAGING_DIR/index.html"
+
       - name: Restart staging service
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
@@ -291,6 +297,12 @@ jobs:
             --exclude='docs/receipts/' --exclude='docs/projects/' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$PROD_DIR/
+
+      - name: Promote React index to root
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            $HETZNER_USER@$HETZNER_HOST \
+            "cp $PROD_DIR/frontend/dist/index.html $PROD_DIR/index.html"
 
       - name: Restart prod service
         run: |
