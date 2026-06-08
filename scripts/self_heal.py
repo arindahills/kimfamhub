@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-CI self-heal script.
-Reads test failure logs, calls Gemini (Groq fallback), writes fixes to disk.
+CI self-heal script. Runs ON Hetzner (where Claude Code CLI is authenticated).
 
-Exit 0 = fixes applied (caller should commit + push).
-Exit 2 = no failures found (nothing to fix).
-Exit 1 = AI could not produce a fix.
+Reads test failure logs, calls `claude -p` (subscription, no API key needed),
+writes fixes back to the staging directory.
 
-Usage:
+Exit 0 = fixes applied.
+Exit 2 = no failures found.
+Exit 1 = could not produce a fix.
+
+Usage (run from /var/www/kimfamhub-staging):
   python3 scripts/self_heal.py \
     --unit-log /tmp/unit_output.txt \
     --smoke-log /tmp/smoke_output.txt
 """
 
-import argparse, json, os, sys, textwrap
+import argparse, json, os, subprocess, sys, textwrap
 
 APP_FILES = [
     "main.py", "auth.py", "ask_agent.py", "scheduler.py",
@@ -22,25 +24,31 @@ APP_FILES = [
     "tests/test_api.py", "tests/test_smoke.py",
 ]
 
-SYSTEM = textwrap.dedent("""
+PROMPT_TEMPLATE = textwrap.dedent("""
     You are a senior Python engineer fixing a FastAPI application called KimFam Hub.
-    The CI pipeline has failed. Produce the minimal code changes that make the
-    failing tests pass without breaking passing tests.
+    CI tests have failed. Produce the minimal code changes to make them pass.
 
     Rules:
-    - Only change what is necessary. Do not refactor, rename, or reformat unrelated code.
-    - Do not add new features, tests, or comments beyond what fixes the failure.
-    - Your response must be a single valid JSON object — nothing before or after it.
+    - Only change what is necessary. Do not refactor unrelated code.
+    - Do not add features, tests, or comments beyond what fixes the failure.
+    - Respond ONLY with a single valid JSON object — no markdown, no explanation outside JSON.
     - Schema:
-      {
+      {{
         "explanation": "<one sentence: root cause and fix>",
-        "files": {
+        "files": {{
           "<relative/path.py>": "<complete new file content>"
-        }
-      }
-    - Only include files that need to change.
+        }}
+      }}
     - Fix the test if the test is wrong; fix the app if the app is wrong.
-    - If you cannot determine a safe fix, return: {"explanation": "cannot fix", "files": {}}
+    - If you cannot determine a safe fix return: {{"explanation": "cannot fix", "files": {{}}}}
+
+    === FAILING TEST OUTPUT ===
+    {failure_log}
+
+    === SOURCE FILES ===
+    {source_block}
+
+    Produce the JSON fix now.
 """).strip()
 
 
@@ -53,18 +61,23 @@ def read_file(path: str) -> str:
 
 def load_logs(unit_log: str, smoke_log: str) -> str:
     parts = []
-    for label, path in [("UNIT TEST OUTPUT", unit_log), ("SMOKE TEST OUTPUT", smoke_log)]:
+    for label, path in [("UNIT TESTS", unit_log), ("SMOKE TESTS", smoke_log)]:
         content = read_file(path).strip()
-        if content and ("FAILED" in content or "ERROR" in content or "error" in content.lower()):
-            parts.append(f"=== {label} ===\n{content}")
+        if content and ("FAILED" in content or "ERROR" in content):
+            parts.append(f"--- {label} ---\n{content}")
     return "\n\n".join(parts)
 
 
-def load_sources() -> dict:
-    return {p: read_file(p) for p in APP_FILES if read_file(p)}
+def load_sources() -> str:
+    chunks = []
+    for p in APP_FILES:
+        content = read_file(p)
+        if content:
+            chunks.append(f"--- {p} ---\n{content}")
+    return "\n\n".join(chunks)
 
 
-def _parse_response(raw: str) -> dict:
+def _parse_json(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -73,60 +86,67 @@ def _parse_response(raw: str) -> dict:
     return json.loads(raw.strip())
 
 
-def call_gemini(failure_log: str, sources: dict) -> dict:
+def call_claude_cli(prompt: str) -> dict:
+    """Use the Claude Code CLI (authenticated via subscription on this server)."""
+    result = subprocess.run(
+        ["claude", "-p", prompt, "--model", "sonnet"],
+        capture_output=True, text=True, timeout=180,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI error: {result.stderr[:300]}")
+    return _parse_json(result.stdout)
+
+
+def call_gemini(prompt: str) -> dict:
     import google.generativeai as genai
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=SYSTEM,
-    )
-    source_block = "\n\n".join(f"--- {p} ---\n{c}" for p, c in sources.items())
-    prompt = (
-        f"Tests failed:\n\n{failure_log}\n\n"
-        f"Source files:\n\n{source_block}\n\n"
-        "Produce the JSON fix."
-    )
+    model = genai.GenerativeModel("gemini-2.5-flash")
     response = model.generate_content(prompt)
-    return _parse_response(response.text)
+    return _parse_json(response.text)
 
 
-def call_groq(failure_log: str, sources: dict) -> dict:
+def call_groq(prompt: str) -> dict:
     from groq import Groq
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
-    source_block = "\n\n".join(f"--- {p} ---\n{c}" for p, c in sources.items())
-    user_msg = (
-        f"Tests failed:\n\n{failure_log}\n\n"
-        f"Source files:\n\n{source_block}\n\n"
-        "Produce the JSON fix."
-    )
     resp = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user",   "content": user_msg},
-        ],
+        messages=[{"role": "user", "content": prompt}],
         max_tokens=8192,
     )
-    return _parse_response(resp.choices[0].message.content)
+    return _parse_json(resp.choices[0].message.content)
 
 
-def call_ai(failure_log: str, sources: dict) -> dict:
+def call_ai(prompt: str) -> dict:
+    # Primary: Claude Code CLI (subscription, no key needed)
+    try:
+        print("Calling Claude CLI...")
+        return call_claude_cli(prompt)
+    except Exception as e:
+        print(f"Claude CLI failed: {e}")
+
+    # Fallback: Gemini
     if os.environ.get("GEMINI_API_KEY"):
         try:
-            print("Trying Gemini...")
-            return call_gemini(failure_log, sources)
+            print("Falling back to Gemini...")
+            return call_gemini(prompt)
         except Exception as e:
-            print(f"Gemini failed: {e} — falling back to Groq")
+            print(f"Gemini failed: {e}")
+
+    # Last resort: Groq
     if os.environ.get("GROQ_API_KEY"):
-        print("Trying Groq...")
-        return call_groq(failure_log, sources)
-    raise RuntimeError("No AI provider available. Set GEMINI_API_KEY or GROQ_API_KEY.")
+        try:
+            print("Falling back to Groq...")
+            return call_groq(prompt)
+        except Exception as e:
+            print(f"Groq failed: {e}")
+
+    raise RuntimeError("All AI providers failed.")
 
 
 def apply_fixes(result: dict) -> int:
     files_changed = result.get("files", {})
     if not files_changed:
-        print("AI returned no fix.")
+        print("AI: no fix produced.")
         return 0
     for path, content in files_changed.items():
         if path.startswith("/") or ".." in path:
@@ -148,14 +168,17 @@ def main():
 
     failure_log = load_logs(args.unit_log, args.smoke_log)
     if not failure_log:
-        print("No failures in logs.")
+        print("No failures detected — nothing to fix.")
         sys.exit(2)
 
-    print("Failures found. Calling AI for a fix...")
-    sources = load_sources()
+    print("Failures found. Asking Claude for a fix...")
+    prompt = PROMPT_TEMPLATE.format(
+        failure_log=failure_log,
+        source_block=load_sources(),
+    )
 
     try:
-        result = call_ai(failure_log, sources)
+        result = call_ai(prompt)
     except json.JSONDecodeError as e:
         print(f"AI returned invalid JSON: {e}")
         sys.exit(1)
