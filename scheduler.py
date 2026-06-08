@@ -391,10 +391,10 @@ def monthly_payment_reminders():
         log.info("Monthly reminder sent: %s (owes UGX %s)", family_name, f"{combined:,}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 4: Meeting reminder — 1 day before scheduled meeting (daily 08:00)
+# JOB 4a: Meeting reminder — day before at 08:00 Kampala
 # ─────────────────────────────────────────────────────────────────────────────
 def check_meeting_reminders():
-    log.info("Scheduler: checking meeting reminders")
+    log.info("Scheduler: checking meeting reminders (day-before)")
     rows = _get_meeting_rows()
     if not rows:
         return
@@ -410,13 +410,43 @@ def check_meeting_reminders():
                 f"📋 *KimFam Meeting Tomorrow{env}*\n"
                 f"*Ref:* {ref}\n"
                 f"*Date:* {date_str}\n"
+                f"*Time:* 4:30pm EAT\n"
                 + (f"*Venue:* {venue}\n" if venue else "") +
                 f"_Come prepared. Minutes and actions tracked on kimfamhub.com_ 💻"
                 + _SIG
             )
             all_phones = [p for p in _notif.MEMBER_PHONES.values() if p]
             _notif._broadcast(all_phones, msg)
-            log.info("Meeting reminder sent for %s", ref)
+            log.info("Day-before meeting reminder sent for %s", ref)
+            break
+
+
+# JOB 4b: Meeting reminder — same day at 16:30 Kampala
+# ─────────────────────────────────────────────────────────────────────────────
+def check_meeting_today():
+    log.info("Scheduler: checking meeting reminders (same-day 4:30pm)")
+    rows = _get_meeting_rows()
+    if not rows:
+        return
+    today = datetime.now(KAMPALA).date()
+    env = " [STAGING]" if IS_STAGING else ""
+    for r in rows:
+        date_str = str(r.get("Date", "") or r.get("Meeting Date", "")).strip()
+        ref      = str(r.get("Meeting Ref", "") or r.get("Ref", "")).strip()
+        venue    = str(r.get("Venue", "") or r.get("Location", "")).strip()
+        d = _parse_date(date_str)
+        if d == today:
+            msg = (
+                f"🔔 *KimFam Meeting Today{env}*\n"
+                f"*Ref:* {ref}\n"
+                f"*Time:* 4:30pm EAT — starting now\n"
+                + (f"*Venue:* {venue}\n" if venue else "") +
+                f"_Track minutes and actions live on kimfamhub.com_ 💻"
+                + _SIG
+            )
+            all_phones = [p for p in _notif.MEMBER_PHONES.values() if p]
+            _notif._broadcast(all_phones, msg)
+            log.info("Same-day meeting reminder sent for %s", ref)
             break
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -452,6 +482,8 @@ def start():
                        id="deadline_check", replace_existing=True)
     _scheduler.add_job(check_meeting_reminders, "cron", hour=8, minute=0,
                        id="meeting_reminder", replace_existing=True)
+    _scheduler.add_job(check_meeting_today, "cron", hour=16, minute=30,
+                       id="meeting_today", replace_existing=True)
     _scheduler.add_job(check_loan_due, "cron", hour=8, minute=5,
                        id="loan_due", replace_existing=True)
     # Monthly on 5th at 08:00
