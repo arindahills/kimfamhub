@@ -10,6 +10,7 @@ os.environ["KIMFAM_DB_PATH"] = os.path.join(_tmp_dir, "test.db")
 os.environ["JWT_SECRET"]      = "test-secret-for-pytest-32-chars!!"
 os.environ["WASHING_BAY_PIN"] = "99999"
 os.environ["INTERNAL_API_KEY"]= "test-internal-key"
+os.environ["SCHEDULER_ENABLED"] = "0"  # never start APScheduler in tests
 
 # Support running from Hetzner prod dir, staging dir, or local Mac checkout.
 # KIMFAM_APP_ROOT can be set explicitly; otherwise derive from this file's location.

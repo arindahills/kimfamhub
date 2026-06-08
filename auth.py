@@ -114,6 +114,10 @@ def _migrate():
                     conn.execute("UPDATE members SET phone=? WHERE name=?", (phone, name))
             conn.commit()
             print("Migrated: added phone column + populated numbers")
+        if "last_login" not in cols:
+            conn.execute("ALTER TABLE members ADD COLUMN last_login TEXT DEFAULT NULL")
+            conn.commit()
+            print("Migrated: added last_login column")
 
 
 def seed_members():
