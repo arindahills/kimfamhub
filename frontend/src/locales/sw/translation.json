@@ -1,0 +1,96 @@
+{
+  "nav": {
+    "home": "Nyumbani",
+    "updates": "Habari",
+    "actions": "Vitendo",
+    "finances": "Fedha",
+    "members": "Wanachama",
+    "projects": "Miradi",
+    "equity": "Hisa",
+    "loans": "Mkopo",
+    "meetings": "Mikutano",
+    "docs": "Nyaraka",
+    "ask": "Uliza KimFam",
+    "admin": "Utawala"
+  },
+  "common": {
+    "loading": "Inapakia...",
+    "error": "Hitilafu imetokea",
+    "retry": "Jaribu tena",
+    "save": "Hifadhi",
+    "cancel": "Ghairi",
+    "submit": "Wasilisha",
+    "delete": "Futa",
+    "edit": "Hariri",
+    "close": "Funga",
+    "back": "Rudi",
+    "next": "Endelea",
+    "search": "Tafuta",
+    "filter": "Chuja",
+    "all": "Zote",
+    "none": "Hakuna",
+    "yes": "Ndiyo",
+    "no": "Hapana",
+    "currency": "UGX"
+  },
+  "auth": {
+    "login": "Ingia",
+    "logout": "Toka",
+    "password": "Nywila",
+    "member": "Mwanachama",
+    "loginPrompt": "Karibu KimFam Hub",
+    "loginSubtitle": "Klabu ya Uwekezaji ya KimFam"
+  },
+  "home": {
+    "welcome": "Karibu",
+    "tagline": "Klabu ya Uwekezaji ya KimFam",
+    "mission": "Kuwekeza katika miradi yenye faida na inayouzika haraka"
+  },
+  "finances": {
+    "submitPayment": "Wasilisha Malipo",
+    "paymentHistory": "Historia ya Malipo",
+    "balance": "Salio",
+    "outstanding": "Deni",
+    "paid": "Kulipwa",
+    "family": "Familia",
+    "amount": "Kiasi",
+    "date": "Tarehe",
+    "period": "Kipindi",
+    "receipt": "Risiti",
+    "calculator": "Kikokotoo cha Malipo"
+  },
+  "actions": {
+    "title": "Vitendo",
+    "responsible": "Mwajibika",
+    "deadline": "Tarehe ya Mwisho",
+    "status": "Hali",
+    "meeting": "Mkutano",
+    "overdue": "Imechelewa",
+    "done": "Imekamilika",
+    "pending": "Inasubiri"
+  },
+  "meetings": {
+    "title": "Mikutano",
+    "date": "Tarehe",
+    "agenda": "Ajenda",
+    "decisions": "Maamuzi Muhimu",
+    "topics": "Mada Muhimu",
+    "attendance": "Mahudhurio",
+    "nextMeeting": "Mkutano Ujao"
+  },
+  "loans": {
+    "title": "Mikopo",
+    "member": "Mwanachama",
+    "principal": "Mkopo wa Awali",
+    "balance": "Salio",
+    "dueDate": "Tarehe ya Kulipa",
+    "daysRemaining": "Siku Zilizobaki",
+    "payments": "Historia ya Malipo"
+  },
+  "ask": {
+    "title": "Uliza KimFam",
+    "placeholder": "Uliza chochote kuhusu KimFam...",
+    "send": "Tuma",
+    "thinking": "Inafikiri..."
+  }
+}

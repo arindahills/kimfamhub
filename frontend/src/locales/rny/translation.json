@@ -1,0 +1,96 @@
+{
+  "nav": {
+    "home": "Omu Nganda",
+    "updates": "Amakuru",
+    "actions": "Ebikorerwa",
+    "finances": "Ebyamafaranga",
+    "members": "Abagwi",
+    "projects": "Emirimo",
+    "equity": "Engabu",
+    "loans": "Enyingye",
+    "meetings": "Entegyeka",
+    "docs": "Ebikwate",
+    "ask": "Bibuuza KimFam",
+    "admin": "Entekateeka"
+  },
+  "common": {
+    "loading": "Eririkira...",
+    "error": "Hariho ekizibu",
+    "retry": "Gezaho nkora",
+    "save": "Bika",
+    "cancel": "Reka",
+    "submit": "Tuura",
+    "delete": "Sazamu",
+    "edit": "Hindura",
+    "close": "Zibira",
+    "back": "Garuka",
+    "next": "Eteeraho",
+    "search": "Noorana",
+    "filter": "Sisiramu",
+    "all": "Byona",
+    "none": "Nta kibapo",
+    "yes": "Yego",
+    "no": "Nawe",
+    "currency": "UGX"
+  },
+  "auth": {
+    "login": "Ingiira",
+    "logout": "Fumbaho",
+    "password": "Ekigambo",
+    "member": "Omugwi",
+    "loginPrompt": "Tukwanukirize omu KimFam Hub",
+    "loginSubtitle": "Ekibiina ky'Okuteekateeka ebyamafaranga kya KimFam"
+  },
+  "home": {
+    "welcome": "Tukwanukirize",
+    "tagline": "Ekibiina ky'Okuteekateeka ebyamafaranga kya KimFam",
+    "mission": "Okuteekateeka ebyamafaranga omu mirimo erikuruha ebyaro"
+  },
+  "finances": {
+    "submitPayment": "Tuura Obuguzi",
+    "paymentHistory": "Amateka g'Obuguzi",
+    "balance": "Emirari",
+    "outstanding": "Ekiriho",
+    "paid": "Baaguriire",
+    "family": "Ow'Eka",
+    "amount": "Omuwendo",
+    "date": "Eizooba",
+    "period": "Ekihaaniro",
+    "receipt": "Ekitabo ky'Obuguzi",
+    "calculator": "Okubara Obuguzi"
+  },
+  "actions": {
+    "title": "Ebikorerwa",
+    "responsible": "Omukuumi",
+    "deadline": "Eizooba ry'Okumaliriza",
+    "status": "Emirari",
+    "meeting": "Entegyeka",
+    "overdue": "Ekibuukirire",
+    "done": "Nikyamalirire",
+    "pending": "Nikireeberwa"
+  },
+  "meetings": {
+    "title": "Entegyeka",
+    "date": "Eizooba",
+    "agenda": "Ebiganirwa",
+    "decisions": "Ebizimu Eby'Omukuru",
+    "topics": "Ebicuucu Eby'Omukuru",
+    "attendance": "Abaagiire",
+    "nextMeeting": "Entegyeka Egiijayo"
+  },
+  "loans": {
+    "title": "Enyingye",
+    "member": "Omugwi",
+    "principal": "Enyingye y'Embera",
+    "balance": "Emirari",
+    "dueDate": "Eizooba ry'Okuguriira",
+    "daysRemaining": "Eizooba Erikaara",
+    "payments": "Amateka g'Obuguzi"
+  },
+  "ask": {
+    "title": "Bibuuza KimFam",
+    "placeholder": "Bibuuza ebirikuhusu KimFam...",
+    "send": "Tuuma",
+    "thinking": "Niririkira..."
+  }
+}

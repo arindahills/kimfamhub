@@ -1,0 +1,96 @@
+{
+  "nav": {
+    "home": "Home",
+    "updates": "Updates",
+    "actions": "Action Points",
+    "finances": "Finances",
+    "members": "Members",
+    "projects": "Projects",
+    "equity": "Equity",
+    "loans": "Loans",
+    "meetings": "Meetings",
+    "docs": "Documents",
+    "ask": "Ask KimFam",
+    "admin": "Admin"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Something went wrong",
+    "retry": "Try again",
+    "save": "Save",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "back": "Back",
+    "next": "Next",
+    "search": "Search",
+    "filter": "Filter",
+    "all": "All",
+    "none": "None",
+    "yes": "Yes",
+    "no": "No",
+    "currency": "UGX"
+  },
+  "auth": {
+    "login": "Log In",
+    "logout": "Log Out",
+    "password": "Password",
+    "member": "Member",
+    "loginPrompt": "Welcome to KimFam Hub",
+    "loginSubtitle": "KimFam Investment Club"
+  },
+  "home": {
+    "welcome": "Welcome",
+    "tagline": "KimFam Investment Club",
+    "mission": "To invest in profitable and quickly marketable ventures"
+  },
+  "finances": {
+    "submitPayment": "Submit a Payment",
+    "paymentHistory": "Payment History",
+    "balance": "Balance",
+    "outstanding": "Outstanding",
+    "paid": "Paid",
+    "family": "Family",
+    "amount": "Amount",
+    "date": "Date",
+    "period": "Period",
+    "receipt": "Receipt",
+    "calculator": "Payment Calculator"
+  },
+  "actions": {
+    "title": "Action Points",
+    "responsible": "Responsible",
+    "deadline": "Deadline",
+    "status": "Status",
+    "meeting": "Meeting",
+    "overdue": "Overdue",
+    "done": "Done",
+    "pending": "Pending"
+  },
+  "meetings": {
+    "title": "Meetings",
+    "date": "Date",
+    "agenda": "Agenda",
+    "decisions": "Key Decisions",
+    "topics": "Key Topics",
+    "attendance": "Attendance",
+    "nextMeeting": "Next Meeting"
+  },
+  "loans": {
+    "title": "Loans",
+    "member": "Member",
+    "principal": "Principal",
+    "balance": "Balance",
+    "dueDate": "Due Date",
+    "daysRemaining": "Days Remaining",
+    "payments": "Payment History"
+  },
+  "ask": {
+    "title": "Ask KimFam",
+    "placeholder": "Ask anything about KimFam...",
+    "send": "Send",
+    "thinking": "Thinking..."
+  }
+}

@@ -18,6 +18,11 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="/var/www/kimfamhub/static"), name="static")
 
+# React frontend assets (built output from frontend/dist/assets)
+_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.isdir(os.path.join(_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_DIST, "assets")), name="frontend-assets")
+
 SHEET_ID = "1R3_j2ArvMZsfiLDvFwEQURJBXEPaW3mmWU-FyUwrqPg"
 SOLOMON_ID = "1CqF-NzkMJ8iJw0tC8xkLE9DI94cjFr2vvlAfx4QfXhI"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
@@ -313,9 +318,22 @@ def get_projects():
             data[row[1].strip()] = {"value": row[2].strip(), "desc": row[3].strip() if len(row)>3 else ""}
     return {"chicken": data}
 
+def _react_index() -> HTMLResponse:
+    react_index = os.path.join(_DIST, "index.html")
+    if os.path.isfile(react_index):
+        return HTMLResponse(open(react_index).read())
+    return HTMLResponse(open("/var/www/kimfamhub/index.html").read())
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return open("/var/www/kimfamhub/index.html").read()
+    return _react_index()
+
+@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+def spa_fallback(full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("assets/"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+    return _react_index()
 
 @app.get("/api/projects/all")
 def get_all_projects():

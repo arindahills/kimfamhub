@@ -42,3 +42,5 @@ docs/receipts/
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/dist/
+frontend/node_modules/
