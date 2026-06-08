@@ -328,13 +328,6 @@ def _react_index() -> HTMLResponse:
 def index():
     return _react_index()
 
-@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
-def spa_fallback(full_path: str):
-    if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("assets/"):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404)
-    return _react_index()
-
 @app.get("/api/projects/all")
 def get_all_projects():
     from db import query as _dbq
@@ -3695,3 +3688,12 @@ async def assign_officer(role_slug: str, request: Request):
         (role_slug, _VALID_OFFICER_ROLES[role_slug], member_name, effective_from, notes)
     )
     return {"ok": True, "role": role_slug, "now_held_by": member_name}
+
+
+# ── SPA fallback — MUST be last; catches all non-API routes for React Router ──
+@app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+def spa_fallback(full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("assets/"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+    return _react_index()
