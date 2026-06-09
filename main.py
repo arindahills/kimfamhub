@@ -226,7 +226,11 @@ def get_loans():
 
 @app.get("/api/meetings")
 def get_meetings():
-    return gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
+    try:
+        return gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"meetings sheet: {e}")
+        return []
 
 @app.get("/api/meeting")
 def get_next_meeting():

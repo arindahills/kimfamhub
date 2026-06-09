@@ -1,6 +1,17 @@
+import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
+
+function useIsDesktop() {
+  const [desktop, setDesktop] = useState(() => window.innerWidth >= 640)
+  useEffect(() => {
+    const handler = () => setDesktop(window.innerWidth >= 640)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+  return desktop
+}
 
 const TABS = [
   { to: '/',          icon: '🏠', key: 'home'     },
@@ -19,69 +30,95 @@ const TABS = [
 export default function Nav() {
   const { t } = useTranslation()
   const { user } = useAuth()
+  const isDesktop = useIsDesktop()
 
   const tabs = user?.role === 'admin'
     ? [...TABS, { to: '/admin', icon: '⚙️', key: 'admin' }]
     : TABS
 
-  return (
-    <>
-      {/* Desktop sidebar */}
+  if (isDesktop) {
+    return (
       <nav
-        className="hidden md:flex flex-col h-full w-56 shrink-0 py-4 overflow-y-auto"
-        style={{ background: 'var(--bg-nav)', borderRight: '1px solid var(--border)' }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          width: 224,
+          flexShrink: 0,
+          paddingTop: 16,
+          paddingBottom: 16,
+          overflowY: 'auto',
+          background: 'var(--bg-nav)',
+          borderRight: '1px solid var(--border)',
+        }}
       >
-        <div className="px-4 mb-6">
-          <div className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>KimFam Hub</div>
-          <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{user?.name}</div>
+        <div style={{ padding: '0 16px', marginBottom: 24 }}>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
+          <div style={{ fontSize: 12, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
         </div>
         {tabs.map(tab => (
           <NavLink
             key={tab.to}
             to={tab.to}
             end={tab.to === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                isActive
-                  ? 'font-medium'
-                  : 'opacity-70 hover:opacity-100'
-              }`
-            }
             style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '10px 16px',
+              fontSize: 14,
+              textDecoration: 'none',
               color: isActive ? 'var(--accent)' : 'var(--text-primary)',
               background: isActive ? 'rgba(59,130,246,0.1)' : 'transparent',
+              opacity: isActive ? 1 : 0.7,
+              transition: 'opacity 0.15s',
             })}
           >
-            <span className="text-base">{tab.icon}</span>
+            <span style={{ fontSize: 16 }}>{tab.icon}</span>
             <span>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
       </nav>
+    )
+  }
 
-      {/* Mobile bottom tab bar */}
-      <nav
-        className="md:hidden fixed bottom-0 left-0 right-0 flex overflow-x-auto z-50"
-        style={{
-          background: 'var(--bg-nav)',
-          borderTop: '1px solid var(--border)',
-          scrollbarWidth: 'none',
-        }}
-      >
-        {tabs.map(tab => (
-          <NavLink
-            key={tab.to}
-            to={tab.to}
-            end={tab.to === '/'}
-            className="flex flex-col items-center justify-center min-w-[60px] py-2 text-xs gap-0.5 flex-1"
-            style={({ isActive }) => ({
-              color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-            })}
-          >
-            <span className="text-lg leading-none">{tab.icon}</span>
-            <span className="leading-tight text-[10px]">{t(`nav.${tab.key}`)}</span>
-          </NavLink>
-        ))}
-      </nav>
-    </>
+  // Mobile bottom tab bar
+  return (
+    <nav
+      style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        display: 'flex',
+        overflowX: 'auto',
+        zIndex: 50,
+        background: 'var(--bg-nav)',
+        borderTop: '1px solid var(--border)',
+        scrollbarWidth: 'none',
+      }}
+    >
+      {tabs.map(tab => (
+        <NavLink
+          key={tab.to}
+          to={tab.to}
+          end={tab.to === '/'}
+          style={({ isActive }) => ({
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: 60,
+            padding: '8px 0',
+            flex: 1,
+            textDecoration: 'none',
+            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+          })}
+        >
+          <span style={{ fontSize: 18, lineHeight: 1 }}>{tab.icon}</span>
+          <span style={{ fontSize: 10, lineHeight: 1.2, marginTop: 2 }}>{t(`nav.${tab.key}`)}</span>
+        </NavLink>
+      ))}
+    </nav>
   )
 }
