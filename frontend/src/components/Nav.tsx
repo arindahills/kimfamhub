@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 
@@ -31,10 +31,15 @@ export default function Nav() {
   const { t } = useTranslation()
   const { user } = useAuth()
   const isDesktop = useIsDesktop()
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const location = useLocation()
 
   const tabs = user?.role === 'admin'
     ? [...TABS, { to: '/admin', icon: '⚙️', key: 'admin' }]
     : TABS
+
+  // Close drawer on navigation
+  useEffect(() => { setDrawerOpen(false) }, [location.pathname])
 
   if (isDesktop) {
     return (
@@ -82,43 +87,85 @@ export default function Nav() {
     )
   }
 
-  // Mobile bottom tab bar
+  // Mobile: hamburger button + slide-in drawer
   return (
-    <nav
-      style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        display: 'flex',
-        overflowX: 'auto',
-        zIndex: 50,
-        background: 'var(--bg-nav)',
-        borderTop: '1px solid var(--border)',
-        scrollbarWidth: 'none',
-      }}
-    >
-      {tabs.map(tab => (
-        <NavLink
-          key={tab.to}
-          to={tab.to}
-          end={tab.to === '/'}
-          style={({ isActive }) => ({
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minWidth: 60,
-            padding: '8px 0',
-            flex: 1,
-            textDecoration: 'none',
-            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-          })}
-        >
-          <span style={{ fontSize: 18, lineHeight: 1 }}>{tab.icon}</span>
-          <span style={{ fontSize: 10, lineHeight: 1.2, marginTop: 2 }}>{t(`nav.${tab.key}`)}</span>
-        </NavLink>
-      ))}
-    </nav>
+    <>
+      {/* Hamburger button — top left */}
+      <button
+        onClick={() => setDrawerOpen(o => !o)}
+        style={{
+          position: 'fixed',
+          top: 10,
+          left: 12,
+          zIndex: 60,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          padding: 4,
+          color: 'var(--text-primary)',
+          fontSize: 22,
+          lineHeight: 1,
+        }}
+        aria-label="Open menu"
+      >
+        {drawerOpen ? '✕' : '☰'}
+      </button>
+
+      {/* Backdrop */}
+      {drawerOpen && (
+        <div
+          onClick={() => setDrawerOpen(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 55,
+            background: 'rgba(0,0,0,0.55)',
+          }}
+        />
+      )}
+
+      {/* Drawer */}
+      <nav
+        style={{
+          position: 'fixed',
+          top: 0, left: 0, bottom: 0,
+          width: 240,
+          zIndex: 56,
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'var(--bg-nav)',
+          borderRight: '1px solid var(--border)',
+          transform: drawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.22s ease',
+          paddingTop: 56,
+          paddingBottom: 16,
+          overflowY: 'auto',
+        }}
+      >
+        <div style={{ padding: '0 16px', marginBottom: 20 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
+          <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
+        </div>
+        {tabs.map(tab => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            end={tab.to === '/'}
+            style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              padding: '12px 20px',
+              fontSize: 15,
+              textDecoration: 'none',
+              color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+              background: isActive ? 'rgba(59,130,246,0.12)' : 'transparent',
+              opacity: isActive ? 1 : 0.75,
+            })}
+          >
+            <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{tab.icon}</span>
+            <span>{t(`nav.${tab.key}`)}</span>
+          </NavLink>
+        ))}
+      </nav>
+    </>
   )
 }

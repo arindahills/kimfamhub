@@ -39,7 +39,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
           {isDesktop ? (
             <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{user?.display}</span>
           ) : (
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</span>
+            /* Space that matches the hamburger button width so title centres correctly */
+            <span style={{ width: 32, flexShrink: 0 }} />
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -67,7 +68,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             flex: 1,
             overflowY: 'auto',
             padding: 16,
-            paddingBottom: isDesktop ? 16 : 80,
+            paddingBottom: 16,
           }}
         >
           {children}
