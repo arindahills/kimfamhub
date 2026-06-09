@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 
 interface AuthUser {
   name: string
-  family: string
+  display: string
   role: 'admin' | 'member'
 }
 
@@ -20,32 +20,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/me', { credentials: 'include' })
+    fetch('/api/auth/me', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (data?.name) setUser(data)
+        if (data?.name) setUser({ name: data.name, display: data.display, role: data.role })
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
 
   const login = async (member: string, password: string) => {
-    const r = await fetch('/api/login', {
+    const r = await fetch('/api/auth/login', {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ member, password }),
+      body: JSON.stringify({ name: member, password }),
     })
     if (!r.ok) {
       const err = await r.json().catch(() => ({}))
       throw new Error(err.detail || 'Login failed')
     }
     const data = await r.json()
-    setUser(data)
+    setUser({ name: data.name, display: data.display, role: data.role })
   }
 
   const logout = async () => {
-    await fetch('/api/logout', { method: 'POST', credentials: 'include' })
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
     setUser(null)
   }
 

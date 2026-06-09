@@ -37,7 +37,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           }}
         >
           {isDesktop ? (
-            <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{user?.family} family</span>
+            <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>{user?.display}</span>
           ) : (
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</span>
           )}
