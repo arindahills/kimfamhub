@@ -93,7 +93,36 @@ export default function ActionsPage() {
 
   const { data: items = [], isLoading } = useQuery<ActionItem[]>({
     queryKey: ['actions'],
-    queryFn: () => fetch('/api/actions', { credentials: 'include' }).then(r => r.json()),
+    queryFn: async () => {
+      const raw = await fetch('/api/actions', { credentials: 'include' }).then(r => r.json())
+      // Backend returns { personName: [{ id, action, deadline, status, meeting, note }] }
+      // Flatten into the ActionItem[] shape this component expects
+      if (Array.isArray(raw)) return raw
+      if (!raw || typeof raw !== 'object') return []
+      let idx = 0
+      const flat: ActionItem[] = []
+      for (const [person, list] of Object.entries(raw)) {
+        for (const a of (list as any[])) {
+          const rawStatus = (a.status || '').toString().toLowerCase()
+          const isPast = a.deadline && new Date(a.deadline) < new Date()
+          const status: ActionItem['status'] =
+            rawStatus === 'done' || rawStatus === 'closed' ? 'done' :
+            isPast ? 'overdue' : 'pending'
+          flat.push({
+            id: idx++,
+            description: a.action || a.description || '',
+            responsible: person,
+            deadline: a.deadline || null,
+            status,
+            meeting_id: null,
+            meeting_date: null,
+            meeting_number: a.meeting || null,
+            updated_at: a.note || null,
+          })
+        }
+      }
+      return flat
+    },
   })
 
   const update = async (id: number, status: ActionItem['status']) => {

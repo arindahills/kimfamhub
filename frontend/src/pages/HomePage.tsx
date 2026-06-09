@@ -46,7 +46,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
           className="text-[10px] font-bold px-2 py-0.5 rounded-full"
           style={{ color: col, background: col + '22' }}
         >
-          {item.project_name.toUpperCase()}
+          {(item.project_name || '').toUpperCase()}
         </span>
         <span className="text-[11px]" style={{ color: '#475569' }}>{timeAgo(item.created_at)}</span>
       </div>

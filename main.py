@@ -15,7 +15,7 @@ async def lifespan(app):
     if os.environ.get("SCHEDULER_ENABLED") == "1":
         _scheduler_mod.stop()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, docs_url="/api/_swagger", redoc_url=None)
 app.mount("/static", StaticFiles(directory="/var/www/kimfamhub/static"), name="static")
 
 # React frontend assets (built output from frontend/dist/assets)
