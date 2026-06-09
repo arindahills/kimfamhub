@@ -69,6 +69,14 @@ export default function MembersPage() {
         <p className="text-xs mb-3" style={{ color: '#475569' }}>As of {membersData.as_of}</p>
       )}
 
+      {members.length === 0 && (
+        <div className="rounded-xl p-6 text-center" style={{ background: 'var(--bg-card)' }}>
+          <div className="text-3xl mb-3">👥</div>
+          <p className="text-sm font-semibold mb-1" style={{ color: '#f1f5f9' }}>Members data unavailable</p>
+          <p className="text-xs" style={{ color: '#64748b' }}>The Google Sheets connection is offline. Contact the administrator to restore access.</p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
       {members.map(m => {
         const col = FAMILY_COLORS[m.name] || '#94a3b8'

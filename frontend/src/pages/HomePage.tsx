@@ -6,26 +6,14 @@ interface Summary {
 }
 
 interface ActivityItem {
-  id: number
-  project_id: string
-  project_name: string
-  text: string
-  author: string
-  created_at: string
-  media?: string[]
-}
-
-const PROJECT_COLORS: Record<string, string> = {
-  chicken: '#f59e0b',
-  washing_bay: '#06b6d4',
-  sheep: '#a78bfa',
-  goats: '#34d399',
-  banana: '#f97316',
-  bees: '#fbbf24',
-  trees: '#22c55e',
+  ts: string
+  icon: string
+  title: string
+  nav: string
 }
 
 function timeAgo(iso: string): string {
+  if (!iso) return ''
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
   if (diff < 60) return 'just now'
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
@@ -38,27 +26,13 @@ function fmt(n: number) {
 }
 
 function ActivityCard({ item }: { item: ActivityItem }) {
-  const col = PROJECT_COLORS[item.project_id] || '#94a3b8'
   return (
-    <div className="rounded-xl p-3 mb-3" style={{ background: 'var(--bg-card)' }}>
-      <div className="flex items-center justify-between mb-2">
-        <span
-          className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-          style={{ color: col, background: col + '22' }}
-        >
-          {(item.project_name || '').toUpperCase()}
-        </span>
-        <span className="text-[11px]" style={{ color: '#475569' }}>{timeAgo(item.created_at)}</span>
+    <div className="rounded-xl p-3 mb-3 flex items-center gap-3" style={{ background: 'var(--bg-card)' }}>
+      <span className="text-xl shrink-0">{item.icon}</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm leading-snug" style={{ color: '#e2e8f0' }}>{item.title}</p>
       </div>
-      {item.media && item.media.length > 0 && (
-        <div className="flex gap-2 overflow-x-auto mb-2 pb-1">
-          {item.media.filter(u => !u.match(/\.mp4$/i)).map((src, i) => (
-            <img key={i} src={src} className="h-28 rounded-lg object-cover shrink-0" alt="" />
-          ))}
-        </div>
-      )}
-      <p className="text-sm leading-relaxed mb-2" style={{ color: '#e2e8f0' }}>{item.text}</p>
-      <p className="text-[11px]" style={{ color: '#94a3b8' }}>— {item.author}</p>
+      <span className="text-[11px] shrink-0" style={{ color: '#475569' }}>{timeAgo(item.ts)}</span>
     </div>
   )
 }
@@ -148,7 +122,7 @@ export default function HomePage() {
           No recent activity.
         </p>
       )}
-      {feed?.map(item => <ActivityCard key={item.id} item={item} />)}
+      {feed?.map((item, i) => <ActivityCard key={i} item={item} />)}
     </div>
   )
 }
