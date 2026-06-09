@@ -2,11 +2,6 @@ import { useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 
-const MEMBERS = [
-  'Hillary','Hellen','Alex','Israel','Simon','Esther',
-  'Janet','Lawi','Max','Priscilla','Solomon','Viola','Merab',
-]
-
 export default function LoginPage() {
   const { t } = useTranslation()
   const { login } = useAuth()
@@ -28,71 +23,101 @@ export default function LoginPage() {
     }
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'var(--bg-card)',
+    color: 'var(--text-primary)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    padding: '10px 12px',
+    fontSize: 14,
+    outline: 'none',
+    boxSizing: 'border-box',
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg-primary)' }}>
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <div className="text-4xl mb-3">🌾</div>
-          <h1 className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {t('auth.loginPrompt')}
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'var(--bg-primary)',
+      padding: '16px',
+    }}>
+      <div style={{ width: '100%', maxWidth: 420 }}>
+        {/* Logo + heading */}
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontSize: 56, marginBottom: 12 }}>🌾</div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+            Welcome to KimFam Hub
           </h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
-            {t('auth.loginSubtitle')}
+          <p style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 6 }}>
+            KimFam Investment Club
           </p>
         </div>
 
-        <form onSubmit={submit} className="space-y-4">
-          <div>
-            <label className="block text-sm mb-1" style={{ color: 'var(--text-muted)' }}>
-              {t('auth.member')}
-            </label>
-            <select
-              value={member}
-              onChange={e => setMember(e.target.value)}
-              required
-              className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+        {/* Card */}
+        <div style={{
+          background: 'var(--bg-card)',
+          borderRadius: 16,
+          padding: '32px 28px',
+          border: '1px solid var(--border)',
+        }}>
+          <form onSubmit={submit}>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 13, color: 'var(--text-muted)', marginBottom: 6 }}>
+                {t('auth.member')}
+              </label>
+              <input
+                type="text"
+                value={member}
+                onChange={e => setMember(e.target.value)}
+                required
+                autoComplete="username"
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontSize: 13, color: 'var(--text-muted)', marginBottom: 6 }}>
+                {t('auth.password')}
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                style={inputStyle}
+              />
+            </div>
+
+            {error && (
+              <p style={{ fontSize: 13, color: 'var(--accent-red)', textAlign: 'center', marginBottom: 16, margin: '0 0 16px' }}>
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
               style={{
-                background: 'var(--bg-card)',
-                color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
+                width: '100%',
+                padding: '11px',
+                borderRadius: 8,
+                border: 'none',
+                background: 'var(--accent)',
+                color: '#fff',
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: busy ? 'not-allowed' : 'pointer',
+                opacity: busy ? 0.6 : 1,
               }}
             >
-              <option value="">Select member...</option>
-              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm mb-1" style={{ color: 'var(--text-muted)' }}>
-              {t('auth.password')}
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
-              style={{
-                background: 'var(--bg-card)',
-                color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
-              }}
-            />
-          </div>
-
-          {error && (
-            <p className="text-sm text-center" style={{ color: 'var(--accent-red)' }}>{error}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full rounded-lg py-2.5 text-sm font-medium transition-opacity disabled:opacity-60"
-            style={{ background: 'var(--accent)', color: '#fff' }}
-          >
-            {busy ? t('common.loading') : t('auth.login')}
-          </button>
-        </form>
+              {busy ? t('common.loading') : t('auth.login')}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   )
