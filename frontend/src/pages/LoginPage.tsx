@@ -58,6 +58,8 @@ export default function LoginPage() {
   const [otp, setOtp] = useState('')
   const [newPw, setNewPw] = useState('')
 
+  const [showPw, setShowPw] = useState(false)
+  const [showNewPw, setShowNewPw] = useState(false)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
   const [busy, setBusy] = useState(false)
@@ -134,8 +136,14 @@ export default function LoginPage() {
                 required autoComplete="username" style={inp} />
 
               <label style={label}>{t('auth.password')}</label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                required autoComplete="current-password" style={inp} />
+              <div style={{ position: 'relative' }}>
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                  required autoComplete="current-password" style={{ ...inp, paddingRight: 40 }} />
+                <button type="button" onClick={() => setShowPw(v => !v)}
+                  style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 16 }}>
+                  {showPw ? '🙈' : '👁️'}
+                </button>
+              </div>
 
               {error && <p style={{ fontSize: 12, color: 'var(--accent-red)', margin: '10px 0 0', textAlign: 'center' }}>{error}</p>}
 
@@ -184,8 +192,14 @@ export default function LoginPage() {
                 required autoFocus inputMode="numeric" style={inp} />
 
               <label style={label}>New Password</label>
-              <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
-                required style={inp} />
+              <div style={{ position: 'relative' }}>
+                <input type={showNewPw ? 'text' : 'password'} value={newPw} onChange={e => setNewPw(e.target.value)}
+                  required style={{ ...inp, paddingRight: 40 }} />
+                <button type="button" onClick={() => setShowNewPw(v => !v)}
+                  style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 16 }}>
+                  {showNewPw ? '🙈' : '👁️'}
+                </button>
+              </div>
 
               {error && <p style={{ fontSize: 12, color: 'var(--accent-red)', margin: '10px 0 0', textAlign: 'center' }}>{error}</p>}
 
