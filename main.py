@@ -36,8 +36,12 @@ def g(row, i):
 
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
-    sh = gc().open_by_key(SHEET_ID)
-    rows = sh.worksheet("Action Tracker").get_all_records()
+    try:
+        sh = gc().open_by_key(SHEET_ID)
+        rows = sh.worksheet("Action Tracker").get_all_records()
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"actions sheet: {e}")
+        return {}
     DONE = {"Done", "Closed"}
     filt = status.lower().strip()
     if filt == "done":
@@ -63,7 +67,11 @@ def get_actions(status: str = "open"):
 
 @app.get("/api/members")
 def get_members():
-    data = gc().open_by_key(SHEET_ID).worksheet("KIMFAM exco").get_all_values()
+    try:
+        data = gc().open_by_key(SHEET_ID).worksheet("KIMFAM exco").get_all_values()
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"members sheet: {e}")
+        return {"as_of": "", "members": []}
     header = data[0][1] if data and data[0] else ""
     import re as _re
     dm = _re.search(r"([0-9]{1,2})[-/]([0-9]{1,2})[-/]([0-9]{4})", header)

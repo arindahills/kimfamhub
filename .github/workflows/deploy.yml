@@ -77,6 +77,7 @@ jobs:
           rsync -az --delete \
             --exclude='.env' --exclude='venv/' --exclude='__pycache__/' \
             --exclude='*.db' --exclude='.git/' --exclude='data/' \
+            --exclude='service-account.json' --exclude='.service-account.json' \
             --exclude='static/avatars/' --exclude='static/receipts/' \
             --exclude='static/expenditures/' --exclude='static/project-pics/' \
             --exclude='docs/minutes/' --exclude='docs/financial/' \
@@ -273,6 +274,7 @@ jobs:
           rsync -az \
             --exclude='.env' --exclude='venv/' --exclude='__pycache__/' \
             --exclude='*.db' --exclude='.git/' --exclude='data/' \
+            --exclude='service-account.json' --exclude='.service-account.json' \
             --exclude='static/avatars/' --exclude='static/receipts/' \
             --exclude='static/expenditures/' --exclude='static/project-pics/' \
             --exclude='docs/minutes/' --exclude='docs/financial/' \
@@ -329,6 +331,7 @@ jobs:
           rsync -az --delete \
             --exclude='.env' --exclude='venv/' --exclude='__pycache__/' \
             --exclude='*.db' --exclude='.git/' --exclude='data/' \
+            --exclude='service-account.json' --exclude='.service-account.json' \
             --exclude='static/avatars/' --exclude='static/receipts/' \
             --exclude='static/expenditures/' --exclude='static/project-pics/' \
             --exclude='docs/minutes/' --exclude='docs/financial/' \

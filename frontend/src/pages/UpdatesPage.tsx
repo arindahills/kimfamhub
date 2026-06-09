@@ -48,7 +48,7 @@ function UpdateCard({ u, isAdmin, onDelete }: { u: Update; isAdmin: boolean; onD
       <div className="flex justify-between items-start mb-2">
         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
           style={{ color: col, background: col + '22' }}>
-          {u.project_name.toUpperCase()}
+          {(u.project_name || '').toUpperCase()}
         </span>
         <div className="flex items-center gap-2">
           <span className="text-[11px]" style={{ color: '#475569' }}>{timeAgo(u.created_at)}</span>
