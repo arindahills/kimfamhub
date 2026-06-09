@@ -326,7 +326,13 @@ def _react_index() -> HTMLResponse:
     react_index = os.path.join(_DIST, "index.html")
     if os.path.isfile(react_index):
         return HTMLResponse(open(react_index).read())
-    return HTMLResponse(open("/var/www/kimfamhub/index.html").read())
+    # Root index.html is always kept in sync with dist/index.html by deploy.yml
+    root_index = os.path.join(os.path.dirname(_DIST), "..", "index.html")
+    root_index = os.path.normpath(root_index)
+    if os.path.isfile(root_index):
+        return HTMLResponse(open(root_index).read())
+    from fastapi import HTTPException
+    raise HTTPException(status_code=503, detail="App not deployed yet — dist/index.html missing")
 
 @app.get("/", response_class=HTMLResponse)
 def index():

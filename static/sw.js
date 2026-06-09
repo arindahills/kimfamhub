@@ -1,7 +1,7 @@
-const CACHE = "kimfamhub-v117";
-const STATIC_ASSETS = ["/static/logo.png", "/static/manifest.json"];
+// v200 — React migration. Wipes ALL old caches (v1-v117 Jinja2 era).
+const CACHE = "kimfamhub-v200";
+const STATIC_ASSETS = ["/static/manifest.json", "/static/icon-192.png", "/static/icon-512.png"];
 
-// On install: cache only true static assets, skip the HTML
 self.addEventListener("install", e => {
   e.waitUntil(
     caches.open(CACHE).then(c => c.addAll(STATIC_ASSETS))
@@ -9,41 +9,35 @@ self.addEventListener("install", e => {
   self.skipWaiting();
 });
 
-// On activate: delete old caches immediately
 self.addEventListener("activate", e => {
+  // Delete every old cache (the v1-v117 Jinja2 era caches included)
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Fetch strategy:
-// - API calls: always network, never cache
-// - HTML (/ index): always network-first, fall back to cache only if offline
-// - Static assets (logo, manifest): cache-first
 self.addEventListener("fetch", e => {
   const url = e.request.url;
 
-  if (url.includes("/api/")) return; // let API calls through unmodified
+  // Never cache API or SSE streams
+  if (url.includes("/api/") || url.includes("/assets/")) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
 
+  // Cache-first for static icons/manifest (long-lived, content-stable)
   if (url.includes("/static/")) {
-    // Cache-first for logo and manifest
     e.respondWith(
       caches.match(e.request).then(cached => cached || fetch(e.request))
     );
     return;
   }
 
-  // Network-first for everything else (the HTML page)
+  // Network-first for HTML shell — always get fresh React bundle references
   e.respondWith(
     fetch(e.request)
-      .then(res => {
-        const clone = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, clone));
-        return res;
-      })
       .catch(() => caches.match(e.request))
   );
 });

@@ -84,11 +84,13 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$STAGING_DIR/
 
-      - name: Promote React index to staging root
+      - name: Promote React index + assets to staging root
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             $HETZNER_USER@$HETZNER_HOST \
-            "cp $STAGING_DIR/frontend/dist/index.html $STAGING_DIR/index.html"
+            "cp $STAGING_DIR/frontend/dist/index.html $STAGING_DIR/index.html && \
+             cp $STAGING_DIR/frontend/dist/favicon.svg $STAGING_DIR/favicon.svg 2>/dev/null || true && \
+             cp $STAGING_DIR/frontend/dist/icons.svg $STAGING_DIR/icons.svg 2>/dev/null || true"
 
       - name: Restart staging service
         run: |
@@ -334,11 +336,13 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$PROD_DIR/
 
-      - name: Promote React index to root
+      - name: Promote React index + assets to prod root
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             $HETZNER_USER@$HETZNER_HOST \
-            "cp $PROD_DIR/frontend/dist/index.html $PROD_DIR/index.html"
+            "cp $PROD_DIR/frontend/dist/index.html $PROD_DIR/index.html && \
+             cp $PROD_DIR/frontend/dist/favicon.svg $PROD_DIR/favicon.svg 2>/dev/null || true && \
+             cp $PROD_DIR/frontend/dist/icons.svg $PROD_DIR/icons.svg 2>/dev/null || true"
 
       - name: Restart prod service
         run: |
