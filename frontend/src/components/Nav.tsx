@@ -27,6 +27,9 @@ const TABS = [
   { to: '/ask',       icon: '🤖', key: 'ask'      },
 ]
 
+// 5 tabs pinned to the mobile bottom bar — chosen based on usage data
+const BOTTOM_TABS = ['/', '/finances', '/updates', '/projects', '/ask']
+
 export default function Nav() {
   const { t } = useTranslation()
   const { user } = useAuth()
@@ -87,30 +90,11 @@ export default function Nav() {
     )
   }
 
-  // Mobile: hamburger button + slide-in drawer
+  // Mobile: 5-icon bottom bar + hamburger → full drawer
+  const bottomTabs = tabs.filter(tab => BOTTOM_TABS.includes(tab.to))
+
   return (
     <>
-      {/* Hamburger button — top left */}
-      <button
-        onClick={() => setDrawerOpen(o => !o)}
-        style={{
-          position: 'fixed',
-          top: 10,
-          left: 12,
-          zIndex: 60,
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          padding: 4,
-          color: 'var(--text-primary)',
-          fontSize: 22,
-          lineHeight: 1,
-        }}
-        aria-label="Open menu"
-      >
-        {drawerOpen ? '✕' : '☰'}
-      </button>
-
       {/* Backdrop */}
       {drawerOpen && (
         <div
@@ -122,12 +106,12 @@ export default function Nav() {
         />
       )}
 
-      {/* Drawer */}
+      {/* Full drawer — all tabs */}
       <nav
         style={{
           position: 'fixed',
           top: 0, left: 0, bottom: 0,
-          width: 240,
+          width: 260,
           zIndex: 56,
           display: 'flex',
           flexDirection: 'column',
@@ -135,14 +119,20 @@ export default function Nav() {
           borderRight: '1px solid var(--border)',
           transform: drawerOpen ? 'translateX(0)' : 'translateX(-100%)',
           transition: 'transform 0.22s ease',
-          paddingTop: 56,
-          paddingBottom: 16,
+          paddingTop: 16,
+          paddingBottom: 80,
           overflowY: 'auto',
         }}
       >
-        <div style={{ padding: '0 16px', marginBottom: 20 }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
-          <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
+        <div style={{ padding: '0 16px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
+            <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
+          </div>
+          <button
+            onClick={() => setDrawerOpen(false)}
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 20, padding: 4 }}
+          >✕</button>
         </div>
         {tabs.map(tab => (
           <NavLink
@@ -165,6 +155,60 @@ export default function Nav() {
             <span>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
+      </nav>
+
+      {/* Bottom tab bar — 5 pinned tabs + hamburger */}
+      <nav
+        style={{
+          position: 'fixed',
+          bottom: 0, left: 0, right: 0,
+          height: 60,
+          zIndex: 50,
+          display: 'flex',
+          alignItems: 'stretch',
+          background: 'var(--bg-nav)',
+          borderTop: '1px solid var(--border)',
+        }}
+      >
+        {bottomTabs.map(tab => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            end={tab.to === '/'}
+            style={({ isActive }) => ({
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 3,
+              textDecoration: 'none',
+              color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+            })}
+          >
+            <span style={{ fontSize: 20, lineHeight: 1 }}>{tab.icon}</span>
+            <span style={{ fontSize: 10 }}>{t(`nav.${tab.key}`)}</span>
+          </NavLink>
+        ))}
+        {/* Hamburger — opens full drawer */}
+        <button
+          onClick={() => setDrawerOpen(true)}
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 3,
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <span style={{ fontSize: 20, lineHeight: 1 }}>☰</span>
+          <span style={{ fontSize: 10 }}>More</span>
+        </button>
       </nav>
     </>
   )

@@ -68,7 +68,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             flex: 1,
             overflowY: 'auto',
             padding: 16,
-            paddingBottom: 16,
+            paddingBottom: isDesktop ? 16 : 76,
           }}
         >
           {children}
