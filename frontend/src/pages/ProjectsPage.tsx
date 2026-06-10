@@ -141,8 +141,8 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const th = categoryTheme(p.category)
 
   return (
-    <div className="mb-4 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 4px 20px rgba(0,0,0,.28)' }}>
-      <div className="p-[18px]">
+    <div className="mb-5 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 4px 20px rgba(0,0,0,.28)' }}>
+      <div className="p-5">
         {/* Header */}
         <div className="mb-3.5 flex items-start gap-3">
           <div
@@ -200,7 +200,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
         )}
 
         {/* Uniform action buttons */}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-3 gap-2.5">
           <button className={outlineBtn} disabled={!hasAnalysis} onClick={() => setAnalysisOpen(true)}><BarChart3 size={15} /> Analysis</button>
           <button className={outlineBtn} disabled={!hasAudit} onClick={() => setAuditOpen(true)}><ClipboardList size={15} /> Audit</button>
           <button className={outlineBtn} onClick={() => setShowDetails(s => !s)}><ChevronDown size={15} className={cn('transition-transform', showDetails && 'rotate-180')} /> {showDetails ? 'Hide' : 'Details'}</button>
@@ -235,17 +235,17 @@ export default function ProjectsPage() {
   })
 
   const openPortfolio = (tab: string) => { setPortfolioTab(tab); setPortfolioOpen(true) }
-  const pill = 'flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] font-semibold transition-colors'
+  const pill = 'flex items-center gap-2 rounded-full px-4 py-2.5 text-[13px] font-semibold transition-colors'
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-3xl pt-1">
       <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">Our Projects</h1>
-      <p className="mt-0.5 text-xs text-[var(--muted-2)]">{projects.length} ventures across the portfolio</p>
+      <p className="mt-1 text-xs text-[var(--muted-2)]">{projects.length} ventures across the portfolio</p>
 
-      <div className="mb-5 mt-3 flex flex-wrap gap-2.5">
+      <div className="mb-7 mt-5 flex flex-wrap gap-3">
         <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)]')}><SlidersHorizontal size={14} /> All</span>
-        <button onClick={() => openPortfolio('ranking')} className={cn(pill, 'bg-transparent text-[var(--muted)] hover:bg-[var(--surface)]')}><LayoutGrid size={14} /> Portfolio AI</button>
-        <button onClick={() => openPortfolio('ventures')} className={cn(pill, 'bg-transparent text-[var(--muted)] hover:bg-[var(--surface)]')}><Tag size={14} /> New Ventures</button>
+        <button onClick={() => openPortfolio('ranking')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><LayoutGrid size={14} /> Portfolio AI</button>
+        <button onClick={() => openPortfolio('ventures')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><Tag size={14} /> New Ventures</button>
       </div>
 
       {isLoading && <p className="py-6 text-center text-xs text-[var(--muted)]">Loading projects…</p>}
