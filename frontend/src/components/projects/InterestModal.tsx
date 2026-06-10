@@ -146,8 +146,10 @@ interface Interest {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  confirmed: '#86efac', rejected: '#f87171', awaiting_chairman: '#818cf8', pending: '#fbbf24',
+  confirmed: '#34d399', rejected: '#f87171', awaiting_chairman: '#818cf8', pending: '#fbbf24',
 }
+const titleCase = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+const initials = (name: string) => name.trim().slice(0, 1).toUpperCase()
 
 export function TeamInterest({ projectId }: { projectId: string }) {
   const { user } = useAuth()
@@ -163,24 +165,38 @@ export function TeamInterest({ projectId }: { projectId: string }) {
   if (!visible.length) return null
 
   return (
-    <div className="mt-2 rounded-[8px] border border-[var(--info-soft)] bg-[var(--card-inset)] p-2.5">
-      <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-[#60a5fa]">Team Interest</div>
-      {visible.map(r => {
-        const color = STATUS_COLOR[r.status] ?? '#64748b'
-        const roleLabel = r.preferred_role === 'project_lead' ? 'Project Lead' : 'Team Member'
-        const modes = r.contribution_modes?.length ? ' · ' + r.contribution_modes.join(', ') : ''
-        const isMe = r.member_name === me
-        return (
-          <div key={r.id} className="mb-1 flex flex-wrap items-center gap-1.5 text-xs text-[#cbd5e1]">
-            <span style={{ color, fontSize: 9 }}>●</span>
-            <span>{isMe ? <b>You</b> : r.member_name}{r.family_name ? <span className="text-[var(--muted-2)]"> ({r.family_name})</span> : null}</span>
-            <span className="text-[var(--muted-2)]">{roleLabel}{modes}</span>
-            {r.status !== 'confirmed' && (
-              <span className="rounded-full px-1.5 py-px text-[10px]" style={{ color, background: `${color}22` }}>{r.status}</span>
-            )}
-          </div>
-        )
-      })}
+    <div className="mt-2.5 overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--card-inset)]">
+      <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.08em] text-[#60a5fa]">
+        Team Interest
+        <span className="ml-auto rounded-full bg-[var(--surface)] px-1.5 py-px text-[10px] font-semibold text-[var(--muted-2)]">{visible.length}</span>
+      </div>
+      <div className="divide-y divide-[var(--border-soft)]">
+        {visible.map(r => {
+          const color = STATUS_COLOR[r.status] ?? '#64748b'
+          const roleLabel = r.preferred_role === 'project_lead' ? 'Project Lead' : 'Team Member'
+          const modes = r.contribution_modes?.length ? r.contribution_modes.join(', ') : ''
+          const isMe = r.member_name === me
+          return (
+            <div key={r.id} className="flex items-center gap-2.5 px-3 py-2">
+              <div
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+                style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}
+              >{initials(r.member_name)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-[13px] leading-tight">
+                  <span className="font-semibold text-[var(--foreground)]">{isMe ? 'You' : r.member_name}</span>
+                  {r.family_name && <span className="text-[11px] text-[var(--muted-2)]">{r.family_name}</span>}
+                </div>
+                <div className="truncate text-[11px] text-[var(--muted-2)]">{roleLabel}{modes ? ` · ${modes}` : ''}</div>
+              </div>
+              <span
+                className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                style={{ color, background: `${color}1f`, border: `1px solid ${color}3a` }}
+              >{titleCase(r.status)}</span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
