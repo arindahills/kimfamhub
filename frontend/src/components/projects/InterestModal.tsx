@@ -168,20 +168,20 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
   const visible = interests.filter(r => r.status !== 'rejected' || r.member_name === me)
 
   return (
-    <div className="mt-3 rounded-[12px] bg-[var(--card-inset)]">
+    <div className="mt-4 rounded-[12px] border border-[var(--border)] bg-[var(--surface)]">
       <div className="flex items-center gap-2 px-3 py-2.5">
         <button
           onClick={() => visible.length && setOpen(o => !o)}
           className="flex flex-1 items-center gap-1.5 text-left"
           disabled={!visible.length}
         >
-          <ChevronRight size={15} className={cn('text-[var(--muted-2)] transition-transform', open && 'rotate-90')} />
-          <span className="text-[12px] font-semibold text-[var(--muted)]">Team Interest</span>
-          <span className="rounded-full bg-[var(--surface)] px-1.5 text-[11px] font-semibold text-[var(--muted-2)]">{visible.length}</span>
+          <ChevronRight size={16} className={cn('text-[var(--muted)] transition-transform', open && 'rotate-90')} />
+          <span className="text-[13px] font-semibold text-[var(--foreground)]">Team Interest</span>
+          <span className="rounded-full bg-[var(--primary)]/15 px-1.5 text-[11px] font-semibold text-[#93c5fd]">{visible.length}</span>
         </button>
         <button
           onClick={onExpressInterest}
-          className="flex items-center gap-1 rounded-[8px] border border-[var(--border)] px-2.5 py-1 text-[12px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+          className="flex items-center gap-1 rounded-[8px] border border-[var(--border)] bg-[var(--card)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)]"
         >
           <Plus size={13} /> Express Interest
         </button>

@@ -141,10 +141,10 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const th = categoryTheme(p.category)
 
   return (
-    <div className="mb-5 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 4px 20px rgba(0,0,0,.28)' }}>
+    <div className="mb-6 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 6px 24px rgba(0,0,0,.32)' }}>
       <div className="p-5">
         {/* Header */}
-        <div className="mb-3.5 flex items-start gap-3">
+        <div className="mb-4 flex items-start gap-3">
           <div
             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[24px]"
             style={{ background: th.tint, boxShadow: `0 0 16px ${th.glow}` }}
@@ -160,7 +160,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
         </div>
 
         {/* Themed hero metric */}
-        <div className="mb-3.5 flex items-center gap-2.5 rounded-[10px] px-3.5 py-3" style={{ background: `linear-gradient(90deg,${th.from},${th.to})` }}>
+        <div className="mb-4 flex items-center gap-2.5 rounded-[10px] px-3.5 py-3" style={{ background: `linear-gradient(90deg,${th.from},${th.to})` }}>
           <TrendingUp size={16} className="shrink-0" style={{ color: th.bar }} />
           <span className="flex-1 text-[13px] font-bold uppercase tracking-wide" style={{ color: th.text }}>{p.headline}</span>
           <Sparkline color={th.bar} />
@@ -240,7 +240,7 @@ export default function ProjectsPage() {
   return (
     <div className="mx-auto max-w-3xl pt-1">
       <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">Our Projects</h1>
-      <p className="mt-1 text-xs text-[var(--muted-2)]">{projects.length} ventures across the portfolio</p>
+      <p className="mt-1 text-[13px] text-[var(--muted)]">{projects.length} ventures across the portfolio</p>
 
       <div className="mb-7 mt-5 flex flex-wrap gap-3.5">
         <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/5')}><SlidersHorizontal size={14} /> All</span>

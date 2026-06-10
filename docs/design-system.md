@@ -83,6 +83,12 @@ a lighter filled `--surface`, inactive are flat/ghost. Small monochrome Lucide i
 emoji icons, as before. Active label/icon = accent; inactive = muted. Colour is intentional here for
 fast recognition.
 
+**App header (top bar)** — restored from the vanilla original: brand on the left (`/static/logo.png`
+32px rounded + "KimFam Hub" bold + "KIM FAM Investment Club" muted), and on the right the
+LanguageSwitcher, the **profile avatar** (`/static/avatars/<lowercased-alnum-name>.jpg`, circular,
+green ring, falls back to the member's initial), and a **power-switch logout** (Lucide `Power` icon,
+not a text button). Sits on `--surface`.
+
 ## Iconography
 
 Two-tier (Rev 2): **Lucide line icons** for in-card *controls* (buttons, toggles, chevrons) — consistent

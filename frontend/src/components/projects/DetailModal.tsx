@@ -1,3 +1,4 @@
+import { type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Inset } from '@/components/ui/card'
@@ -19,17 +20,7 @@ interface ChartData {
 interface Projection {
   revenue_by_year?: Num; profit_by_year?: Num; cumulative_profit?: Num
 }
-interface DetailData {
-  overview?: Record<string, unknown>
-  revenue?: Record<string, unknown>
-  capex?: { initial?: number; sanitation_pending?: number; total_with_sanitation?: number; breakdown?: { item: string; amount: number; note?: string }[] }
-  financial_metrics?: Record<string, unknown>
-  risks?: { risk: string; probability: string; impact: string; note?: string }[]
-  open_issues?: { issue: string; priority: string; amount?: number }[]
-  chart_data?: ChartData
-  projection?: Projection
-  [k: string]: unknown
-}
+type DetailData = Record<string, unknown> & { chart_data?: ChartData; projection?: Projection }
 
 /** Build a chart from whichever shape the endpoint returned. */
 function buildChart(d: DetailData): { labels: string[]; series: Series[]; breakEvenIndex?: number } | null {
@@ -58,21 +49,21 @@ function buildChart(d: DetailData): { labels: string[]; series: Series[]; breakE
 }
 
 const PROB_TONE: Record<string, BadgeProps['tone']> = { High: 'danger', Medium: 'warning', Low: 'success' }
-
-function prettyKey(k: string) {
-  return k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-}
+const isScalar = (v: unknown) => v == null || typeof v !== 'object'
+const prettyKey = (k: string) => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 function prettyVal(v: unknown): string {
-  if (v == null) return '—'
+  if (v == null || v === '') return '—'
   if (typeof v === 'boolean') return v ? 'Yes' : 'No'
-  if (typeof v === 'number') return v >= 100000 ? ugx(v) : v.toLocaleString()
+  if (typeof v === 'number') return Math.abs(v) >= 100000 ? ugx(v) : v.toLocaleString()
   return String(v)
 }
 
 function KeyVals({ obj }: { obj: Record<string, unknown> }) {
+  const rows = Object.entries(obj).filter(([, v]) => isScalar(v))
+  if (!rows.length) return null
   return (
     <div className="space-y-2.5">
-      {Object.entries(obj).map(([k, v]) => (
+      {rows.map(([k, v]) => (
         <div key={k} className="flex justify-between gap-4 text-xs leading-snug">
           <span className="shrink-0 text-[var(--muted-2)]">{prettyKey(k)}</span>
           <span className="text-right text-[#cbd5e1]">{prettyVal(v)}</span>
@@ -82,12 +73,60 @@ function KeyVals({ obj }: { obj: Record<string, unknown> }) {
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/** Recursively render any JSON value from a /detail endpoint. */
+function renderValue(v: unknown): ReactNode {
+  if (Array.isArray(v)) {
+    if (v.length && typeof v[0] === 'object' && v[0] !== null) {
+      return <div className="space-y-1.5">{v.map((o, i) => <Inset key={i} className="p-2.5"><KeyVals obj={o as Record<string, unknown>} /></Inset>)}</div>
+    }
+    return <div className="text-xs leading-relaxed text-[#cbd5e1]">{v.map(x => String(x)).join(', ') || '—'}</div>
+  }
+  if (v && typeof v === 'object') return <ObjBlock obj={v as Record<string, unknown>} />
+  return <div className="text-xs text-[#cbd5e1]">{prettyVal(v)}</div>
+}
+
+function ObjBlock({ obj }: { obj: Record<string, unknown> }) {
+  const scalars = Object.fromEntries(Object.entries(obj).filter(([, v]) => isScalar(v)))
+  const complex = Object.entries(obj).filter(([, v]) => !isScalar(v))
+  return (
+    <>
+      {Object.keys(scalars).length > 0 && <Inset className="p-3"><KeyVals obj={scalars} /></Inset>}
+      {complex.map(([k, v]) => (
+        <div key={k} className="mt-2">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-2)]">{prettyKey(k)}</div>
+          {renderValue(v)}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="mb-3">
       <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-[var(--muted)]">{title}</div>
       {children}
     </div>
+  )
+}
+
+/* Nicely-styled special sections (kept from before) */
+function RisksSection({ risks }: { risks: { risk: string; probability: string; impact: string; note?: string }[] }) {
+  return (
+    <Section title="Risks">
+      {risks.map((r, i) => (
+        <Inset key={i} className="mb-1.5 p-2.5">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-[var(--foreground)]">{r.risk}</span>
+            <div className="flex shrink-0 gap-1">
+              <Badge tone={PROB_TONE[r.probability] ?? 'neutral'}>P: {r.probability}</Badge>
+              <Badge tone={PROB_TONE[r.impact] ?? 'neutral'}>I: {r.impact}</Badge>
+            </div>
+          </div>
+          {r.note && <p className="text-[11px] leading-relaxed text-[var(--muted)]">{r.note}</p>}
+        </Inset>
+      ))}
+    </Section>
   )
 }
 
@@ -103,6 +142,8 @@ export function DetailModal({
     staleTime: 300_000,
   })
 
+  const chart = data ? buildChart(data) : null
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title={`${icon} ${projectName} Analysis`} subtitle="Live operational and financial breakdown">
@@ -110,69 +151,18 @@ export function DetailModal({
           <LoadingRow label="Loading analysis…" />
         ) : (
           <div>
-            {(() => {
-              const c = buildChart(data)
-              return c ? (
-                <Section title="Projection">
-                  <Inset className="p-3">
-                    <MiniChart labels={c.labels} series={c.series} breakEvenIndex={c.breakEvenIndex} />
-                  </Inset>
-                </Section>
-              ) : null
-            })()}
-            {data.overview && <Section title="Overview"><Inset className="p-3"><KeyVals obj={data.overview} /></Inset></Section>}
-            {data.revenue && <Section title="Revenue"><Inset className="p-3"><KeyVals obj={data.revenue} /></Inset></Section>}
-            {data.financial_metrics && <Section title="Financial Metrics"><Inset className="p-3"><KeyVals obj={data.financial_metrics} /></Inset></Section>}
-
-            {data.capex && (
-              <Section title="Capital Expenditure">
-                <Inset className="p-3">
-                  {data.capex.initial != null && (
-                    <div className="mb-2 flex justify-between text-xs">
-                      <span className="text-[var(--muted-2)]">Initial</span>
-                      <span className="font-semibold text-[var(--foreground)]">{ugx(data.capex.initial)}</span>
-                    </div>
-                  )}
-                  {(data.capex.breakdown ?? []).map((b, i) => (
-                    <div key={i} className="flex justify-between gap-3 border-t border-[var(--border-soft)] py-1.5 text-xs">
-                      <span className="text-[var(--muted)]">{b.item}{b.note ? <span className="text-[var(--muted-2)]"> · {b.note}</span> : null}</span>
-                      <span className="shrink-0 text-[#cbd5e1]">{b.amount ? ugx(b.amount) : '—'}</span>
-                    </div>
-                  ))}
-                </Inset>
+            {chart && (
+              <Section title="Projection">
+                <Inset className="p-3"><MiniChart labels={chart.labels} series={chart.series} breakEvenIndex={chart.breakEvenIndex} /></Inset>
               </Section>
             )}
-
-            {data.risks && data.risks.length > 0 && (
-              <Section title="Risks">
-                {data.risks.map((r, i) => (
-                  <Inset key={i} className="mb-1.5 p-2.5">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-[var(--foreground)]">{r.risk}</span>
-                      <div className="flex shrink-0 gap-1">
-                        <Badge tone={PROB_TONE[r.probability] ?? 'neutral'}>P: {r.probability}</Badge>
-                        <Badge tone={PROB_TONE[r.impact] ?? 'neutral'}>I: {r.impact}</Badge>
-                      </div>
-                    </div>
-                    {r.note && <p className="text-[11px] leading-relaxed text-[var(--muted)]">{r.note}</p>}
-                  </Inset>
-                ))}
-              </Section>
-            )}
-
-            {data.open_issues && data.open_issues.length > 0 && (
-              <Section title="Open Issues">
-                {data.open_issues.map((o, i) => (
-                  <Inset key={i} className="mb-1.5 flex items-center justify-between gap-2 p-2.5">
-                    <span className="text-xs text-[#cbd5e1]">{o.issue}</span>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {o.amount ? <span className="text-[11px] text-[var(--muted)]">{ugx(o.amount)}</span> : null}
-                      <Badge tone={PROB_TONE[o.priority] ?? 'neutral'}>{o.priority}</Badge>
-                    </div>
-                  </Inset>
-                ))}
-              </Section>
-            )}
+            {Object.entries(data).map(([key, value]) => {
+              if (key === 'chart_data' || key === 'projection' || value == null) return null
+              if (key === 'risks' && Array.isArray(value) && value.length) {
+                return <RisksSection key={key} risks={value as { risk: string; probability: string; impact: string; note?: string }[]} />
+              }
+              return <Section key={key} title={prettyKey(key)}>{renderValue(value)}</Section>
+            })}
           </div>
         )}
       </DialogContent>
