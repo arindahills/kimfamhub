@@ -766,6 +766,93 @@ function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── My Submissions — member's own payment history ──────────────────────────
+// API: GET /api/contributions/my-submissions
+// Shows last 8 payments, status badges, rejected reason + Resubmit button.
+interface Submission {
+  id: number; period_month: string; amount_ugx: number; payment_reference: string | null
+  status: 'pending' | 'confirmed' | 'rejected'; confirmation_note: string | null
+  submitted_at: string; receipt_url: string | null; submitted_by_user_id: string | null
+}
+interface MySubsResponse { family_id: number | null; family_name: string | null; payments: Submission[] }
+
+function MySubmissions() {
+  const qc = useQueryClient()
+  const { data } = useQuery<MySubsResponse>({
+    queryKey: ['my-submissions'],
+    queryFn: () => fetch('/api/contributions/my-submissions', { credentials: 'include' }).then(r => r.json()),
+    staleTime: 30_000,
+  })
+  const payments = data?.payments ?? []
+  const actionableRejected = payments.filter((p, i) =>
+    p.status === 'rejected' && !payments.slice(0, i).some(q => q.status !== 'rejected')
+  )
+
+  if (!data?.family_id || payments.length === 0) return null
+
+  const StatusBadge = ({ status }: { status: string }) => {
+    const map: Record<string, [string, string]> = {
+      confirmed: ['#14532d', '#4ade80'],
+      rejected:  ['#450a0a', '#fca5a5'],
+      pending:   ['#2d1b69', '#c4b5fd'],
+    }
+    const [bg, color] = map[status] ?? ['#1e293b', '#94a3b8']
+    return <span style={{ background: bg, color, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{status}</span>
+  }
+
+  return (
+    <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid #334155' }}>
+      <h3 className="font-semibold mb-3 text-sm" style={{ color: '#f1f5f9' }}>
+        My Submissions — {data.family_name ? 'The ' + data.family_name.charAt(0) + data.family_name.slice(1).toLowerCase() : ''}
+      </h3>
+
+      {actionableRejected.length > 0 && (
+        <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: '#450a0a', color: '#fca5a5' }}>
+          ⚠ {actionableRejected.length} payment{actionableRejected.length > 1 ? 's' : ''} rejected. Review the reason and resubmit.
+        </div>
+      )}
+
+      <div className="space-y-0">
+        {payments.slice(0, 8).map((p, idx) => {
+          const isActionableReject = p.status === 'rejected' && !payments.slice(0, idx).some(q => q.status !== 'rejected')
+          return (
+            <div key={p.id}
+              style={{
+                padding: '10px 0',
+                borderBottom: idx < Math.min(payments.length, 8) - 1 ? '1px solid #1e293b' : 'none',
+                borderLeft: isActionableReject ? '3px solid #f87171' : 'none',
+                paddingLeft: isActionableReject ? 10 : 0,
+                display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontSize: 13, color: '#f1f5f9' }}>UGX {Math.abs(p.amount_ugx).toLocaleString()}</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  {p.submitted_at?.slice(0, 10)}{p.payment_reference ? ` · Ref: ${p.payment_reference}` : ''}
+                </div>
+                {p.confirmation_note && (
+                  <div style={{ marginTop: 4, padding: '5px 8px', background: '#450a0a', borderLeft: '3px solid #f87171', borderRadius: '0 6px 6px 0', fontSize: 11, color: '#fca5a5' }}>
+                    Reason: {p.confirmation_note}
+                  </div>
+                )}
+                {isActionableReject && (
+                  <button
+                    onClick={() => qc.invalidateQueries({ queryKey: ['my-submissions'] })}
+                    style={{ marginTop: 8, background: '#166534', color: '#4ade80', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Resubmit →
+                  </button>
+                )}
+              </div>
+              <StatusBadge status={p.status} />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // POST /api/contributions/admin/bank-balance  { balance_ugx, note }
 // Only admins (role=admin). Records the physical ABSA balance Hellen sees in the app.
 function UpdateBankBalanceModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
@@ -1036,6 +1123,9 @@ export default function FinancesPage() {
           {t('finances.submitPayment')}
         </button>
       </div>
+
+      {/* My Submissions — member's own payment history */}
+      <MySubmissions />
 
       {/* Family ledger */}
       {ledger && ledger.length > 0 && (
