@@ -97,6 +97,34 @@ function ReconciliationBadge({ confirmed, computed }: { confirmed: number; compu
   )
 }
 
+// Family head avatar key map (for card avatar display)
+const FAMILY_HEAD_AVATAR: Record<string, string> = {
+  ARINDAS:    'hillaryarinda',
+  ARUNGAS:    'violaarunga',
+  KIKANGIS:   'israelkikangi',
+  TURAMYES:   'maxturamye',
+  ARIHOS:     'solomonariho',
+  KOFUNAS:    'hellenkofuna',
+  TUHIMBISES: 'alextuhimbise',
+}
+
+function FamilyAvatar({ familyName, size = 36 }: { familyName: string; size?: number }) {
+  const [err, setErr] = useState(false)
+  const key = FAMILY_HEAD_AVATAR[familyName.toUpperCase()]
+  const initial = familyName.charAt(0).toUpperCase()
+  if (err || !key) {
+    return (
+      <div style={{ width: size, height: size, borderRadius: '50%', background: '#1e3a5f', border: '2px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.38, fontWeight: 700, color: '#64748b', flexShrink: 0 }}>
+        {initial}
+      </div>
+    )
+  }
+  return (
+    <img src={`/static/avatars/${key}.jpg`} onError={() => setErr(true)} alt={familyName}
+      style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '2px solid #334155', flexShrink: 0 }} />
+  )
+}
+
 // Toaster messages per balance status — personalized but deterministic
 function toastMessage(familyLabel: string, curBal: number, rate: number, outstanding: number): string {
   const name = familyLabel  // e.g. "The Arindas"
@@ -182,14 +210,19 @@ function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; 
         }}
         onClick={hasProfileKey ? () => setProfileOpen(true) : undefined}
       >
-        <div className="flex justify-between items-baseline mb-0.5">
-          <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>
-            {f.family_name}
-            {isMyFamily && <span style={{ marginLeft: 5, fontSize: 10, color: borderCol }}>● you</span>}
-          </span>
-          <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
+        <div className="flex items-center gap-2 mb-2">
+          <FamilyAvatar familyName={f.family_name} size={38} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="flex justify-between items-baseline">
+              <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>
+                {f.family_name}
+                {isMyFamily && <span style={{ marginLeft: 5, fontSize: 10, color: borderCol }}>● you</span>}
+              </span>
+              <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
+            </div>
+            <div className="text-[10px]" style={{ color: '#475569' }}>{f.composition}</div>
+          </div>
         </div>
-        <div className="text-[11px] mb-2" style={{ color: '#475569' }}>{f.composition}</div>
         <div className="flex justify-between text-xs mb-1">
           <span style={{ color: 'var(--text-muted)' }}>Monthly</span>
           {mStatus}
