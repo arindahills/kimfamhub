@@ -2,6 +2,38 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
+// Inline minutes viewer — uses /docs/minutes/{file}/view which renders DOCX → HTML
+function MinutesModal({ url, title, onClose }: { url: string; title: string; onClose: () => void }) {
+  // Build view URL: replace /docs/.../file with /docs/.../file/view
+  const viewUrl = url.endsWith('/view') ? url : `${url}/view`
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      {/* header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#0d1829', borderBottom: '1px solid #1e293b', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>{title}</div>
+          <div style={{ fontSize: 11, color: '#475569' }}>Meeting Minutes</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a href={url} download style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, background: '#1e3a5f', color: '#93c5fd', textDecoration: 'none' }}>
+            ↓ Download
+          </a>
+          <button onClick={onClose} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', color: '#94a3b8', fontSize: 16 }}>✕</button>
+        </div>
+      </div>
+      {/* iframe — the view endpoint renders DOCX as styled HTML */}
+      <iframe
+        src={viewUrl}
+        style={{ flex: 1, border: 'none', background: '#fff' }}
+        title={title}
+      />
+    </div>
+  )
+}
+
 interface Meeting {
   id: number
   meeting_number: string
@@ -39,8 +71,10 @@ function Collapsible({ title, body }: { title: string; body: string | null }) {
 
 function MeetingCard({ m }: { m: Meeting }) {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
+  const [viewMinutes, setViewMinutes] = useState(false)
 
   return (
+    <>
     <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
       <div className="flex justify-between items-start mb-2">
         <div>
@@ -52,11 +86,19 @@ function MeetingCard({ m }: { m: Meeting }) {
           </div>
         </div>
         {m.minutes_url && (
-          <a href={m.minutes_url} target="_blank" rel="noreferrer"
-            className="text-[11px] px-2 py-1 rounded-lg"
-            style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #1e40af' }}>
-            Minutes ↗
-          </a>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => setViewMinutes(true)}
+              className="text-[11px] px-2 py-1 rounded-lg"
+              style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #1e40af', cursor: 'pointer' }}>
+              📄 Read
+            </button>
+            <a href={m.minutes_url} download
+              className="text-[11px] px-2 py-1 rounded-lg"
+              style={{ background: '#1e293b', color: '#64748b', border: '1px solid #334155', textDecoration: 'none' }}>
+              ↓
+            </a>
+          </div>
         )}
       </div>
 
@@ -90,6 +132,15 @@ function MeetingCard({ m }: { m: Meeting }) {
         </div>
       )}
     </div>
+
+    {viewMinutes && m.minutes_url && (
+      <MinutesModal
+        url={m.minutes_url}
+        title={`KIM ${m.meeting_number} — ${m.meeting_date}`}
+        onClose={() => setViewMinutes(false)}
+      />
+    )}
+    </>
   )
 }
 
