@@ -7,6 +7,7 @@ import { LoadingRow } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { AuditModal, AUDITABLE } from '@/components/projects/AuditModal'
 import { WashingBayIncome } from '@/components/projects/WashingBayIncome'
+import { PortfolioModal } from '@/components/projects/PortfolioModal'
 
 interface ProjectData { label: string; value: string }
 interface ProjectUpdate { date: string; author: string; text: string; images: string[]; videos: string[] }
@@ -121,6 +122,8 @@ export default function ProjectsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-3">
+      <PortfolioModal />
+
       <div className="flex flex-wrap gap-1.5">
         {CATEGORIES.map(c => {
           const active = cat === c
