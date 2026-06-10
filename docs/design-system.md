@@ -145,3 +145,8 @@ What did NOT change: canvas `#121824` / card `#1E293B`, no neon borders, Inter t
 - Camera-crop images in compressed/uneven aspect ratios.
 - Colour on *card borders* or as neon outlines (colour belongs on icons, glows, and themed metric
   panels only — never as a loud structural border).
+- **NEVER add an unlayered global reset like `* { margin: 0; padding: 0 }` in `index.css`.** Tailwind
+  v4 puts utilities in a cascade *layer*; an unlayered universal rule beats every `mb-*`/`p-*`/`space-*`
+  utility regardless of specificity, silently zeroing ALL margins and padding app-wide. This caused
+  hours of "cards don't separate / content is cramped" debugging. Tailwind Preflight already resets
+  correctly inside its layer. Keep only `box-sizing: border-box` if anything.

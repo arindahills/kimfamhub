@@ -5,16 +5,18 @@
    Dark slate + green palette, carried over from the original KimFam Hub.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
-  --background: #121824;
-  --surface: #1a2230;
-  --surface-2: #161e2b;
-  --card: #1e293b;
-  --card-inset: #161e2b;
+  /* Keep the canvas deep, but lift cards clearly above it so each card reads as
+     a distinct island. Subtle shade steps were invisible on real OLED phones. */
+  --background: #0e1320;
+  --surface: #1b2740;
+  --surface-2: #161f33;
+  --card: #25324c;
+  --card-inset: #1a2236;
   --foreground: #f1f5f9;
   --muted: #94a3b8;
   --muted-2: #64748b;
-  --border: #27303f;
-  --border-soft: #222b39;
+  --border: #394a6a;
+  --border-soft: #2c3a55;
 
   --primary: #3b82f6;
   --primary-fg: #ffffff;
@@ -68,10 +70,12 @@
   --radius-lg: var(--radius-lg);
 }
 
+/* NOTE: do NOT add `margin:0; padding:0` here. Tailwind v4 puts utilities in a
+   cascade layer, and an unlayered universal reset overrides EVERY mb-*/p-*
+   utility regardless of specificity — which silently zeroed all card spacing.
+   Tailwind Preflight already resets margins correctly inside its layer. */
 *, *::before, *::after {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
 }
 
 html, body, #root {

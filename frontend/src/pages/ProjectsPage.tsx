@@ -142,7 +142,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const th = categoryTheme(p.category)
 
   return (
-    <div className="mb-8 overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--card)]" style={{ boxShadow: '0 10px 30px rgba(0,0,0,.45)' }}>
+    <div className="mb-10 overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--card)]" style={{ boxShadow: '0 12px 32px rgba(0,0,0,.5)' }}>
       <div className="p-5">
         {/* Header */}
         <div className="mb-4 flex items-start gap-3">
@@ -253,10 +253,10 @@ export default function ProjectsPage() {
       <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">Our Projects</h1>
       <p className="mt-1 text-[13px] text-[var(--muted)]">{projects.length} ventures across the portfolio</p>
 
-      <div className="mb-7 mt-5 flex flex-wrap gap-3.5">
-        <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/5')}><SlidersHorizontal size={14} /> All</span>
-        <button onClick={() => openPortfolio('ranking')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><LayoutGrid size={14} /> Portfolio AI</button>
-        <button onClick={() => openPortfolio('ventures')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><Tag size={14} /> New Ventures</button>
+      <div className="mb-10 mt-5 flex flex-wrap gap-3">
+        <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/10')}><SlidersHorizontal size={14} /> All</span>
+        <button onClick={() => openPortfolio('ranking')} className={pill} style={{ background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.45)', color: '#c4b5fd' }}><LayoutGrid size={14} color="#a78bfa" /> Portfolio AI</button>
+        <button onClick={() => openPortfolio('ventures')} className={pill} style={{ background: 'rgba(34,197,94,0.13)', border: '1px solid rgba(34,197,94,0.45)', color: '#86efac' }}><Tag size={14} color="#4ade80" /> New Ventures</button>
       </div>
 
       {isLoading && <p className="py-6 text-center text-xs text-[var(--muted)]">Loading projects…</p>}
