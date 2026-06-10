@@ -1,9 +1,12 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 interface Summary {
   confirmed_bank_balance?: number
 }
+
+const INITIAL_FEED_COUNT = 4
 
 interface ActivityItem {
   ts: string
@@ -39,6 +42,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
 
 export default function HomePage() {
   const { t } = useTranslation()
+  const [feedExpanded, setFeedExpanded] = useState(false)
 
   const { data: summary } = useQuery<Summary>({
     queryKey: ['contributions-summary'],
@@ -52,8 +56,12 @@ export default function HomePage() {
 
   const bal = summary?.confirmed_bank_balance ?? 0
 
+  const allItems = feed ?? []
+  const visibleItems = feedExpanded ? allItems : allItems.slice(0, INITIAL_FEED_COUNT)
+  const hasMore = allItems.length > INITIAL_FEED_COUNT
+
   return (
-    <div className="max-w-2xl md:max-w-5xl mx-auto">
+    <div className="max-w-5xl mx-auto">
       {/* Header */}
       <div className="text-center py-6">
         <div className="text-4xl mb-2">🌾</div>
@@ -117,12 +125,24 @@ export default function HomePage() {
           {t('common.loading')}
         </p>
       )}
-      {!feedLoading && (!feed || feed.length === 0) && (
+      {!feedLoading && allItems.length === 0 && (
         <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
           No recent activity.
         </p>
       )}
-      {feed?.map((item, i) => <ActivityCard key={i} item={item} />)}
+      {visibleItems.map((item, i) => <ActivityCard key={i} item={item} />)}
+
+      {hasMore && (
+        <button
+          onClick={() => setFeedExpanded(e => !e)}
+          className="w-full rounded-xl py-2.5 mt-1 text-xs font-semibold transition-opacity"
+          style={{ background: 'var(--bg-card)', color: 'var(--accent)', border: '1px solid var(--border)' }}
+        >
+          {feedExpanded
+            ? 'Show less'
+            : `Show ${allItems.length - INITIAL_FEED_COUNT} more`}
+        </button>
+      )}
     </div>
   )
 }
