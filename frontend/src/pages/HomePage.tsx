@@ -64,7 +64,7 @@ export default function HomePage() {
     <div className="max-w-5xl mx-auto">
       {/* Header */}
       <div className="text-center py-6">
-        <div className="text-4xl mb-2">🌾</div>
+        <img src="/static/logo.png" alt="KimFam" className="mx-auto mb-2 h-14 w-14 rounded-xl object-cover" />
         <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
           {t('home.tagline')}
         </h1>
@@ -80,15 +80,15 @@ export default function HomePage() {
           <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             {bal ? fmt(bal) : '—'}
           </div>
-          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Bank Balance</div>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{t('home.bankBalance')}</div>
         </div>
         <div className="p-3 text-center" style={{ borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)' }}>
           <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>7</div>
-          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Family Groups</div>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{t('home.familyGroups')}</div>
         </div>
         <div className="p-3 text-center">
           <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>12</div>
-          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>Active Projects</div>
+          <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{t('home.activeProjects')}</div>
         </div>
       </div>
 
@@ -97,18 +97,15 @@ export default function HomePage() {
         className="rounded-xl p-4 mb-4 text-sm leading-relaxed"
         style={{ background: 'var(--bg-card)', color: '#cbd5e1' }}
       >
-        <p className="mb-3">
-          Create a portfolio of investment choices that can transcend generations and contribute
-          to the general economic welfare of all club members.
-        </p>
+        <p className="mb-3">{t('home.clubIntro')}</p>
         <ul className="space-y-1.5">
-          {[
-            ['📈', 'Invest in profitable and quickly marketable ventures'],
-            ['🏦', 'Build a strong investment fund for lucrative opportunities'],
-            ['🌍', 'Build a saving culture among all club members'],
-            ['🎁', 'Share profits among members in proportion to contributions'],
-          ].map(([icon, text]) => (
-            <li key={text} className="flex items-start gap-2">
+          {([
+            ['📈', t('home.obj1')],
+            ['🏦', t('home.obj2')],
+            ['🌍', t('home.obj3')],
+            ['🎁', t('home.obj4')],
+          ] as [string, string][]).map(([icon, text]) => (
+            <li key={icon} className="flex items-start gap-2">
               <span>{icon}</span>
               <span>{text}</span>
             </li>

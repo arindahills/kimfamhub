@@ -8,6 +8,7 @@ interface Meeting {
   meeting_date: string
   location: string | null
   agenda: string | null
+  next_actions: string | null
   key_decisions: string | null
   key_topics: string | null
   attendance: string[] | null
@@ -72,9 +73,10 @@ function MeetingCard({ m }: { m: Meeting }) {
       )}
 
       <div className="space-y-1.5">
-        <Collapsible title="Agenda" body={m.agenda} />
-        <Collapsible title="Key Decisions" body={m.key_decisions} />
         <Collapsible title="Key Topics" body={m.key_topics} />
+        <Collapsible title="Key Decisions" body={m.key_decisions} />
+        <Collapsible title="Next Actions" body={m.next_actions} />
+        <Collapsible title="Agenda" body={m.agenda} />
       </div>
 
       {m.attendance && m.attendance.length > 0 && (

@@ -68,7 +68,10 @@ export default function LoansPage() {
   }
 
   const daysNum = parseInt(loan.days_remaining)
-  const daysColor = daysNum < 0 ? '#f87171' : daysNum <= 14 ? '#fbbf24' : '#4ade80'
+  // A fully repaid loan (balance <= 0) is settled — don't flag it "overdue".
+  const balanceNum = parseFloat(String(loan.balance).replace(/[^\d.-]/g, ''))
+  const settled = !Number.isNaN(balanceNum) && balanceNum <= 0
+  const daysColor = settled ? '#4ade80' : daysNum < 0 ? '#f87171' : daysNum <= 14 ? '#fbbf24' : '#4ade80'
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
@@ -81,7 +84,7 @@ export default function LoansPage() {
           </div>
           <span className="text-xs px-2 py-1 rounded-full font-semibold"
             style={{ color: daysColor, background: daysColor + '22' }}>
-            {daysNum < 0 ? `${Math.abs(daysNum)}d overdue` : daysNum === 0 ? 'Due today' : `${daysNum}d left`}
+            {settled ? 'Settled ✓' : daysNum < 0 ? `${Math.abs(daysNum)}d overdue` : daysNum === 0 ? 'Due today' : `${daysNum}d left`}
           </span>
         </div>
 

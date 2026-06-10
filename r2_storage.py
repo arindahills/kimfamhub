@@ -36,20 +36,16 @@ def _client():
 
 def upload(local_path: str, key: str, public: bool = False) -> str:
     """
-    Upload a file to R2. Returns the public URL if public=True, else a presigned URL.
+    Upload a file to R2. Returns a presigned URL (R2 does not support per-object ACLs;
+    bucket-level public access must be enabled in the Cloudflare dashboard separately).
     key example: "minutes/KIMFAM_Meeting_Minutes_June_2026.docx"
     """
     ct, _ = mimetypes.guess_type(local_path)
     ct = ct or "application/octet-stream"
-    extra = {"ContentType": ct}
-    if public:
-        extra["ACL"] = "public-read"
 
     s3 = _client()
-    s3.upload_file(local_path, _R2_BUCKET, key, ExtraArgs=extra)
+    s3.upload_file(local_path, _R2_BUCKET, key, ExtraArgs={"ContentType": ct})
 
-    if public:
-        return f"{_R2_ENDPOINT}/{_R2_BUCKET}/{key}"
     return presigned_url(key)
 
 

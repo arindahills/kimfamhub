@@ -290,9 +290,35 @@ def submit_payment(req: SubmitPaymentRequest, request: Request):
              payment_reference, status, apply_to_initial_ugx)
         VALUES (%s, %s, %s, %s, %s, 'pending', %s)
         RETURNING id
-    """, (req.family_id, user.get("name",""), req.period_month,
+    """, (req.family_id, user.get("sub",""), req.period_month,
           req.amount_ugx, req.payment_reference, apply_init))
     _pid = row[0]
+
+    # Notify Hillary and Hellen via WhatsApp so they can confirm promptly
+    try:
+        _fam_name = fam[0]["family_name"].title() if fam else "Unknown"
+        _submitter = user.get("sub", "A member")
+        _ref_note = f" · Ref: {req.payment_reference}" if req.payment_reference else ""
+        _msg = (
+            f"💰 *New KimFam Payment Submitted*\n"
+            f"Family: The {_fam_name}\n"
+            f"Amount: UGX {req.amount_ugx:,}\n"
+            f"Period: {req.period_month}\n"
+            f"Submitted by: {_submitter}{_ref_note}\n"
+            f"Payment #{_pid} — awaiting your confirmation."
+        )
+        import requests as _req_lib
+        _BRIDGE = "http://localhost:8080/api/send"
+        _HILLARY = "256775102684"
+        _HELLEN  = "254716595631"
+        for _num in [_HILLARY, _HELLEN]:
+            try:
+                _req_lib.post(_BRIDGE, json={"recipient": _num, "message": _msg}, timeout=5)
+            except Exception:
+                pass
+    except Exception:
+        pass  # never block the response over a notification failure
+
     return {"payment_id": _pid, "status": "pending"}
 
 
@@ -548,7 +574,7 @@ def add_expenditure(req: ExpenditureRequest, request: Request):
         VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (req.txn_date, desc, req.amount_ugx,
-          req.category, req.project, user.get("name","")))
+          req.category, req.project, user.get("sub","")))
     return {"expenditure_id": row[0]}
 
 

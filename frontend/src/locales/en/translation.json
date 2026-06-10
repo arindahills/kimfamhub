@@ -1,96 +1,93 @@
 {
   "nav": {
-    "home": "Home",
-    "updates": "Updates",
-    "actions": "Action Points",
-    "finances": "Finances",
-    "members": "Members",
-    "projects": "Projects",
-    "equity": "Equity",
-    "loans": "Loans",
-    "meetings": "Meetings",
-    "docs": "Documents",
-    "ask": "Ask KimFam",
-    "admin": "Admin"
+    "home": "Home", "updates": "Updates", "actions": "Action Points",
+    "finances": "Finances", "members": "Members", "projects": "Projects",
+    "equity": "Equity", "loans": "Loans", "meetings": "Meetings",
+    "docs": "Documents", "expenditure": "Expenditure", "ask": "Ask KimFam", "admin": "Admin"
   },
   "common": {
-    "loading": "Loading...",
-    "error": "Something went wrong",
-    "retry": "Try again",
-    "save": "Save",
-    "cancel": "Cancel",
-    "submit": "Submit",
-    "delete": "Delete",
-    "edit": "Edit",
-    "close": "Close",
-    "back": "Back",
-    "next": "Next",
-    "search": "Search",
-    "filter": "Filter",
-    "all": "All",
-    "none": "None",
-    "yes": "Yes",
-    "no": "No",
-    "currency": "UGX"
+    "loading": "Loading...", "error": "Something went wrong", "retry": "Try again",
+    "save": "Save", "cancel": "Cancel", "submit": "Submit", "delete": "Delete",
+    "edit": "Edit", "close": "Close", "back": "Back", "next": "Next",
+    "search": "Search", "filter": "Filter", "all": "All", "none": "None",
+    "yes": "Yes", "no": "No", "currency": "UGX",
+    "allClear": "All clear", "settled": "Settled ✓", "overdue": "overdue", "dueToday": "Due today"
   },
   "auth": {
-    "login": "Log In",
-    "logout": "Log Out",
-    "password": "Password",
-    "member": "Member",
-    "loginPrompt": "Welcome to KimFam Hub",
+    "login": "Log In", "logout": "Log Out", "password": "Password",
+    "member": "Member", "loginPrompt": "Welcome to KimFam Hub",
     "loginSubtitle": "KimFam Investment Club"
   },
   "home": {
-    "welcome": "Welcome",
-    "tagline": "KimFam Investment Club",
-    "mission": "To invest in profitable and quickly marketable ventures"
+    "welcome": "Welcome", "tagline": "KimFam Investment Club",
+    "mission": "To invest in profitable and quickly marketable ventures",
+    "clubIntro": "Create a portfolio of investment choices that can transcend generations and contribute to the general economic welfare of all club members.",
+    "obj1": "Invest in profitable and quickly marketable ventures",
+    "obj2": "Build a strong investment fund for lucrative opportunities",
+    "obj3": "Build a saving culture among all club members",
+    "obj4": "Share profits among members in proportion to contributions",
+    "recentUpdates": "Recent Updates",
+    "showMore": "Show more", "showLess": "Show less",
+    "bankBalance": "Bank Balance", "familyGroups": "Family Groups", "activeProjects": "Active Projects"
+  },
+  "projects": {
+    "title": "Projects", "ourProjects": "Our Projects",
+    "ventures": "ventures across the portfolio",
+    "all": "All", "farming": "Farming", "business": "Business",
+    "unitTrusts": "Unit Trusts", "realEstate": "Real Estate",
+    "portfolioAI": "Portfolio AI", "newVentures": "New Ventures",
+    "viewActions": "View Management Actions",
+    "teamInterest": "Team Interest", "expressInterest": "Express Interest",
+    "latestUpdate": "Latest Update",
+    "operational": "Operational", "planning": "Planning", "research": "Research", "active": "Active"
   },
   "finances": {
-    "submitPayment": "Submit a Payment",
-    "paymentHistory": "Payment History",
-    "balance": "Balance",
-    "outstanding": "Outstanding",
-    "paid": "Paid",
-    "family": "Family",
-    "amount": "Amount",
-    "date": "Date",
-    "period": "Period",
-    "receipt": "Receipt",
-    "calculator": "Payment Calculator"
+    "submitPayment": "Submit a Payment", "paymentHistory": "Payment History",
+    "balance": "Balance", "outstanding": "Outstanding", "paid": "Paid",
+    "family": "Family", "amount": "Amount", "date": "Date", "period": "Period",
+    "receipt": "Receipt", "calculator": "Payment Calculator",
+    "allClear": "All clear", "bankAccount": "Bank Account", "selectFamily": "Select family..."
   },
   "actions": {
-    "title": "Action Points",
-    "responsible": "Responsible",
-    "deadline": "Deadline",
-    "status": "Status",
-    "meeting": "Meeting",
-    "overdue": "Overdue",
-    "done": "Done",
-    "pending": "Pending"
+    "title": "Action Points", "responsible": "Responsible", "deadline": "Deadline",
+    "status": "Status", "meeting": "Meeting", "overdue": "Overdue",
+    "done": "Done", "pending": "Pending", "markDone": "Mark done", "allMembers": "All Members"
   },
   "meetings": {
-    "title": "Meetings",
-    "date": "Date",
-    "agenda": "Agenda",
-    "decisions": "Key Decisions",
-    "topics": "Key Topics",
-    "attendance": "Attendance",
-    "nextMeeting": "Next Meeting"
+    "title": "Meetings", "date": "Date", "agenda": "Agenda",
+    "decisions": "Key Decisions", "topics": "Key Topics",
+    "attendance": "Attendance", "nextMeeting": "Next Meeting",
+    "nextActions": "Next Actions", "minutes": "Meeting Minutes"
+  },
+  "members": {
+    "title": "Members", "asOf": "As of",
+    "totalContributed": "Total Contributed", "monthlyBalance": "Monthly Balance",
+    "initialObligation": "Initial Obligation", "initialBalance": "Initial Balance",
+    "allClear": "All clear", "owed": "owed"
   },
   "loans": {
-    "title": "Loans",
-    "member": "Member",
-    "principal": "Principal",
-    "balance": "Balance",
-    "dueDate": "Due Date",
-    "daysRemaining": "Days Remaining",
-    "payments": "Payment History"
+    "title": "Loans", "member": "Member", "principal": "Principal",
+    "balance": "Balance", "dueDate": "Due Date", "daysRemaining": "Days Remaining",
+    "payments": "Payment History", "settled": "Settled ✓", "noLoans": "No active loans at this time."
+  },
+  "equity": {
+    "title": "Equity", "totalEquity": "Total Club Equity",
+    "equityShare": "Equity Share", "currentEquity": "Current Equity",
+    "totalContributed": "Total Contributed"
+  },
+  "documents": {
+    "title": "Documents", "meetingMinutes": "Meeting Minutes",
+    "governance": "Governance", "view": "View", "download": "Download"
   },
   "ask": {
-    "title": "Ask KimFam",
-    "placeholder": "Ask anything about KimFam...",
-    "send": "Send",
-    "thinking": "Thinking..."
+    "title": "Ask KimFam", "placeholder": "Ask anything about KimFam...",
+    "send": "Send", "thinking": "Thinking...",
+    "suggested1": "What is the current bank balance?",
+    "suggested2": "Who has outstanding payments?",
+    "suggested3": "What were the key decisions from the last meeting?",
+    "suggested4": "What is the status of the chicken project?"
+  },
+  "updates": {
+    "title": "Updates", "allProjects": "All Projects", "post": "+ Post"
   }
 }

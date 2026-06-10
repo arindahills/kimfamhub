@@ -9,6 +9,8 @@ interface AuthUser {
 interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
+  avatarVersion: number
+  bumpAvatar: () => void
   login: (member: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
@@ -18,6 +20,8 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [avatarVersion, setAvatarVersion] = useState(1)
+  const bumpAvatar = () => setAvatarVersion(v => v + 1)
 
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' })
@@ -50,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, avatarVersion, bumpAvatar, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

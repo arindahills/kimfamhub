@@ -14,17 +14,18 @@ function useIsDesktop() {
 }
 
 const TABS = [
-  { to: '/',          icon: '🏠', key: 'home'     },
-  { to: '/updates',   icon: '📰', key: 'updates'  },
-  { to: '/actions',   icon: '✅', key: 'actions'  },
-  { to: '/finances',  icon: '💰', key: 'finances' },
-  { to: '/members',   icon: '👨‍👩‍👧‍👦', key: 'members' },
-  { to: '/projects',  icon: '🌾', key: 'projects' },
-  { to: '/equity',    icon: '⚖️', key: 'equity'   },
-  { to: '/loans',     icon: '🏦', key: 'loans'    },
-  { to: '/meetings',  icon: '📋', key: 'meetings' },
-  { to: '/docs',      icon: '📁', key: 'docs'     },
-  { to: '/ask',       icon: '🤖', key: 'ask'      },
+  { to: '/',            icon: '🏠', key: 'home',        tour: 'nav-home'        },
+  { to: '/updates',     icon: '📰', key: 'updates',     tour: 'nav-updates'     },
+  { to: '/actions',     icon: '✅', key: 'actions',     tour: 'nav-actions'     },
+  { to: '/finances',    icon: '💰', key: 'finances',    tour: 'nav-finances'    },
+  { to: '/members',     icon: '👨‍👩‍👧‍👦', key: 'members',    tour: 'nav-members'    },
+  { to: '/projects',    icon: '🌾', key: 'projects',    tour: 'nav-projects'    },
+  { to: '/equity',      icon: '⚖️', key: 'equity',      tour: 'nav-equity'      },
+  { to: '/loans',       icon: '🏦', key: 'loans',       tour: 'nav-loans'       },
+  { to: '/meetings',    icon: '📋', key: 'meetings',    tour: 'nav-meetings'    },
+  { to: '/docs',        icon: '📁', key: 'docs',        tour: 'nav-docs'        },
+  { to: '/expenditure', icon: '💸', key: 'expenditure', tour: 'nav-expenditure' },
+  { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
 // 5 tabs pinned to the mobile bottom bar — chosen based on usage data
@@ -82,7 +83,7 @@ export default function Nav() {
               transition: 'opacity 0.15s',
             })}
           >
-            <span style={{ fontSize: 16 }}>{tab.icon}</span>
+            <span style={{ fontSize: 16, width: 22, textAlign: 'center' }}>{tab.icon}</span>
             <span>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
@@ -125,9 +126,12 @@ export default function Nav() {
         }}
       >
         <div style={{ padding: '0 16px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
-            <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <img src="/static/logo.png" alt="KimFam" style={{ width: 36, height: 36, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>KimFam Hub</div>
+              <div style={{ fontSize: 11, marginTop: 2, color: 'var(--text-muted)' }}>{user?.name}</div>
+            </div>
           </div>
           <button
             onClick={() => setDrawerOpen(false)}
@@ -162,7 +166,8 @@ export default function Nav() {
         style={{
           position: 'fixed',
           bottom: 0, left: 0, right: 0,
-          height: 60,
+          height: 'calc(60px + env(safe-area-inset-bottom))',
+          paddingBottom: 'env(safe-area-inset-bottom)',
           zIndex: 50,
           display: 'flex',
           alignItems: 'stretch',
@@ -181,13 +186,13 @@ export default function Nav() {
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 3,
+              gap: 4,
               textDecoration: 'none',
-              color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+              color: isActive ? 'var(--accent)' : 'var(--muted)',
             })}
           >
-            <span style={{ fontSize: 20, lineHeight: 1 }}>{tab.icon}</span>
-            <span style={{ fontSize: 10 }}>{t(`nav.${tab.key}`)}</span>
+            <span className={tab.key === 'ask' ? 'attention-ask' : undefined} style={{ fontSize: 22, lineHeight: 1 }}>{tab.icon}</span>
+            <span style={{ fontSize: 10, fontWeight: 500 }}>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
         {/* Hamburger — opens full drawer */}
@@ -199,15 +204,15 @@ export default function Nav() {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 3,
+            gap: 4,
             background: 'transparent',
             border: 'none',
             cursor: 'pointer',
-            color: 'var(--text-muted)',
+            color: 'var(--muted)',
           }}
         >
-          <span style={{ fontSize: 20, lineHeight: 1 }}>☰</span>
-          <span style={{ fontSize: 10 }}>More</span>
+          <span style={{ fontSize: 22, lineHeight: 1 }}>☰</span>
+          <span style={{ fontSize: 10, fontWeight: 500 }}>More</span>
         </button>
       </nav>
     </>
