@@ -168,7 +168,7 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
   const visible = interests.filter(r => r.status !== 'rejected' || r.member_name === me)
 
   return (
-    <div className="mt-4 rounded-[12px] border border-[var(--border)] bg-[var(--surface)]">
+    <div className="mt-4 rounded-[12px]" style={{ background: 'rgba(59,130,246,0.09)', border: '1px solid rgba(96,165,250,0.30)' }}>
       <div className="flex items-center gap-2 px-3 py-2.5">
         <button
           onClick={() => visible.length && setOpen(o => !o)}

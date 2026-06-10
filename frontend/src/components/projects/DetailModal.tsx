@@ -58,18 +58,49 @@ function prettyVal(v: unknown): string {
   return String(v)
 }
 
+/** Two-column key/value — both columns LEFT-aligned. */
 function KeyVals({ obj }: { obj: Record<string, unknown> }) {
   const rows = Object.entries(obj).filter(([, v]) => isScalar(v))
   if (!rows.length) return null
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2">
       {rows.map(([k, v]) => (
-        <div key={k} className="flex justify-between gap-4 text-xs leading-snug">
-          <span className="shrink-0 text-[var(--muted-2)]">{prettyKey(k)}</span>
-          <span className="text-right text-[#cbd5e1]">{prettyVal(v)}</span>
+        <div key={k} className="grid grid-cols-[42%_1fr] gap-3 text-xs leading-snug">
+          <span className="text-[var(--muted-2)]">{prettyKey(k)}</span>
+          <span className="text-[#e2e8f0]">{prettyVal(v)}</span>
         </div>
       ))}
     </div>
+  )
+}
+
+/** Array of uniform objects → a clean left-aligned table (e.g. Deaths Detail). */
+function ObjTable({ rows }: { rows: Record<string, unknown>[] }) {
+  const keys = Object.keys(rows[0]).filter(k => rows.every(r => isScalar(r[k])))
+  if (!keys.length) {
+    return <div className="space-y-1.5">{rows.map((o, i) => <Inset key={i} className="p-2.5"><KeyVals obj={o} /></Inset>)}</div>
+  }
+  return (
+    <Inset className="overflow-hidden">
+      <table className="w-full border-collapse text-[11px]">
+        <thead>
+          <tr>
+            {keys.map(k => (
+              <th key={k} className="border-b border-[var(--border)] px-2.5 py-2 text-left font-semibold uppercase tracking-wide text-[var(--muted-2)]">{prettyKey(k)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              {keys.map(k => (
+                <td key={k} className="border-b border-[var(--border-soft)] px-2.5 py-1.5 text-left align-top text-[#e2e8f0]">{prettyVal(r[k])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Inset>
   )
 }
 
@@ -77,12 +108,12 @@ function KeyVals({ obj }: { obj: Record<string, unknown> }) {
 function renderValue(v: unknown): ReactNode {
   if (Array.isArray(v)) {
     if (v.length && typeof v[0] === 'object' && v[0] !== null) {
-      return <div className="space-y-1.5">{v.map((o, i) => <Inset key={i} className="p-2.5"><KeyVals obj={o as Record<string, unknown>} /></Inset>)}</div>
+      return <ObjTable rows={v as Record<string, unknown>[]} />
     }
-    return <div className="text-xs leading-relaxed text-[#cbd5e1]">{v.map(x => String(x)).join(', ') || '—'}</div>
+    return <div className="text-xs leading-relaxed text-[#e2e8f0]">{v.map(x => String(x)).join(', ') || '—'}</div>
   }
   if (v && typeof v === 'object') return <ObjBlock obj={v as Record<string, unknown>} />
-  return <div className="text-xs text-[#cbd5e1]">{prettyVal(v)}</div>
+  return <div className="text-xs text-[#e2e8f0]">{prettyVal(v)}</div>
 }
 
 function ObjBlock({ obj }: { obj: Record<string, unknown> }) {
@@ -103,8 +134,8 @@ function ObjBlock({ obj }: { obj: Record<string, unknown> }) {
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="mb-3">
-      <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-[var(--muted)]">{title}</div>
+    <div className="mb-4">
+      <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.06em] text-[#93c5fd]">{title}</div>
       {children}
     </div>
   )

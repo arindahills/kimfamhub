@@ -141,7 +141,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const th = categoryTheme(p.category)
 
   return (
-    <div className="mb-6 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 6px 24px rgba(0,0,0,.32)' }}>
+    <div className="mb-8 overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--card)]" style={{ boxShadow: '0 10px 30px rgba(0,0,0,.45)' }}>
       <div className="p-5">
         {/* Header */}
         <div className="mb-4 flex items-start gap-3">
