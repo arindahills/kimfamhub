@@ -1,6 +1,5 @@
-import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
@@ -128,9 +127,11 @@ function AiBrief({ projectId }: { projectId: string }) {
   )
 }
 
-export function AuditModal({ projectId, projectName, icon }: { projectId: string; projectName: string; icon: string }) {
-  const [open, setOpen] = useState(false)
-
+export function AuditModal({
+  projectId, projectName, icon, open, onOpenChange,
+}: {
+  projectId: string; projectName: string; icon: string; open: boolean; onOpenChange: (o: boolean) => void
+}) {
   const { data, isLoading } = useQuery<AuditData>({
     queryKey: ['audit', projectId],
     queryFn: () => fetch(`/api/projects/${projectId}/audit`, { credentials: 'include' }).then(r => r.json()),
@@ -139,10 +140,7 @@ export function AuditModal({ projectId, projectName, icon }: { projectId: string
   })
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="subtle" size="sm" className="flex-1">📋 Audit &amp; AI</Button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title={`${icon} ${projectName}`} subtitle="Audit Report · Assumptions · AI Analysis">
         {isLoading || !data ? (
           <LoadingRow label="Loading audit data…" />

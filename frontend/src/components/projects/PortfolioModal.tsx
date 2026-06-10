@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
@@ -272,16 +272,22 @@ function VenturesPane() {
   )
 }
 
-/* ── Modal shell ──────────────────────────────────────────────────────────── */
-export function PortfolioModal() {
-  const [open, setOpen] = useState(false)
+/* ── Modal shell (controlled) ─────────────────────────────────────────────── */
+export function PortfolioModal({
+  open,
+  onOpenChange,
+  tab,
+  onTabChange,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  tab: string
+  onTabChange: (t: string) => void
+}) {
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="primary" className="w-full">🧠 AI Portfolio Analysis</Button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="🧠 AI Portfolio Analysis" subtitle="Strategic ranking and new venture ideas">
-        <Tabs defaultValue="ranking">
+        <Tabs value={tab} onValueChange={onTabChange}>
           <TabsList>
             <TabsTrigger value="ranking">📊 Ranking</TabsTrigger>
             <TabsTrigger value="ventures">🚀 New Ventures</TabsTrigger>
