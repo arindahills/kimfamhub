@@ -69,6 +69,13 @@ dashboards focused on high-level stats.
 `aspect-square`, radius `10px`, subtle border). When a stack has **more than 3** assets, show the
 first 3 (or 4) and a final **`+X` counter** tile instead of a ragged scroll.
 
+**Charts (`MiniChart`)** — lightweight themed SVG (no chart-lib dependency, stays cohesive). Plots
+line / bar / horizontal-reference series over shared labels with an optional break-even marker.
+Y-axis labels on the **left**, compact UGX (`12M`/`350K`); subtle `--border` gridlines; sparse
+series (e.g. "Actual") render as dots so they're visible; `ref` lines are dashed and shown as a dash
+in the legend. Used in the project Analysis modal, adapting to whatever `chart_data`/`projection`
+shape the endpoint returns (cumulative-vs-CapEx line, or yearly revenue/profit bars + cumulative line).
+
 **Filter pills (page header)** — segmented pills with **generous gap** (never tight); active pill is
 a lighter filled `--surface`, inactive are flat/ghost. Small monochrome Lucide icon + label.
 
