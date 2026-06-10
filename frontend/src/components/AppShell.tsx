@@ -5,6 +5,7 @@ import Nav from './Nav'
 import LanguageSwitcher from './LanguageSwitcher'
 import { Typewriter } from './Typewriter'
 import { EditProfileModal } from './EditProfileModal'
+import { WalkthroughOverlay } from './WalkthroughOverlay'
 
 /** Brand name first (so the bar reads right on load), then the club's mission lines. */
 const BRAND_LINES = [
@@ -114,6 +115,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </button>
           </div>
         </header>
+
+        {/* Walkthrough tour — mounts once, self-manages via localStorage + custom events */}
+        <WalkthroughOverlay />
 
         {/* Page content */}
         <main

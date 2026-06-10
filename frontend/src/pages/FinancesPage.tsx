@@ -1,8 +1,21 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import ExpenditurePage from './ExpenditurePage'
+import { FamilyProfileModal } from '../components/FamilyProfileModal'
+import { LABEL_TO_KEY } from '../data/familyTree'
+
+// Member → family name mapping (matches backend _MEMBER_FAMILY_NAME)
+const MEMBER_FAMILY: Record<string, string> = {
+  Hillary: 'ARINDAS', Esther: 'ARINDAS',
+  Viola: 'ARUNGAS', Simon: 'ARUNGAS',
+  Israel: 'KIKANGIS', Merab: 'KIKANGIS',
+  Max: 'TURAMYES', Janet: 'TURAMYES',
+  Solomon: 'ARIHOS',
+  Hellen: 'KOFUNAS', Lawi: 'KOFUNAS',
+  Alex: 'TUHIMBISES', Priscilla: 'TUHIMBISES',
+}
 
 
 interface Summary {
@@ -84,12 +97,54 @@ function ReconciliationBadge({ confirmed, computed }: { confirmed: number; compu
   )
 }
 
-function FamilyCard({ f }: { f: FamilyBalance }) {
+// Toaster messages per balance status — personalized but deterministic
+function toastMessage(familyLabel: string, curBal: number, rate: number, outstanding: number): string {
+  const name = familyLabel  // e.g. "The Arindas"
+  const paidTo = paidToLabel(curBal, rate)
+  if (outstanding === 0 && curBal <= 0) {
+    const msgs = [
+      `${name} are fully paid up${paidTo ? ` to ${paidTo}` : ''}! You're ahead of the curve. The club thanks you 🏆`,
+      `Nothing owed and ${paidTo ? `paid to ${paidTo}` : 'all clear'}! ${name} are keeping the club healthy 💚`,
+      `All clear! ${name} are setting the standard this month. Keep going 🌟`,
+    ]
+    return msgs[Math.floor(Date.now() / 1000) % msgs.length]
+  }
+  if (outstanding > 0 && outstanding <= rate) {
+    return `Almost there! ${name} are just UGX ${outstanding.toLocaleString()} away from being all clear this month. One quick transfer does it 💪`
+  }
+  if (outstanding > 0 && outstanding <= rate * 3) {
+    return `${name} have UGX ${outstanding.toLocaleString()} outstanding. A steady payment now keeps the club moving forward — every contribution matters 🤝`
+  }
+  return `${name} have UGX ${outstanding.toLocaleString()} outstanding. The club's growth depends on everyone keeping up — please reach out to Hellen if you need a payment plan 💛`
+}
+
+function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; onOpen?: () => void }) {
   const rate = f.current_monthly_rate || 0
   const curBal = f.current_balance || 0
   const initBal = f.initial_balance || 0
   const outstanding = curBal <= 0 ? initBal : f.combined_balance
   const borderCol = outstanding === 0 ? '#166534' : outstanding <= rate * 3 ? '#d97706' : '#dc2626'
+
+  const [showToast, setShowToast] = useState(false)
+  const [toastDismissed, setToastDismissed] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+
+  // Show toaster shortly after mount for the logged-in user's card
+  useEffect(() => {
+    if (!isMyFamily || toastDismissed) return
+    const t = setTimeout(() => setShowToast(true), 1200)
+    return () => clearTimeout(t)
+  }, [isMyFamily, toastDismissed])
+
+  // Auto-dismiss toast after 6 seconds
+  useEffect(() => {
+    if (!showToast) return
+    const t = setTimeout(() => { setShowToast(false); setToastDismissed(true) }, 6000)
+    return () => clearTimeout(t)
+  }, [showToast])
+
+  const familyLabel = 'The ' + f.family_name.charAt(0) + f.family_name.slice(1).toLowerCase()
+  const hasProfileKey = !!LABEL_TO_KEY[familyLabel]
 
   const paidTo = paidToLabel(curBal, rate)
   const mStatus = paidTo
@@ -105,30 +160,82 @@ function FamilyCard({ f }: { f: FamilyBalance }) {
     : <span style={{ color: '#4ade80' }}>Cleared</span>
 
   return (
-    <div className="rounded-xl p-3" style={{ background: '#1e293b', border: `1px solid ${borderCol}` }}>
-      <div className="flex justify-between items-baseline mb-0.5">
-        <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>{f.family_name}</span>
-        <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
-      </div>
-      <div className="text-[11px] mb-2" style={{ color: '#475569' }}>
-        {f.composition}
-      </div>
-      <div className="flex justify-between text-xs mb-1">
-        <span style={{ color: 'var(--text-muted)' }}>Monthly</span>
-        {mStatus}
-      </div>
-      <div className="flex justify-between text-xs mb-1">
-        <span style={{ color: 'var(--text-muted)' }}>Initial (2023)</span>
-        {iStatus}
-      </div>
-      <div className="flex justify-between text-xs font-semibold mt-2">
-        <span style={{ color: 'var(--text-muted)' }}>Total outstanding</span>
-        {outstanding === 0
-          ? <span style={{ color: '#4ade80' }}>Nothing owed</span>
-          : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
+    <>
+      {/* Animated border keyframe injected once */}
+      <style>{`
+        @keyframes familyCardGlow {
+          0%,100% { box-shadow: 0 0 0 0 ${borderCol}00; }
+          50%      { box-shadow: 0 0 14px 3px ${borderCol}88; }
         }
+        @keyframes toastIn  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes toastOut { from { opacity:1; } to { opacity:0; } }
+      `}</style>
+
+      <div
+        className="rounded-xl p-3"
+        style={{
+          background: '#1e293b',
+          border: `1px solid ${borderCol}`,
+          cursor: hasProfileKey ? 'pointer' : 'default',
+          animation: isMyFamily ? `familyCardGlow 2.5s ease-in-out infinite` : undefined,
+          position: 'relative',
+        }}
+        onClick={hasProfileKey ? () => setProfileOpen(true) : undefined}
+      >
+        <div className="flex justify-between items-baseline mb-0.5">
+          <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>
+            {f.family_name}
+            {isMyFamily && <span style={{ marginLeft: 5, fontSize: 10, color: borderCol }}>● you</span>}
+          </span>
+          <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
+        </div>
+        <div className="text-[11px] mb-2" style={{ color: '#475569' }}>{f.composition}</div>
+        <div className="flex justify-between text-xs mb-1">
+          <span style={{ color: 'var(--text-muted)' }}>Monthly</span>
+          {mStatus}
+        </div>
+        <div className="flex justify-between text-xs mb-1">
+          <span style={{ color: 'var(--text-muted)' }}>Initial (2023)</span>
+          {iStatus}
+        </div>
+        <div className="flex justify-between text-xs font-semibold mt-2">
+          <span style={{ color: 'var(--text-muted)' }}>Total outstanding</span>
+          {outstanding === 0
+            ? <span style={{ color: '#4ade80' }}>Nothing owed</span>
+            : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
+          }
+        </div>
+        {hasProfileKey && (
+          <div className="text-[10px] mt-1.5 text-right" style={{ color: '#334155' }}>Tap to view family profile →</div>
+        )}
       </div>
-    </div>
+
+      {/* AI-style toaster for logged-in user's card */}
+      {isMyFamily && showToast && (
+        <div
+          onClick={() => { setShowToast(false); setToastDismissed(true) }}
+          style={{
+            position: 'fixed', bottom: 90, left: 12, right: 12, zIndex: 999,
+            background: borderCol === '#166534' ? '#052e16' : borderCol === '#d97706' ? '#431407' : '#450a0a',
+            border: `1px solid ${borderCol}`,
+            borderRadius: 14, padding: '12px 14px',
+            boxShadow: `0 4px 24px ${borderCol}44`,
+            animation: 'toastIn 0.35s ease-out',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ fontSize: 12, lineHeight: 1.5, color: borderCol === '#166534' ? '#4ade80' : borderCol === '#d97706' ? '#fbbf24' : '#fca5a5' }}>
+            {toastMessage(familyLabel, curBal, rate, outstanding)}
+          </div>
+          <div style={{ fontSize: 10, marginTop: 4, color: '#475569' }}>Tap to dismiss</div>
+        </div>
+      )}
+
+      {/* Family profile modal */}
+      {profileOpen && hasProfileKey && (
+        <FamilyProfileModal familyLabel={familyLabel} onClose={() => setProfileOpen(false)} />
+      )}
+    </>
   )
 }
 
@@ -834,6 +941,7 @@ export default function FinancesPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
   const isAdmin = user?.role === 'admin'
+  const myFamilyName = user?.name ? MEMBER_FAMILY[user.name] ?? null : null
   const [showPayment, setShowPayment]         = useState(false)
   const [showBankBalance, setShowBankBalance] = useState(false)
 
@@ -920,7 +1028,9 @@ export default function FinancesPage() {
           <div className="text-2xl font-bold tracking-widest" style={{ color: '#22c55e' }}>6004961127</div>
           <div className="text-sm mt-1" style={{ color: '#cbd5e1' }}>TUSIIME HELLEN</div>
         </div>
-        <button onClick={() => setShowPayment(true)}
+        <button
+          data-tour="submit-payment"
+          onClick={() => setShowPayment(true)}
           className="w-full rounded-xl py-3 font-semibold text-sm"
           style={{ background: '#166534', color: '#fff' }}>
           {t('finances.submitPayment')}
@@ -934,7 +1044,14 @@ export default function FinancesPage() {
             {t('finances.family')} {t('finances.balance')}s
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {ledger.map(f => <FamilyCard key={f.family_name} f={f} />)}
+            {ledger.map(f => (
+              <FamilyCard
+                key={f.family_name}
+                f={f}
+                isMyFamily={myFamilyName !== null && f.family_name.toUpperCase() === myFamilyName}
+                onOpen={() => {}}
+              />
+            ))}
           </div>
         </div>
       )}
