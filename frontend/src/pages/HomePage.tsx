@@ -140,6 +140,20 @@ export default function HomePage() {
             : `Show ${allItems.length - INITIAL_FEED_COUNT} more`}
         </button>
       )}
+
+      {/* Replay tour link */}
+      <div className="text-center mt-6 pb-2">
+        <button
+          onClick={() => {
+            localStorage.removeItem('kimfam_onboarded')
+            window.dispatchEvent(new CustomEvent('kimfam:startTour'))
+          }}
+          className="text-xs"
+          style={{ color: '#334155', background: 'none', border: 'none', cursor: 'pointer' }}
+        >
+          ▶ Replay guided tour
+        </button>
+      </div>
     </div>
   )
 }

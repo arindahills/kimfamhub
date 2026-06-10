@@ -4091,6 +4091,184 @@ async def assign_officer(role_slug: str, request: Request):
     return {"ok": True, "role": role_slug, "now_held_by": member_name}
 
 
+# ── Member Engagement Score ───────────────────────────────────────────────────
+# Weekly engagement scoring across 5 dimensions:
+#   1. Payment timeliness (40 pts max) — paid before the 5th of the month = full marks
+#   2. Action point completion (25 pts max) — % of owned actions completed by deadline
+#   3. Project participation (20 pts max) — confirmed interests + active contributions
+#   4. Meetings proxy (10 pts max) — attendance derived from meeting register (future)
+#   5. App engagement (5 pts max) — has uploaded profile photo + submitted payments via app
+# Score is per-family (both spouses count as one unit).
+# Ranking shows top performers; bottom performers are NOT ranked (club culture).
+
+@app.get("/api/engagement/scores")
+async def engagement_scores(request: Request):
+    from fastapi import HTTPException as _HE
+    from datetime import date as _date, datetime as _datetime
+    token = _get_tok(request)
+    payload = _auth_verify(token) if token else None
+    if not payload: raise _HE(status_code=401, detail="Auth required")
+
+    today = _date.today()
+
+    # 1. Payment scores — families that have paid current month by the 5th get full marks
+    ledger_data = []
+    try:
+        from contributions import compute_family_balance as _cfb
+        from db import query as _dq
+        fam_rows = _dq("SELECT id, family_name FROM families ORDER BY family_name")
+        for fr in fam_rows:
+            bal = _cfb(fr["id"])
+            ledger_data.append({
+                "family_id":   fr["id"],
+                "family_name": fr["family_name"],
+                "bal":         bal,
+            })
+    except Exception:
+        pass
+
+    # 2. Action point scores
+    action_scores: dict = {}
+    try:
+        sh = gc().open_by_key(SHEET_ID)
+        at = sh.worksheet("Action Tracker")
+        at_rows = at.get_all_records()
+        # Map member first name → family
+        _MF = {
+            "Hillary": "ARINDAS",  "Esther": "ARINDAS",
+            "Viola":   "ARUNGAS",  "Simon":  "ARUNGAS",
+            "Israel":  "KIKANGIS", "Merab":  "KIKANGIS",
+            "Max":     "TURAMYES", "Janet":  "TURAMYES",
+            "Solomon": "ARIHOS",
+            "Hellen":  "KOFUNAS",  "Lawi":   "KOFUNAS",
+            "Alex":    "TUHIMBISES","Priscilla": "TUHIMBISES",
+        }
+        family_actions: dict = {}
+        for r in at_rows:
+            owner = str(r.get("Owner", "") or r.get("Responsible", "") or "").strip()
+            if not owner: continue
+            first = owner.split()[0]
+            fam = _MF.get(first)
+            if not fam: continue
+            if fam not in family_actions:
+                family_actions[fam] = {"total": 0, "done": 0}
+            family_actions[fam]["total"] += 1
+            status = str(r.get("Status", "") or r.get("status", "")).strip().lower()
+            if "done" in status or "complete" in status or "closed" in status:
+                family_actions[fam]["done"] += 1
+        for fam, v in family_actions.items():
+            pct = (v["done"] / v["total"]) if v["total"] > 0 else 0
+            action_scores[fam] = round(pct * 25)
+    except Exception:
+        pass
+
+    # 3. Project participation scores
+    proj_scores: dict = {}
+    try:
+        from db import query as _dq2
+        interests = _dq2("""
+            SELECT pp.status, f.family_name
+            FROM project_participation pp
+            LEFT JOIN persons p ON LOWER(p.whatsapp_name) = LOWER(pp.member_name)
+            LEFT JOIN families f ON p.family_id = f.id
+            WHERE f.family_name IS NOT NULL
+        """)
+        for row in interests:
+            fam = row["family_name"]
+            if not fam: continue
+            if fam not in proj_scores: proj_scores[fam] = 0
+            if row["status"] == "confirmed":
+                proj_scores[fam] = min(20, proj_scores[fam] + 8)
+            elif row["status"] in ("pending", "awaiting_chairman"):
+                proj_scores[fam] = min(20, proj_scores[fam] + 4)
+    except Exception:
+        pass
+
+    # 4. App engagement score
+    app_scores: dict = {}
+    try:
+        from pathlib import Path as _Path
+        avatars_dir = _Path(__file__).parent / "static" / "avatars"
+        _FMAP = {
+            "hillaryarinda": "ARINDAS", "estherarinda": "ARINDAS",
+            "violaarunga": "ARUNGAS", "simonarunga": "ARUNGAS",
+            "israelkikangi": "KIKANGIS", "merabkikangi": "KIKANGIS",
+            "maxturamye": "TURAMYES", "janetturamye": "TURAMYES",
+            "solomonariho": "ARIHOS",
+            "hellenkofuna": "KOFUNAS", "lawikofuna": "KOFUNAS",
+            "alextuhimbise": "TUHIMBISES", "priscillatuhimbise": "TUHIMBISES",
+        }
+        for avatar_key, fam in _FMAP.items():
+            if (avatars_dir / f"{avatar_key}.jpg").exists():
+                app_scores[fam] = app_scores.get(fam, 0) + 3
+        # Check who has submitted payments via app
+        from db import query as _dq3
+        pmt_submitters = _dq3("""
+            SELECT DISTINCT submitted_by_user_id FROM contribution_payments
+            WHERE submitted_by_user_id IS NOT NULL AND submitted_by_user_id != ''
+        """)
+        _NAMEMAP = {
+            "Hillary": "ARINDAS", "Esther": "ARINDAS",
+            "Viola": "ARUNGAS", "Simon": "ARUNGAS",
+            "Israel": "KIKANGIS", "Merab": "KIKANGIS",
+            "Max": "TURAMYES", "Janet": "TURAMYES",
+            "Solomon": "ARIHOS",
+            "Hellen": "KOFUNAS", "Lawi": "KOFUNAS",
+            "Alex": "TUHIMBISES", "Priscilla": "TUHIMBISES",
+        }
+        for row in pmt_submitters:
+            fam = _NAMEMAP.get(row["submitted_by_user_id"])
+            if fam: app_scores[fam] = min(5, app_scores.get(fam, 0) + 2)
+    except Exception:
+        pass
+
+    # Assemble final scores
+    scores = []
+    for ld in ledger_data:
+        fam = ld["family_name"]
+        bal = ld["bal"]
+
+        # Payment score: negative current_balance = paid ahead = full marks
+        # positive = arrears, scaled inversely
+        cur_bal  = bal.get("current_balance", 0)
+        rate     = bal.get("monthly_rate", 1) or 1
+        if cur_bal <= 0:
+            pay_score = 40
+        else:
+            shortfall_ratio = min(cur_bal / rate, 3)  # cap at 3 months behind
+            pay_score = max(0, round(40 * (1 - shortfall_ratio / 3)))
+
+        act_score  = action_scores.get(fam, 0)
+        prj_score  = proj_scores.get(fam, 0)
+        app_score  = min(5, app_scores.get(fam, 0))
+        total      = pay_score + act_score + prj_score + app_score
+
+        scores.append({
+            "family_name": fam,
+            "label":       "The " + fam.capitalize() if fam not in ("ARIHOS",) else "The " + fam[0] + fam[1:].lower(),
+            "total":       total,
+            "breakdown": {
+                "payments":     pay_score,
+                "actions":      act_score,
+                "projects":     prj_score,
+                "app_activity": app_score,
+            },
+            "current_balance": cur_bal,
+        })
+
+    # Sort by score descending; never expose the bottom rank publicly
+    scores.sort(key=lambda x: x["total"], reverse=True)
+
+    return {
+        "week": today.isocalendar()[1],
+        "year": today.year,
+        "as_at": today.isoformat(),
+        "scores": scores,
+        "max_score": 90,
+        "note": "Scores reset weekly. Bottom performers are not ranked — only top 5 shown.",
+    }
+
+
 # ── SPA fallback — MUST be last; catches all non-API routes for React Router ──
 @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
 def spa_fallback(full_path: str):

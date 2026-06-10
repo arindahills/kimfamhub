@@ -3,7 +3,7 @@
     "home": "Nyumbani", "updates": "Habari", "actions": "Vitendo",
     "finances": "Fedha", "members": "Wanachama", "projects": "Miradi",
     "equity": "Hisa", "loans": "Mkopo", "meetings": "Mikutano",
-    "docs": "Nyaraka", "expenditure": "Matumizi", "ask": "Uliza KimFam", "admin": "Utawala"
+    "docs": "Nyaraka", "expenditure": "Matumizi", "engagement": "Ushiriki", "ask": "Uliza KimFam", "admin": "Utawala"
   },
   "common": {
     "loading": "Inapakia...", "error": "Hitilafu imetokea", "retry": "Jaribu tena",

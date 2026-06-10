@@ -25,6 +25,7 @@ const TABS = [
   { to: '/meetings',    icon: '📋', key: 'meetings',    tour: 'nav-meetings'    },
   { to: '/docs',        icon: '📁', key: 'docs',        tour: 'nav-docs'        },
   { to: '/expenditure', icon: '💸', key: 'expenditure', tour: 'nav-expenditure' },
+  { to: '/engagement',  icon: '🏆', key: 'engagement',  tour: 'nav-engagement'  },
   { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
