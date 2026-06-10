@@ -18,6 +18,7 @@ import LoansPage from './pages/LoansPage'
 import DocsPage from './pages/DocsPage'
 import AskPage from './pages/AskPage'
 import AdminPage from './pages/AdminPage'
+import ExpenditurePage from './pages/ExpenditurePage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -51,8 +52,9 @@ function AuthGate() {
         <Route path="/meetings" element={<MeetingsPage />} />
         <Route path="/docs"     element={<DocsPage />} />
         <Route path="/ask"      element={<AskPage />} />
-        <Route path="/admin"    element={<AdminPage />} />
-        <Route path="*"         element={<Navigate to="/" replace />} />
+        <Route path="/admin"       element={<AdminPage />} />
+        <Route path="/expenditure" element={<ExpenditurePage />} />
+        <Route path="*"            element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
   )

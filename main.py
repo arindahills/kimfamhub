@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
@@ -11,12 +11,19 @@ from google.oauth2.service_account import Credentials
 async def lifespan(app):
     if os.environ.get("SCHEDULER_ENABLED") == "1":
         _scheduler_mod.start()
+    # Always-cooking "why join" pitch engine (independent of the scheduler so it
+    # runs on staging too). Cooks on boot, then re-cooks every few hours.
+    try:
+        import pitch_engine as _pitch
+        _pitch.start_background(get_all_projects)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("pitch").warning("pitch engine not started: %s", _e)
     yield
     if os.environ.get("SCHEDULER_ENABLED") == "1":
         _scheduler_mod.stop()
 
 app = FastAPI(lifespan=lifespan, docs_url="/api/_swagger", redoc_url=None)
-app.mount("/static", StaticFiles(directory="/var/www/kimfamhub/static"), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # React frontend assets (built output from frontend/dist/assets)
 _DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
@@ -28,7 +35,7 @@ SOLOMON_ID = "1CqF-NzkMJ8iJw0tC8xkLE9DI94cjFr2vvlAfx4QfXhI"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
 
 def gc():
-    creds = Credentials.from_service_account_file("/var/www/kimfamhub/service-account.json", scopes=SCOPES)
+    creds = Credentials.from_service_account_file(os.path.join(os.path.dirname(__file__), "service-account.json"), scopes=SCOPES)
     return gspread.authorize(creds)
 
 def g(row, i):
@@ -232,13 +239,80 @@ def get_loans():
         })
     return {"loan": loan, "payments": payments}
 
+def _minutes_by_date() -> dict:
+    """Return {date(y,m,d): url_path} mapping minutes files to their extracted dates."""
+    import datetime as _dt
+    result: dict[_dt.date, str] = {}
+    DATE_FMTS = ("%d %B %Y", "%B %d, %Y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d")
+
+    if _r2.is_configured():
+        for obj in _r2.list_folder("minutes/"):
+            fname = obj["key"].split("/", 1)[-1]
+            if not fname or Path(fname).suffix.lower() not in (".docx", ".pdf"):
+                continue
+            if ".bak." in fname:
+                continue
+            dt = _extract_date(Path(fname))
+            result[dt.date()] = f"/docs/minutes/{fname}"
+    else:
+        folder = DOCS_DIR / "minutes"
+        if folder.exists():
+            for f in folder.glob("*.*"):
+                if f.suffix.lower() not in (".docx", ".pdf"):
+                    continue
+                dt = _extract_date(f)
+                result[dt.date()] = f"/docs/minutes/{f.name}"
+    return result
+
+def _parse_meeting_date(raw: str):
+    """Parse a meeting date string from the sheet. Returns date or None."""
+    import datetime as _dt
+    raw = raw.strip()
+    for fmt in ("%d %B %Y", "%B %d, %Y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d %b %Y"):
+        try:
+            return _dt.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            pass
+    return None
+
 @app.get("/api/meetings")
 def get_meetings():
+    """Meeting Register sheet → the shape the React Meetings page expects.
+    Sheet columns are 'Meeting Ref' (e.g. 'KIM 001/2026'), 'Date', 'Key Topics',
+    'Key Decisions', 'Next Actions'."""
     try:
-        return gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
+        rows = gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
     except Exception as e:
         import logging as _lg; _lg.getLogger("main").error(f"meetings sheet: {e}")
         return []
+
+    minutes_index = _minutes_by_date()
+
+    out = []
+    for i, r in enumerate(rows):
+        ref = str(r.get("Meeting Ref", "") or "").strip()
+        # frontend renders "KIM {meeting_number}", so strip a leading KIM to avoid "KIM KIM"
+        number = ref[3:].strip() if ref.upper().startswith("KIM") else ref
+        if not (ref or r.get("Date")):
+            continue
+        raw_date = str(r.get("Date", "") or "")
+        meeting_date = _parse_meeting_date(raw_date)
+        minutes_url = minutes_index.get(meeting_date) if meeting_date else None
+        out.append({
+            "id": i + 1,
+            "meeting_number": number,
+            "meeting_date": raw_date,
+            "location": None,
+            "agenda": None,
+            "next_actions": (str(r.get("Next Actions", "")).strip() or None),
+            "key_decisions": (str(r.get("Key Decisions", "")).strip() or None),
+            "key_topics": (str(r.get("Key Topics", "")).strip() or None),
+            "attendance": [],
+            "minutes_url": minutes_url,
+            "action_count": 0,
+            "action_done_count": 0,
+        })
+    return out
 
 @app.get("/api/meeting")
 def get_next_meeting():
@@ -490,6 +564,32 @@ def get_all_projects():
         p["update"] = _best_update(p["id"], hc)
     return projects
 
+
+@app.get("/api/projects/pitches")
+async def get_project_pitches(request: Request):
+    """AI-cooked one-line "why join" enticements per project (figure-led).
+    Cached by the background pitch engine; read-only here."""
+    from fastapi import HTTPException as _HE
+    from fastapi import Request as _R  # noqa
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Not authenticated")
+    import pitch_engine as _pitch
+    data = _pitch.load()
+    return {pid: v.get("pitch") for pid, v in data.items() if v.get("pitch")}
+
+
+@app.post("/api/projects/pitches/refresh")
+async def refresh_project_pitches(request: Request):
+    """Force the pitch engine to re-cook now (admin/internal). Runs in a thread
+    so the request returns immediately."""
+    from fastapi import HTTPException as _HE
+    if not (_auth_verify(_get_tok(request)) or _internal_key_ok(request)):
+        raise _HE(status_code=401, detail="Not authenticated")
+    import threading as _th
+    import pitch_engine as _pitch
+    _th.Thread(target=lambda: _pitch.cook_once(get_all_projects, force=True), daemon=True).start()
+    return {"status": "cooking"}
+
 # ── Document repository + Ask KimFam ──────────────────────────────────────────
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -500,9 +600,9 @@ from dotenv import load_dotenv
 from google import genai as genai_client
 from groq import Groq
 
-load_dotenv("/var/www/kimfamhub/.env")
+load_dotenv(Path(__file__).parent / ".env")
 
-DOCS_DIR = Path("/var/www/kimfamhub/docs")
+DOCS_DIR = Path(__file__).parent / "docs"
 
 CATEGORY_LABELS = {
     "minutes":    "Meeting Minutes",
@@ -544,23 +644,52 @@ def _friendly_name(path: Path) -> str:
         n = n.replace(p, "").strip()
     return n if n else path.stem
 
+_DOC_SUFFIXES = {".docx", ".pdf"}
+
 @app.get("/api/docs")
 def get_docs():
     result = {}
-    for cat in ["minutes", "governance", "projects", "financial", "receipts"]:
-        folder = DOCS_DIR / cat
-        if not folder.exists():
-            continue
-        files = [f for f in folder.glob("*.*") if f.suffix.lower() in (".docx",".pdf")]
-        # Sort latest first: by extracted date for minutes, by mtime for others
-        files.sort(key=_extract_date, reverse=True)
-        result[cat] = {
-            "label": CATEGORY_LABELS[cat],
-            "files": [
-                {"name": _friendly_name(f), "file": f.name, "url": f"/docs/{cat}/{f.name}"}
-                for f in files
-            ]
-        }
+    if _r2.is_configured():
+        # R2 is the source of truth when configured
+        for cat in ["minutes", "governance", "projects", "financial", "receipts"]:
+            try:
+                objects = _r2.list_folder(cat + "/")
+            except Exception:
+                objects = []
+            files = []
+            for obj in objects:
+                key = obj["key"]
+                fname = key.split("/", 1)[-1]
+                if not fname:
+                    continue
+                if Path(fname).suffix.lower() not in _DOC_SUFFIXES:
+                    continue
+                if ".bak." in fname:
+                    continue
+                files.append({"fname": fname, "mtime": obj["last_modified"]})
+            files.sort(key=lambda x: x["mtime"], reverse=True)
+            result[cat] = {
+                "label": CATEGORY_LABELS[cat],
+                "files": [
+                    {"name": _friendly_name(Path(f["fname"])), "file": f["fname"], "url": f"/docs/{cat}/{f['fname']}"}
+                    for f in files
+                ],
+            }
+    else:
+        # Fallback: local disk (staging / no-R2 environments)
+        for cat in ["minutes", "governance", "projects", "financial", "receipts"]:
+            folder = DOCS_DIR / cat
+            if not folder.exists():
+                continue
+            files = [f for f in folder.glob("*.*") if f.suffix.lower() in _DOC_SUFFIXES]
+            files.sort(key=_extract_date, reverse=True)
+            result[cat] = {
+                "label": CATEGORY_LABELS[cat],
+                "files": [
+                    {"name": _friendly_name(f), "file": f.name, "url": f"/docs/{cat}/{f.name}"}
+                    for f in files
+                ],
+            }
     return result
 
 import time
@@ -726,10 +855,10 @@ async def admin_reindex(request: Request):
         raise _HE(status_code=403, detail="Forbidden")
     import subprocess, sys
     result = subprocess.run(
-        [sys.executable, "/var/www/kimfamhub/embed_documents.py"],
+        [sys.executable, os.path.join(os.path.dirname(__file__), "embed_documents.py")],
         capture_output=True, text=True,
         env={**os.environ},
-        cwd="/var/www/kimfamhub",
+        cwd=os.path.dirname(__file__),
     )
     return {"stdout": result.stdout[-2000:], "stderr": result.stderr[-1000:], "returncode": result.returncode}
 
@@ -1023,7 +1152,10 @@ import sqlite3 as _sqlite3
 from pydantic import BaseModel as _BaseModel
 from fastapi import HTTPException as _HTTPException
 
-_WB_DB = "/var/www/kimfamhub/data/washing_bay.db"
+# Environment-relative so STAGING writes to its own data dir, not prod's.
+# (Was hardcoded to the prod path, which leaked staging test income into prod.)
+# For prod, dirname(__file__) IS /var/www/kimfamhub, so the path is unchanged.
+_WB_DB = os.path.join(os.path.dirname(__file__), "data", "washing_bay.db")
 
 def _wb_conn():
     os.makedirs(os.path.dirname(_WB_DB), exist_ok=True)
@@ -1045,6 +1177,17 @@ def _wb_conn():
             conn.commit()
         except Exception:
             pass
+    # Capital accountability: who actually put in the ~25.9M CapEx, with proof.
+    conn.execute("""CREATE TABLE IF NOT EXISTS capital_contributions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        contributor  TEXT    NOT NULL,
+        amount_ugx   INTEGER NOT NULL,
+        date         TEXT    DEFAULT '',
+        source       TEXT    DEFAULT '',
+        proof_ref    TEXT    DEFAULT '',
+        verified     INTEGER DEFAULT 0,
+        recorded_at  TEXT    DEFAULT (datetime('now'))
+    )""")
     conn.commit()
     return conn
 
@@ -1081,24 +1224,134 @@ def wb_add_income(entry: _WBEntry):
     conn.close()
     return {"ok": True}
 
+
+# ── Washing Bay capital accountability ────────────────────────────────────────
+# Dad is reconciling the ~UGX 25.9M CapEx, which currently has no proof of
+# sources. Members log who actually contributed what, and we show how the
+# running total balances against the reported estimate.
+WB_CAPEX_TARGET = 25_900_000
+
+@app.get("/api/washing-bay/capital")
+def wb_get_capital():
+    conn = _wb_conn()
+    rows = conn.execute(
+        "SELECT id,contributor,amount_ugx,date,source,proof_ref,verified,recorded_at "
+        "FROM capital_contributions ORDER BY date DESC, id DESC"
+    ).fetchall()
+    conn.close()
+    records = [{"id":r[0],"contributor":r[1],"amount_ugx":r[2],"date":r[3],"source":r[4],
+                "proof_ref":r[5],"verified":bool(r[6]),"recorded_at":r[7]} for r in rows]
+    total = sum(r["amount_ugx"] for r in records)
+    verified_total = sum(r["amount_ugx"] for r in records if r["verified"])
+    by = {}
+    for r in records:
+        by[r["contributor"]] = by.get(r["contributor"], 0) + r["amount_ugx"]
+    by_contributor = sorted(
+        ({"contributor": k, "amount_ugx": v} for k, v in by.items()),
+        key=lambda x: x["amount_ugx"], reverse=True,
+    )
+    remaining = max(0, WB_CAPEX_TARGET - total)
+    return {
+        "target_ugx": WB_CAPEX_TARGET,
+        "total_accounted_ugx": total,
+        "verified_ugx": verified_total,
+        "remaining_ugx": remaining,
+        "pct_accounted": round(total / WB_CAPEX_TARGET * 100, 1) if WB_CAPEX_TARGET else 0,
+        "balanced": total >= WB_CAPEX_TARGET,
+        "by_contributor": by_contributor,
+        "records": records,
+    }
+
+class _WBCapital(_BaseModel):
+    pin: str
+    contributor: str
+    amount_ugx: int
+    date: str = ""
+    source: str = ""
+    proof_ref: str = ""
+    verified: bool = False
+
+@app.post("/api/washing-bay/capital")
+def wb_add_capital(entry: _WBCapital):
+    if entry.pin != os.getenv("WASHING_BAY_PIN", "1234"):
+        raise _HTTPException(status_code=403, detail="Incorrect PIN")
+    if not entry.contributor.strip() or entry.amount_ugx <= 0:
+        raise _HTTPException(status_code=400, detail="Contributor and a positive amount are required")
+    conn = _wb_conn()
+    conn.execute(
+        "INSERT INTO capital_contributions (contributor,amount_ugx,date,source,proof_ref,verified) "
+        "VALUES (?,?,?,?,?,?)",
+        (entry.contributor.strip(), entry.amount_ugx, entry.date, entry.source,
+         entry.proof_ref, 1 if entry.verified else 0)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+class _WBCapitalDel(_BaseModel):
+    pin: str
+    id: int
+
+@app.post("/api/washing-bay/capital/delete")
+def wb_delete_capital(body: _WBCapitalDel):
+    if body.pin != os.getenv("WASHING_BAY_PIN", "1234"):
+        raise _HTTPException(status_code=403, detail="Incorrect PIN")
+    conn = _wb_conn()
+    conn.execute("DELETE FROM capital_contributions WHERE id=?", (body.id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+def _r2_redirect(category: str, filename: str):
+    """Return a redirect to a presigned R2 URL, or None if R2 not configured."""
+    if not _r2.is_configured():
+        return None
+    from fastapi.responses import RedirectResponse
+    url = _r2.presigned_url(f"{category}/{filename}", expires=3600)
+    return RedirectResponse(url=url, status_code=302)
+
+def _r2_bytes(category: str, filename: str) -> bytes | None:
+    """Download file bytes from R2 for in-memory rendering. Returns None on any failure."""
+    if not _r2.is_configured():
+        return None
+    try:
+        import io
+        buf = io.BytesIO()
+        _r2._client().download_fileobj(_r2._R2_BUCKET, f"{category}/{filename}", buf)
+        return buf.getvalue()
+    except Exception:
+        return None
+
 @app.get("/docs/{category}/{filename}")
 def serve_doc(category: str, filename: str):
     path = DOCS_DIR / category / filename
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404)
-    mime = MIME.get(path.suffix.lower(), "application/octet-stream")
-    return FileResponse(str(path), media_type=mime,
-                        headers={"Content-Disposition": f"attachment; filename={filename}"})
+    if path.exists() and path.is_file():
+        mime = MIME.get(path.suffix.lower(), "application/octet-stream")
+        return FileResponse(str(path), media_type=mime,
+                            headers={"Content-Disposition": f"attachment; filename={filename}"})
+    r = _r2_redirect(category, filename)
+    if r:
+        return r
+    raise HTTPException(status_code=404)
 
 @app.get("/docs/{category}/{filename}/view")
 def view_doc(category: str, filename: str):
     path = DOCS_DIR / category / filename
-    if not path.exists() or not path.is_file():
+    suffix = Path(filename).suffix.lower()
+
+    # Try local first
+    file_bytes: bytes | None = None
+    if path.exists() and path.is_file():
+        file_bytes = path.read_bytes()
+    else:
+        file_bytes = _r2_bytes(category, filename)
+
+    if file_bytes is None:
         raise HTTPException(status_code=404)
-    suffix = path.suffix.lower()
+
     if suffix == ".docx":
-        with open(str(path), "rb") as f:
-            result = mammoth.convert_to_html(f)
+        import io
+        result = mammoth.convert_to_html(io.BytesIO(file_bytes))
         html = f"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -1109,10 +1362,11 @@ def view_doc(category: str, filename: str):
 </style></head><body>{result.value}</body></html>"""
         return HTMLResp(content=html)
     elif suffix in (".png", ".jpg", ".jpeg"):
-        mime = MIME.get(suffix, "image/jpeg")
-        return FileResponse(str(path), media_type=mime)
+        from fastapi.responses import Response
+        return Response(content=file_bytes, media_type=MIME.get(suffix, "image/jpeg"))
     elif suffix == ".pdf":
-        return FileResponse(str(path), media_type="application/pdf")
+        from fastapi.responses import Response
+        return Response(content=file_bytes, media_type="application/pdf")
     else:
         raise HTTPException(status_code=415, detail="Preview not supported for this file type")
 
@@ -1120,8 +1374,10 @@ def view_doc(category: str, filename: str):
 # ── Profile Picture Upload ─────────────────────────────────────────────────────
 from fastapi import UploadFile, File as FastAPIFile, Form
 
-AVATARS_DIR = Path("/var/www/kimfamhub/static/avatars")
-AVATARS_DIR.mkdir(exist_ok=True)
+# Environment-relative so staging serves its own avatars dir (same fix as washing-bay).
+# For prod, __file__ is /var/www/kimfamhub/main.py so the path is unchanged.
+AVATARS_DIR = Path(__file__).parent / "static" / "avatars"
+AVATARS_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.post("/api/auth/status")
 async def auth_update_status(request: Request):
@@ -1182,7 +1438,10 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
     if not member_name:
         raise _HE(status_code=401, detail="Not authenticated")
     ct = file.content_type or ""
-    if not ct.startswith("image/"):
+    # iOS Files picker sends application/octet-stream; accept any image-like type
+    # (PIL will reject non-images at conversion time, which is safe enough).
+    bad_types = {"text/", "application/json", "application/xml"}
+    if any(ct.startswith(t) for t in bad_types):
         raise _HE(status_code=400, detail="File must be an image")
     safe_name = "".join(c for c in member_name.lower() if c.isalnum())
     dest = AVATARS_DIR / f"{safe_name}.jpg"
@@ -1190,15 +1449,24 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
     try:
         from PIL import Image
         import io as _io
+        # Register HEIC/HEIF plugin if available (iOS default photo format)
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except ImportError:
+            pass
         img = Image.open(_io.BytesIO(contents))
         img = img.convert("RGB")
-        img.thumbnail((200, 200), Image.LANCZOS)
-        img.save(str(dest), "JPEG", quality=85)
-    except Exception:
-        with open(str(dest), "wb") as f_out:
-            f_out.write(contents)
-    url = f"/static/avatars/{safe_name}.jpg"
-    return {"url": url}
+        img.thumbnail((400, 400), Image.LANCZOS)
+        img.save(str(dest), "JPEG", quality=88)
+    except Exception as _img_err:
+        # Don't silently save broken bytes — return a clear error so the UI shows
+        # "unsupported format" instead of saving a broken file and claiming success.
+        import logging as _lg
+        _lg.getLogger("main").warning("avatar convert failed: %s", _img_err)
+        raise _HTTPException(status_code=400, detail=f"Could not process image. Please use a JPEG or PNG photo from your camera roll (not HEIC or RAW). Error: {str(_img_err)[:80]}")
+    url = f"/static/avatars/{safe_name}.jpg?t={int(__import__('time').time())}"
+    return {"url": url, "cache_bust": True}
 
 # ── Document Upload (admin) ───────────────────────────────────────────────────
 import r2_storage as _r2
@@ -2047,8 +2315,10 @@ def _fetch_chicken_data():
         if len(r) < 10 or not r[3].strip():
             continue
         pid = r[4].strip()
-        if pid in ("a2", "a3"):
-            batches.append({"product": r[3].strip(), "date": r[2].strip()[:10], "qty": _parse_num(r[9]), "source": r[13].strip()})
+        # Include standard bird PIDs (a2=hens, a3=cocks) plus any extra batch products
+        # (non-a1 means not eggs; new batches get UUID-style PIDs from AppSheet)
+        if pid in ("a2", "a3") or (pid not in ("a1",) and "chicken" in r[3].lower() or "batch" in r[3].lower() or "hen" in r[3].lower() or "cock" in r[3].lower() or "pullet" in r[3].lower() or "chick" in r[3].lower()):
+            batches.append({"product": r[3].strip(), "date": r[2].strip()[:10], "qty": _parse_num(r[9]), "source": r[13].strip() if len(r) > 13 else "", "pid": pid})
 
     # 5. Financial Statement tab (live P&L)
     fin_rows = sh.worksheet("Financial Statement").get_all_values()
@@ -2157,6 +2427,16 @@ async def chicken_detail(request: Request):
     cocks = p.get("a3", {})
     eggs  = p.get("a1", {})
 
+    # Any product that is FREE RANGE CHICKEN but not standard a1/a2/a3 = new batch (chicks/pullets)
+    extra_batches = {pid: v for pid, v in p.items() if pid not in ("a1", "a2", "a3")}
+    active_chicks      = sum(int(v.get("available",  0)) for v in extra_batches.values())
+    chicks_purchased   = sum(int(v.get("purchased",  0)) for v in extra_batches.values())
+    chicks_sold        = sum(int(v.get("sold",        0)) for v in extra_batches.values())
+    chicks_deaths      = sum(int(v.get("deaths",      0)) for v in extra_batches.values())
+    chicks_capex       = sum(int(v.get("deaths_val",  0)) for v in extra_batches.values())
+    # Label: show descriptions so it's clear what these are
+    batch_labels = [v for v in extra_batches.values() if v.get("name")]
+
     TRAY = 30
 
     fr = data.get("financials_raw", {})
@@ -2182,20 +2462,25 @@ async def chicken_detail(request: Request):
         ) if batch3_unlogged else "",
     }
 
-    actual_revenue = int(eggs.get("revenue", 0) + hens.get("revenue", 0) + cocks.get("revenue", 0))
+    # Revenue = eggs + all bird products (a2, a3, any extra batches)
+    extra_revenue = sum(int(v.get("revenue", 0)) for v in extra_batches.values())
+    actual_revenue = int(eggs.get("revenue", 0) + hens.get("revenue", 0) + cocks.get("revenue", 0) + extra_revenue)
     return {
         "flock": {
-            "active_hens":          int(hens.get("available", 0)),
-            "active_cocks":         int(cocks.get("available", 0)),
-            "total_hens_purchased": hens_purchased,
-            "total_cocks_purchased": int(cocks.get("purchased", 0)),
-            "hens_sold":            int(hens.get("sold", 0)),
-            "cocks_sold":           int(cocks.get("sold", 0)),
-            "hens_deaths":          int(hens.get("deaths", 0)),
-            "cocks_deaths":         int(cocks.get("deaths", 0)),
-            "deaths_detail":        data["deaths_detail"],
-            "batches":              data["batches"],
-            "whatsapp_only":        whatsapp_only,
+            "active_hens":            int(hens.get("available", 0)),
+            "active_cocks":           int(cocks.get("available", 0)),
+            "new_batch_chicks":       active_chicks,
+            "total_hens_purchased":   hens_purchased,
+            "total_cocks_purchased":  int(cocks.get("purchased", 0)),
+            "new_batch_purchased":    chicks_purchased,
+            "hens_sold":              int(hens.get("sold", 0)),
+            "cocks_sold":             int(cocks.get("sold", 0)),
+            "hens_deaths":            int(hens.get("deaths", 0)),
+            "cocks_deaths":           int(cocks.get("deaths", 0)),
+            "new_batch_note":         "New batch (chicks/pullets) — not yet laying. Recorded as separate product in AppSheet." if active_chicks else "",
+            "deaths_detail":          data["deaths_detail"],
+            "batches":                data["batches"],
+            "whatsapp_only":          whatsapp_only,
         },
         "sales": {
             "eggs": {
@@ -2490,6 +2775,26 @@ async def washing_bay_detail(request: Request):
     annual_rev    = monthly_rev * 12
     annual_profit = annual_rev * 0.35  # rough margin for car wash
     roi_pct       = round((annual_rev * (payback_mo / 12)) / capex * 100, 1)
+
+    # Capital accountability — how much of the reported CapEx actually has a
+    # documented contributor + source behind it.
+    try:
+        _cc = _wb_conn()
+        _crows = _cc.execute("SELECT contributor,amount_ugx FROM capital_contributions").fetchall()
+        _cc.close()
+    except Exception:
+        _crows = []
+    cap_accounted = sum(r[1] for r in _crows)
+    cap_remaining = max(0, capex - cap_accounted)
+    cap_pct = round(cap_accounted / capex * 100, 1) if capex else 0
+    accountability_risk = [{
+        "risk": "No capital accountability",
+        "probability": "High", "impact": "High",
+        "note": (f"Only UGX {cap_accounted:,} of the reported UGX {capex:,} CapEx has a documented "
+                 f"contributor and source ({cap_pct}%). UGX {cap_remaining:,} is still unproven. "
+                 "Dad and Alex are the known major investors; the split needs reconciling.")
+    }] if cap_accounted < capex else []
+
     return {
         "overview": {
             "start_date": "Jan 2026 (approx)", "months_running": months_running,
@@ -2528,7 +2833,14 @@ async def washing_bay_detail(request: Request):
             "capex_line": capex_line,
             "break_even_month": round(payback_mo),
         },
-        "risks": [
+        "capital_accountability": {
+            "target_ugx": capex,
+            "accounted_ugx": cap_accounted,
+            "remaining_ugx": cap_remaining,
+            "pct_accounted": cap_pct,
+            "balanced": cap_accounted >= capex,
+        },
+        "risks": accountability_risk + [
             {"risk": "Equipment failure",    "probability": "Medium", "impact": "High",   "note": "Jet spray / pump downtime kills revenue. Maintenance schedule critical."},
             {"risk": "Competition",          "probability": "Medium", "impact": "Medium", "note": "Other car washes in area. Differentiation via reliability and location."},
             {"risk": "Sanitation compliance","probability": "High",   "impact": "Medium", "note": "Existing pit cannot serve as septic. UGX 7.6M upgrade required."},
@@ -3261,8 +3573,45 @@ async def portfolio_ranking_stream(request: Request):
                 m = _re.search(r"\{.*\}", _hr, _re.DOTALL)
                 if m: ranked = _json.loads(m.group())
             except: pass
+            # Haiku CLI intermittently returns nothing/unparseable — fall back so the
+            # ranking is never empty: Gemini Flash, then Groq.
+            if not ranked.get("ranked"):
+                _gk = _os.environ.get("GEMINI_API_KEY", "")
+                if _gk:
+                    try:
+                        from google import genai as _genai
+                        _gr = _genai.Client(api_key=_gk).models.generate_content(
+                            model="gemini-2.0-flash", contents=haiku_prompt).text
+                        _gm = _re.search(r"\{.*\}", _re.sub(r"```[\w]*\n?", "", _gr or ""), _re.DOTALL)
+                        if _gm: ranked = _json.loads(_gm.group())
+                    except: pass
+            if not ranked.get("ranked"):
+                _qk = _os.environ.get("GROQ_API_KEY", "")
+                if _qk:
+                    try:
+                        from groq import Groq as _Groq
+                        _qr = _Groq(api_key=_qk).chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[{"role": "user", "content": haiku_prompt}],
+                            max_tokens=1200, response_format={"type": "json_object"}
+                        ).choices[0].message.content
+                        _qm = _re.search(r"\{.*\}", _qr or "", _re.DOTALL)
+                        if _qm: ranked = _json.loads(_qm.group())
+                    except: pass
             n = len(ranked.get("ranked", []))
-            yield _sse({"type":"step","step":3,"total":5,"msg":f"Haiku ranked {n} projects — Claude Sonnet generating strategic insights..."})
+            yield _sse({"type":"step","step":3,"total":5,"msg":f"Haiku scored {n} projects on capital, speed and risk."})
+            # Reveal the interim verdict so the user watches the reasoning, not a label.
+            _names = {"chicken":"🐔 Free Range Chicken","washing_bay":"🚗 Washing Bay","sheep":"🐑 Sheep",
+                      "trees":"🌲 Tree Planting","irrigation":"💧 Irrigation","dairy":"🐄 Dairy","bees":"🍯 Apiary"}
+            _sorted = sorted(ranked.get("ranked", []), key=lambda x: x.get("rank", 99))
+            if _sorted:
+                _t = _sorted[0]
+                _nm = _names.get(_t.get("project_id",""), _t.get("project_id","?"))
+                yield _sse({"type":"step","step":3,"total":5,"msg":f"Lead pick so far: {_nm} at {_t.get('score_out_of_10','?')}/10, tier {_t.get('tier','')}."})
+            if len(_sorted) > 1:
+                _b = _sorted[-1]
+                _bn = _names.get(_b.get("project_id",""), _b.get("project_id","?"))
+                yield _sse({"type":"step","step":3,"total":5,"msg":f"Most patience needed: {_bn} ({_b.get('tier','')}). Now weighing portfolio-wide synergies..."})
 
             # ── Step 4: Gemini 2.5 Flash — token streaming for narrative ───────
             insight_prompt = (
@@ -3279,7 +3628,21 @@ async def portfolio_ranking_stream(request: Request):
             insights = {}
             yield _sse({"type":"step","step":4,"total":5,"msg":"Claude Sonnet generating strategic insights..."})
 
-            sonnet_raw = await _ask_claude_async(insight_prompt, model="sonnet", timeout=90)
+            # Run the (slow) insight call as a task and emit "thinking" heartbeats
+            # while it runs — keeps the SSE alive past nginx's idle timeout AND
+            # lets the user watch the reasoning unfold.
+            _think = ["Cross-referencing capital against live cash flow...",
+                      "Hunting for the flywheel between projects...",
+                      "Finding the one risk that hits several ventures at once...",
+                      "Drafting the next 90-day moves..."]
+            _task = _aio.create_task(_ask_claude_async(insight_prompt, model="sonnet", timeout=90))
+            _hi = 0
+            while not _task.done():
+                _done, _ = await _aio.wait({_task}, timeout=7)
+                if not _done:
+                    yield _sse({"type":"step","step":4,"total":5,"msg":_think[_hi % len(_think)]})
+                    _hi += 1
+            sonnet_raw = _task.result()
 
             if not sonnet_raw:
                 groq_key = _os.environ.get("GROQ_API_KEY", "")
@@ -3373,7 +3736,21 @@ async def new_ventures_stream(request: Request):
             full_text = ""
             yield _sse({"type":"step","step":3,"total":4,"msg":"Claude Sonnet researching venture opportunities..."})
 
-            full_text = await _ask_claude_async(prompt, model="sonnet", timeout=120)
+            # Heartbeat "thinking" lines while the slow research call runs, so the
+            # SSE stays alive (past nginx idle timeout) and the user sees progress.
+            _vt = ["Scanning Uganda 2026 agriculture and agri-processing trends...",
+                   "Matching ideas to your land, water and market access...",
+                   "Checking each idea links back to an existing asset...",
+                   "Sizing capital and time to first revenue...",
+                   "Sequencing them for the fastest compounding..."]
+            _task = _aio.create_task(_ask_claude_async(prompt, model="sonnet", timeout=120))
+            _vi = 0
+            while not _task.done():
+                _done, _ = await _aio.wait({_task}, timeout=7)
+                if not _done:
+                    yield _sse({"type":"step","step":3,"total":4,"msg":_vt[_vi % len(_vt)]})
+                    _vi += 1
+            full_text = _task.result()
 
             if not full_text:
                 groq_key = _os.environ.get("GROQ_API_KEY", "")
@@ -3396,6 +3773,12 @@ async def new_ventures_stream(request: Request):
                 if m: result = _json.loads(m.group())
             except:
                 result = {"ventures":[],"raw":full_text[:2000],"error":"JSON parse failed"}
+
+            _vs = result.get("ventures", []) if isinstance(result, dict) else []
+            if _vs:
+                _v0 = _vs[0]
+                yield _sse({"type":"step","step":4,"total":4,"msg":f"Top idea: {_v0.get('name','?')} — {(_v0.get('headline','') or '')[:80]}"})
+                yield _sse({"type":"step","step":4,"total":4,"msg":f"{len(_vs)} fresh ventures mapped to your land, water and markets. Compiling..."})
 
             yield _sse({"type":"result","data":result})
 

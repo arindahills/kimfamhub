@@ -40,10 +40,13 @@ export function DialogContent({
           'fixed z-[101] overflow-y-auto bg-[var(--background)] shadow-2xl focus:outline-none',
           desktop
             ? 'left-1/2 top-1/2 w-[calc(100vw-24px)] max-w-lg max-h-[88vh] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border border-[var(--border)]'
-            : 'inset-x-0 bottom-0 max-h-[92vh] rounded-t-[22px] border-t border-[var(--border)]',
+            : 'inset-x-0 bottom-0 rounded-t-[22px] border-t border-[var(--border)]',
           className,
         )}
-        style={{ animation: desktop ? 'pop-in .18s ease' : 'sheet-up .28s cubic-bezier(.32,.72,0,1)' }}
+        style={{
+          animation: desktop ? 'pop-in .18s ease' : 'sheet-up .28s cubic-bezier(.32,.72,0,1)',
+          maxHeight: desktop ? undefined : 'calc(92dvh - env(safe-area-inset-top, 0px))',
+        }}
       >
         {!desktop && <div className="mx-auto mt-2.5 mb-0.5 h-1.5 w-10 shrink-0 rounded-full bg-[var(--border)]" />}
         {(title || subtitle) && (

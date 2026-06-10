@@ -2,21 +2,21 @@
   "nav": {
     "home": "Omu Nganda",
     "updates": "Amakuru",
-    "actions": "Ebikorerwa",
+    "actions": "Ebikorwa",
     "finances": "Ebyamafaranga",
     "members": "Abagwi",
     "projects": "Emirimo",
     "equity": "Engabu",
     "loans": "Enyingye",
     "meetings": "Entegyeka",
-    "docs": "Ebikwate",
+    "docs": "Ebikwate", "expenditure": "Ebikoozesebwa",
     "ask": "Bibuuza KimFam",
     "admin": "Entekateeka"
   },
   "common": {
     "loading": "Eririkira...",
     "error": "Hariho ekizibu",
-    "retry": "Gezaho nkora",
+    "retry": "Gezaaho",
     "save": "Bika",
     "cancel": "Reka",
     "submit": "Tuura",
@@ -31,7 +31,11 @@
     "none": "Nta kibapo",
     "yes": "Yego",
     "no": "Nawe",
-    "currency": "UGX"
+    "currency": "UGX",
+    "allClear": "Nikyamalirire",
+    "settled": "Enyingye yabwiirwe",
+    "overdue": "Ekibuukirire",
+    "dueToday": "Eizooba ry'Okuguriira"
   },
   "auth": {
     "login": "Ingiira",
@@ -44,7 +48,38 @@
   "home": {
     "welcome": "Tukwanukirize",
     "tagline": "Ekibiina ky'Okuteekateeka ebyamafaranga kya KimFam",
-    "mission": "Okuteekateeka ebyamafaranga omu mirimo erikuruha ebyaro"
+    "mission": "Okuteekateeka ebyamafaranga omu mirimo erikuruha ebyaro",
+    "clubIntro": "Shanga emirimo y'okuteekateeka ebyamafaranga egituukagamu oburyo bw'amagara.",
+    "obj1": "Teekateeka ebyamafaranga omu mirimo erikuruha ebyaro",
+    "obj2": "Shiinga eizibu ry'okuteekateeka ebyamafaranga",
+    "obj3": "Shiinga omukono gw'okubika ebyamafaranga omu bagwi bona",
+    "obj4": "Gaba emiinwe omu bagwi orungi rw'amakaaro gaabo",
+    "recentUpdates": "Amakuru Agatuuka",
+    "showMore": "Laga Ebiriku Bangi",
+    "showLess": "Hanga",
+    "bankBalance": "Emirari y'Eibanki",
+    "familyGroups": "Amaka",
+    "activeProjects": "Emirimo Emiriho"
+  },
+  "projects": {
+    "title": "Emirimo",
+    "ourProjects": "Emirimo Yaitu",
+    "ventures": "emirimo omu portfolio",
+    "all": "Byona",
+    "farming": "Obuhingi",
+    "business": "Omushaho",
+    "unitTrusts": "Enyingye z'Ekibiina",
+    "realEstate": "Obutaka",
+    "portfolioAI": "Portfolio AI",
+    "newVentures": "Emirimo Emisya",
+    "viewActions": "Laga Ebikorwa by'Entekateeka",
+    "teamInterest": "Obutaka bw'Itswe",
+    "expressInterest": "Laga Obutaka",
+    "latestUpdate": "Amakuru Agatuuka",
+    "operational": "Ekirikukolera",
+    "planning": "Omuteekateeka",
+    "research": "Okunoorana",
+    "active": "Ekiririho"
   },
   "finances": {
     "submitPayment": "Tuura Obuguzi",
@@ -57,17 +92,22 @@
     "date": "Eizooba",
     "period": "Ekihaaniro",
     "receipt": "Ekitabo ky'Obuguzi",
-    "calculator": "Okubara Obuguzi"
+    "calculator": "Okubara Obuguzi",
+    "allClear": "Nikyamalirire",
+    "bankAccount": "Akaunti y'Eibanki",
+    "selectFamily": "Hoora Ow'Eka..."
   },
   "actions": {
-    "title": "Ebikorerwa",
+    "title": "Ebikorwa",
     "responsible": "Omukuumi",
     "deadline": "Eizooba ry'Okumaliriza",
     "status": "Emirari",
     "meeting": "Entegyeka",
     "overdue": "Ekibuukirire",
     "done": "Nikyamalirire",
-    "pending": "Nikireeberwa"
+    "pending": "Nikireeberwa",
+    "markDone": "Malirizaho",
+    "allMembers": "Abagwi Bona"
   },
   "meetings": {
     "title": "Entegyeka",
@@ -76,7 +116,19 @@
     "decisions": "Ebizimu Eby'Omukuru",
     "topics": "Ebicuucu Eby'Omukuru",
     "attendance": "Abaagiire",
-    "nextMeeting": "Entegyeka Egiijayo"
+    "nextMeeting": "Entegyeka Egiijayo",
+    "nextActions": "Ebikorwa Ebigiijayo",
+    "minutes": "Ebikwate by'Entegyeka"
+  },
+  "members": {
+    "title": "Abagwi",
+    "asOf": "Okutuuka",
+    "totalContributed": "Ebyo Byona Bya Biiriirwe",
+    "monthlyBalance": "Emirari y'Omwezi",
+    "initialObligation": "Ekiteekwa ky'Embera",
+    "initialBalance": "Emirari y'Embera",
+    "allClear": "Nikyamalirire",
+    "owed": "Ekirikusanirwa"
   },
   "loans": {
     "title": "Enyingye",
@@ -85,12 +137,37 @@
     "balance": "Emirari",
     "dueDate": "Eizooba ry'Okuguriira",
     "daysRemaining": "Eizooba Erikaara",
-    "payments": "Amateka g'Obuguzi"
+    "payments": "Amateka g'Obuguzi",
+    "settled": "Enyingye yabwiirwe",
+    "noLoans": "Nta nyingye ziiriho kati."
+  },
+  "equity": {
+    "title": "Engabu",
+    "totalEquity": "Engabu Yona y'Ekibiina",
+    "equityShare": "Ekijuuro ky'Engabu",
+    "currentEquity": "Engabu Erikiriho",
+    "totalContributed": "Ebyo Byona Bya Biiriirwe"
+  },
+  "documents": {
+    "title": "Ebikwate",
+    "meetingMinutes": "Ebikwate by'Entegyeka",
+    "governance": "Entekateeka",
+    "view": "Laga",
+    "download": "Toora"
   },
   "ask": {
     "title": "Bibuuza KimFam",
     "placeholder": "Bibuuza ebirikuhusu KimFam...",
     "send": "Tuuma",
-    "thinking": "Niririkira..."
+    "thinking": "Niririkira...",
+    "suggested1": "Emirari y'eibanki erikugiire?",
+    "suggested2": "Ndiyo abagwi abatatuuriire?",
+    "suggested3": "Ebizimu eby'entegyeka eya nyuma?",
+    "suggested4": "Emirari gw'omubirimo ogw'enkoko?"
+  },
+  "updates": {
+    "title": "Amakuru",
+    "allProjects": "Emirimo Yona",
+    "post": "Kwatiriza"
   }
 }

@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
+import ExpenditurePage from './ExpenditurePage'
 
-const ADMIN_USERS = ['Hillary', 'Hellen']
 
 interface Summary {
   as_at: string
@@ -40,6 +40,26 @@ interface PendingPayment {
 
 const ugx = (v: number) => 'UGX ' + Math.abs(v || 0).toLocaleString()
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+/**
+ * If currentBalance < 0 (credit) and monthlyRate > 0, returns the calendar
+ * month+year the family is paid up to — e.g. "Jun 2026". Otherwise null.
+ * Ported from the original vanilla JS paidToLabel() in index.html.
+ */
+function paidToLabel(currentBalance: number, monthlyRate: number): string | null {
+  if (!monthlyRate || currentBalance >= 0) return null
+  const ahead = Math.floor(Math.abs(currentBalance) / monthlyRate)
+  if (ahead <= 0) return null
+  const today = new Date()
+  let y = today.getFullYear(), m = today.getMonth()
+  // Start from previous month (last fully closed month)
+  if (m === 0) { m = 11; y-- } else { m-- }
+  m += ahead
+  while (m > 11) { m -= 12; y++ }
+  return MONTHS[m] + ' ' + y
+}
+
 function ReconciliationBadge({ confirmed, computed }: { confirmed: number; computed: number }) {
   const gap = confirmed - computed
   const abs = Math.abs(gap)
@@ -71,7 +91,10 @@ function FamilyCard({ f }: { f: FamilyBalance }) {
   const outstanding = curBal <= 0 ? initBal : f.combined_balance
   const borderCol = outstanding === 0 ? '#166534' : outstanding <= rate * 3 ? '#d97706' : '#dc2626'
 
-  const mStatus = curBal < 0
+  const paidTo = paidToLabel(curBal, rate)
+  const mStatus = paidTo
+    ? <span style={{ color: '#4ade80', fontWeight: 600 }}>Paid to {paidTo}</span>
+    : curBal < 0
     ? <span style={{ color: '#4ade80' }}>UGX {Math.abs(curBal).toLocaleString()} credit</span>
     : curBal === 0
     ? <span style={{ color: '#4ade80' }}>Up to date</span>
@@ -109,122 +132,698 @@ function FamilyCard({ f }: { f: FamilyBalance }) {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SUBMIT PAYMENT — 3-STEP WIZARD
+//
+// Ported faithfully from the vanilla JS app (old-index.html, ~lines 1350–1825).
+//
+// API CONTRACT (POST /api/contributions/submit):
+//   family_id:            int      — from /api/contributions/ledger
+//   amount_ugx:           int
+//   payment_reference:    str|null
+//   declared_through:     str|null — YYYY-MM, last month explicitly covered (Case 3 only)
+//   apply_to_initial_ugx: int      — UGX of excess to apply to opening balance
+//   → returns { payment_id, status }
+//
+// POST /api/contributions/{payment_id}/receipt  — attach bank screenshot
+//
+// ALLOCATION CASES (determined by preview.current_balance vs amount):
+//   Case 1: current_balance > 0  AND  amount < current_balance
+//     → partial arrears payment, FIFO auto-allocation, no step 2
+//   Case 2: current_balance > 0  AND  amount >= current_balance
+//     → clears arrears; user splits excess between opening-balance and future monthly
+//   Case 3: current_balance <= 0
+//     → monthly is current; user picks which months to cover +
+//       optionally applies some UGX to the opening balance (initial_balance)
+//
+// PREVIEW endpoint: GET /api/contributions/family/{id}/preview
+//   returns: current_balance, initial_balance, combined_balance,
+//            current_monthly_rate, suggested_period (YYYY-MM of oldest unpaid month)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PayPreview {
+  family_id: number
+  family_name: string
+  combined_balance: number
+  initial_balance: number
+  current_balance: number
+  current_monthly_rate: number
+  suggested_period: string
+}
+
+interface LedgerFamily { family_id: number; family_name: string }
+
+function monthLabel(ym: string) {
+  const [y, m] = ym.split('-').map(Number)
+  return new Date(y, m - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' })
+}
+
 function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
-  const { t } = useTranslation()
-  const { user } = useAuth()
   const qc = useQueryClient()
-  const [family, setFamily] = useState(user?.name || '')
-  const [amount, setAmount] = useState('')
-  const [period, setPeriod] = useState('')
-  const [ref, setRef] = useState('')
-  const [alloc, setAlloc] = useState('monthly')
-  const [file, setFile] = useState<File | null>(null)
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
 
-  const FAMILIES = ['Alex', 'Israel', 'Max', 'Solomon', 'Viola', 'Hellen', 'Priscilla']
+  // ── step state ──
+  type Step = 1 | 2 | 3
+  const [step, setStep] = useState<Step>(1)
 
-  const submit = async () => {
-    setErr('')
-    const amt = parseInt(amount.replace(/[^0-9]/g, '')) || 0
-    if (!family) return setErr('Select a family.')
-    if (!amt || amt <= 0) return setErr('Enter a valid amount.')
-    if (!period) return setErr('Select a period.')
-    setBusy(true)
+  // ── step 1 state ──
+  const [familyId, setFamilyId]   = useState<number | null>(null)
+  const [amountRaw, setAmountRaw] = useState('')
+  const [ref, setRef]             = useState('')
+  const [file, setFile]           = useState<File | null>(null)
+  const [preview, setPreview]     = useState<PayPreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  // ── step 2 (Case 2) — excess allocation ──
+  const [excessToInit, setExcessToInit] = useState(0)
+
+  // ── step 2 (Case 3) — month picker ──
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([])
+  const [initChoice, setInitChoice]         = useState(0)
+
+  // ── submission ──
+  const [busy, setBusy]       = useState(false)
+  const [err, setErr]         = useState('')
+  const [success, setSuccess] = useState<{amount: number; paymentId: number} | null>(null)
+
+  const { data: ledger = [] } = useQuery<LedgerFamily[]>({
+    queryKey: ['contributions-ledger'],
+    queryFn:  () => fetch('/api/contributions/ledger', { credentials: 'include' }).then(r => r.json()),
+    staleTime: 30_000,
+  })
+
+  const amount = parseInt(amountRaw.replace(/[^0-9]/g, '')) || 0
+
+  // fetch preview whenever family or amount changes
+  const loadPreview = async (fid: number) => {
+    setPreviewLoading(true)
     try {
+      const p: PayPreview = await fetch(
+        `/api/contributions/family/${fid}/preview?amount=${amount}`,
+        { credentials: 'include' }
+      ).then(r => r.json())
+      setPreview(p)
+    } catch { setPreview(null) }
+    setPreviewLoading(false)
+  }
+
+  const onFamilyChange = (fid: number) => {
+    setFamilyId(fid)
+    setPreview(null)
+    if (fid) loadPreview(fid)
+  }
+
+  const onAmountChange = (raw: string) => {
+    const digits = raw.replace(/[^0-9]/g, '')
+    setAmountRaw(digits ? parseInt(digits).toLocaleString() : '')
+    if (familyId && digits) {
+      const fid = familyId, amt = parseInt(digits)
+      fetch(`/api/contributions/family/${fid}/preview?amount=${amt}`, { credentials: 'include' })
+        .then(r => r.json()).then(setPreview).catch(() => {})
+    }
+  }
+
+  // coverage hint shown below amount input
+  const coverageHint = (() => {
+    if (!preview || !amount) return null
+    const { combined_balance: bal, current_monthly_rate: rate } = preview
+    if (bal > 0) {
+      if (amount < bal) return { bg: '#431407', color: '#fed7aa', text: `Reduces balance from UGX ${bal.toLocaleString()} to UGX ${(bal - amount).toLocaleString()}.` }
+      if (amount === bal) return { bg: '#052e16', color: '#86efac', text: 'Clears the full balance. New balance: UGX 0.' }
+      const ahead = amount - bal
+      return { bg: '#052e16', color: '#86efac', text: `Clears full balance + UGX ${ahead.toLocaleString()} paid in advance (${(ahead / rate).toFixed(1)} months ahead).` }
+    }
+    const can = Math.floor(amount / rate)
+    return { bg: '#1e3a5f', color: '#93c5fd', text: `Covers up to ${can} month${can !== 1 ? 's' : ''}. Choose months on the next step.` }
+  })()
+
+  // ── NEXT (step 1 → 2 or 3) ──
+  const goNext = () => {
+    setErr('')
+    if (!familyId) return setErr('Select a family.')
+    if (!amount) return setErr('Enter an amount.')
+    if (!file) return setErr('Attach a bank or MoMo screenshot. Hellen needs it to verify.')
+    if (!preview) return setErr('Loading family balance, please try again.')
+    const curBal = preview.current_balance
+    if (curBal > 0 && amount < curBal) {
+      // Case 1: partial arrears → skip allocation, go to review
+      setStep(3)
+    } else if (curBal > 0 && amount >= curBal) {
+      // Case 2: clears arrears, show excess panel
+      setExcessToInit(0)
+      setStep(2)
+    } else {
+      // Case 3: monthly current, show month picker
+      setSelectedMonths([])
+      setInitChoice(0)
+      setStep(2)
+    }
+  }
+
+  // ── Case 3: affordable months from suggested_period ──
+  const affordableMonths = (() => {
+    if (!preview || (preview.current_balance > 0)) return []
+    const rate = preview.current_monthly_rate
+    const existingCredit = Math.max(0, -(preview.current_balance))
+    const alreadyCovered = Math.floor(existingCredit / rate)
+    const creditRem = existingCredit - alreadyCovered * rate
+    const remaining = amount - initChoice
+    const pool = remaining + creditRem
+    const max = Math.floor(pool / rate)
+    const [sy, sm] = preview.suggested_period.split('-').map(Number)
+    let y = sy, m = sm
+    for (let i = 0; i < alreadyCovered; i++) { m++; if (m > 12) { m = 1; y++ } }
+    const months: string[] = []
+    for (let i = 0; i < max; i++) {
+      months.push(`${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}`)
+      m++; if (m > 12) { m = 1; y++ }
+    }
+    return months
+  })()
+
+  const toggleMonth = (mo: string) => {
+    setSelectedMonths(prev =>
+      prev.includes(mo) ? prev.filter(x => x !== mo) : [...prev, mo].sort()
+    )
+  }
+
+  // ── step 2 → step 3 (review) ──
+  const goReview = () => {
+    setErr('')
+    const curBal = preview?.current_balance ?? 0
+    if (curBal <= 0 && selectedMonths.length === 0 && amount - initChoice > 0) {
+      if (initChoice > 0) return setErr(`UGX ${(amount - initChoice).toLocaleString()} unallocated. Select months or increase opening balance amount.`)
+      return setErr('Select at least one month to continue.')
+    }
+    setStep(3)
+  }
+
+  // ── SUBMIT ──
+  const doSubmit = async () => {
+    if (!familyId || !amount || !preview) return
+    setBusy(true); setErr('')
+    try {
+      const curBal = preview.current_balance
+      const declaredThrough = (curBal <= 0 && selectedMonths.length > 0)
+        ? selectedMonths[selectedMonths.length - 1]
+        : null
+      const applyToInitial = curBal > 0
+        ? excessToInit
+        : initChoice
+
       const r = await fetch('/api/contributions/submit', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ family_name: family, amount_ugx: amt, period_month: period, payment_reference: ref, allocation_type: alloc }),
+        body: JSON.stringify({
+          family_id: familyId,
+          amount_ugx: amount,
+          payment_reference: ref.trim() || null,
+          declared_through: declaredThrough,
+          apply_to_initial_ugx: applyToInitial,
+        }),
       })
       if (!r.ok) {
         const j = await r.json().catch(() => ({}))
         setErr(j.detail || 'Submission failed.')
-        setBusy(false)
-        return
+        setBusy(false); return
       }
-      const j = await r.json()
+      const { payment_id } = await r.json()
       if (file) {
         const fd = new FormData(); fd.append('file', file)
-        await fetch(`/api/contributions/${j.submission_id}/receipt`, { method: 'POST', credentials: 'include', body: fd })
+        await fetch(`/api/contributions/${payment_id}/receipt`, {
+          method: 'POST', credentials: 'include', body: fd
+        }).catch(() => {})
       }
       qc.invalidateQueries({ queryKey: ['contributions-summary'] })
       qc.invalidateQueries({ queryKey: ['contributions-ledger'] })
-      onClose()
+      setSuccess({ amount, paymentId: payment_id })
     } catch {
       setErr('Network error. Try again.')
-      setBusy(false)
     }
+    setBusy(false)
   }
 
-  const months: string[] = []
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(); d.setMonth(d.getMonth() - i)
-    months.push(d.toISOString().slice(0, 7))
+  const sel = (value: string, onChange: (v: string) => void, children: React.ReactNode) => (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="w-full rounded-lg px-3 py-2.5 text-sm"
+      style={{ background: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }}>
+      {children}
+    </select>
+  )
+
+  const inp = (props: React.InputHTMLAttributes<HTMLInputElement>) => (
+    <input {...props} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+      style={{ background: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }} />
+  )
+
+  const initBal    = preview?.initial_balance ?? 0
+  const curBal     = preview?.current_balance ?? 0
+  const rate       = preview?.current_monthly_rate ?? 0
+  const isCase2    = curBal > 0 && amount >= curBal
+  const excess     = isCase2 ? amount - curBal : 0
+  const _maxInitEx  = Math.min(excess, initBal); void _maxInitEx
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}>
+      <div className="w-full max-w-md rounded-t-2xl flex flex-col" style={{ background: '#0d1829', border: '1px solid #334155', maxHeight: '94vh' }}>
+
+        {/* header */}
+        <div className="flex items-center justify-between px-5 pt-4 pb-3" style={{ borderBottom: '1px solid #1e293b' }}>
+          <div>
+            <div className="font-bold text-base" style={{ color: '#f1f5f9' }}>Submit a Payment</div>
+            <div className="text-xs mt-0.5" style={{ color: '#475569' }}>
+              Step {step} of 3 — {step === 1 ? 'Details' : step === 2 ? 'Allocate' : 'Review'}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: '#1e293b', border: 'none', borderRadius: 8, padding: 6, cursor: 'pointer', color: '#64748b' }}>✕</button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-3">
+
+          {/* ── STEP 1 ── */}
+          {step === 1 && (
+            <>
+              {/* bank account */}
+              <div className="rounded-xl p-3 text-center" style={{ background: '#0a2a14', border: '1px solid #166534' }}>
+                <div className="text-xs mb-1" style={{ color: '#94a3b8' }}>Pay to ABSA Uganda</div>
+                <div className="text-2xl font-bold tracking-widest" style={{ color: '#22c55e' }}>6004961127</div>
+                <div className="text-sm mt-1" style={{ color: '#cbd5e1' }}>TUSIIME HELLEN</div>
+              </div>
+
+              {/* family */}
+              <div>
+                {sel(
+                  String(familyId ?? ''),
+                  v => onFamilyChange(parseInt(v)),
+                  <>
+                    <option value="">Select family...</option>
+                    {ledger.map(f => (
+                      <option key={f.family_id} value={f.family_id}>
+                        {'The ' + f.family_name.charAt(0) + f.family_name.slice(1).toLowerCase()}
+                      </option>
+                    ))}
+                  </>
+                )}
+                {/* balance hint */}
+                {previewLoading && <p className="text-xs mt-1" style={{ color: '#64748b' }}>Loading balance...</p>}
+                {preview && !previewLoading && (
+                  <div className="mt-1.5 rounded-lg px-3 py-2 text-xs space-y-0.5" style={{ background: '#1e293b' }}>
+                    {preview.combined_balance > 0 ? (
+                      <>
+                        {curBal > 0 && <div style={{ color: '#94a3b8' }}>Monthly arrears: UGX {curBal.toLocaleString()}</div>}
+                        {initBal > 0 && <div style={{ color: '#94a3b8' }}>Opening owed: UGX {initBal.toLocaleString()}</div>}
+                        <div style={{ color: '#f87171', fontWeight: 600 }}>Balance owed: UGX {preview.combined_balance.toLocaleString()}</div>
+                      </>
+                    ) : preview.combined_balance < 0 ? (
+                      <div style={{ color: '#34d399', fontWeight: 600 }}>Paid ahead — UGX {Math.abs(preview.combined_balance).toLocaleString()} in credit</div>
+                    ) : (
+                      <div style={{ color: '#34d399' }}>All contributions up to date.</div>
+                    )}
+                    <div style={{ color: '#64748b' }}>Monthly rate: UGX {rate.toLocaleString()}/month</div>
+                  </div>
+                )}
+              </div>
+
+              {/* amount */}
+              <div>
+                {inp({
+                  type: 'text', inputMode: 'numeric', placeholder: 'Amount (UGX)',
+                  value: amountRaw,
+                  onChange: e => onAmountChange(e.target.value),
+                })}
+                {coverageHint && (
+                  <div className="mt-1.5 rounded-lg px-3 py-2 text-xs" style={{ background: coverageHint.bg, color: coverageHint.color }}>
+                    {coverageHint.text}
+                  </div>
+                )}
+              </div>
+
+              {/* reference */}
+              {inp({ type: 'text', placeholder: 'Payment reference (optional)', value: ref, onChange: e => setRef(e.target.value) })}
+
+              {/* receipt — required */}
+              <div>
+                <label className="block text-xs mb-1.5" style={{ color: file ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                  Receipt — bank/MoMo screenshot {!file && '(required)'}
+                </label>
+                <label className="flex items-center gap-2 rounded-lg px-3 py-2.5 cursor-pointer text-sm"
+                  style={{ background: '#1e293b', border: `1px solid ${file ? '#22c55e' : '#dc2626'}`, color: file ? '#22c55e' : '#94a3b8' }}>
+                  📎 {file ? file.name : 'Attach bank or MoMo screenshot'}
+                  <input type="file" accept="image/*,.pdf" className="sr-only" onChange={e => setFile(e.target.files?.[0] || null)} />
+                </label>
+              </div>
+            </>
+          )}
+
+          {/* ── STEP 2 — Case 2: excess allocation ── */}
+          {step === 2 && isCase2 && (
+            <>
+              <div className="rounded-lg px-3 py-2 text-sm" style={{ background: '#1e293b' }}>
+                <div style={{ color: '#f1f5f9', fontWeight: 600 }}>UGX {amount.toLocaleString()}</div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>
+                  Clears monthly arrears of UGX {curBal.toLocaleString()}. You have UGX {excess.toLocaleString()} extra.
+                </div>
+              </div>
+              <div>
+                <div className="text-xs mb-1" style={{ color: '#64748b' }}>
+                  Opening balance owed: {initBal > 0 ? `UGX ${initBal.toLocaleString()}` : 'None'}
+                </div>
+                {inp({
+                  type: 'text', inputMode: 'numeric',
+                  placeholder: initBal > 0 ? `Apply to opening balance (max UGX ${Math.min(excess, initBal).toLocaleString()})` : 'No opening balance owed',
+                  disabled: initBal <= 0,
+                  value: excessToInit > 0 ? excessToInit.toLocaleString() : '',
+                  onChange: e => {
+                    const v = Math.min(parseInt(e.target.value.replace(/[^0-9]/g, '')) || 0, Math.min(excess, initBal))
+                    setExcessToInit(v)
+                  }
+                })}
+                <div className="mt-1.5 rounded-lg px-3 py-2 text-xs" style={{ background: '#1e3a5f' }}>
+                  <div style={{ color: '#93c5fd' }}>Arrears cleared: UGX {curBal.toLocaleString()}</div>
+                  {excessToInit > 0 && <div style={{ color: '#fbbf24' }}>Opening balance: UGX {excessToInit.toLocaleString()}</div>}
+                  <div style={{ color: '#a5b4fc' }}>Future monthly credit: UGX {(excess - excessToInit).toLocaleString()}</div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── STEP 2 — Case 3: month picker ── */}
+          {step === 2 && !isCase2 && (
+            <>
+              <div className="rounded-lg px-3 py-2 text-sm" style={{ background: '#1e293b' }}>
+                <div style={{ color: '#f1f5f9', fontWeight: 600 }}>UGX {amount.toLocaleString()}</div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>
+                  {affordableMonths.length} month{affordableMonths.length !== 1 ? 's' : ''} available.
+                  {initChoice > 0 && ` (UGX ${initChoice.toLocaleString()} to opening balance)`}
+                </div>
+              </div>
+
+              {/* optional initial balance payment */}
+              {initBal > 0 && (
+                <div>
+                  <div className="text-xs mb-1.5" style={{ color: '#64748b' }}>Opening balance owed: UGX {initBal.toLocaleString()}</div>
+                  {inp({
+                    type: 'text', inputMode: 'numeric',
+                    placeholder: `Apply to opening balance (max UGX ${Math.min(amount, initBal).toLocaleString()})`,
+                    value: initChoice > 0 ? initChoice.toLocaleString() : '',
+                    onChange: e => {
+                      const v = Math.min(parseInt(e.target.value.replace(/[^0-9]/g, '')) || 0, Math.min(amount, initBal))
+                      setInitChoice(v)
+                      setSelectedMonths(prev => prev.filter(mo => affordableMonths.includes(mo)))
+                    }
+                  })}
+                </div>
+              )}
+
+              {/* month toggle buttons */}
+              {affordableMonths.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs" style={{ color: '#64748b' }}>Select months to cover:</div>
+                  {affordableMonths.map(mo => (
+                    <button key={mo} onClick={() => toggleMonth(mo)}
+                      className="w-full flex justify-between items-center rounded-lg px-3 py-3 text-sm text-left"
+                      style={{
+                        background: selectedMonths.includes(mo) ? '#0a2a14' : '#1e293b',
+                        color: selectedMonths.includes(mo) ? '#86efac' : '#94a3b8',
+                        border: `1px solid ${selectedMonths.includes(mo) ? '#22c55e' : '#334155'}`,
+                      }}>
+                      <span>{monthLabel(mo)}</span>
+                      <span style={{ fontSize: 12, color: '#64748b' }}>UGX {rate.toLocaleString()}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* running split */}
+              {(selectedMonths.length > 0 || initChoice > 0) && (() => {
+                const monthly = selectedMonths.length * rate
+                const rem = amount - monthly
+                return (
+                  <div className="rounded-lg px-3 py-2 text-xs space-y-1" style={{ background: '#1e293b' }}>
+                    {monthly > 0 && <div className="flex justify-between"><span style={{ color: '#94a3b8' }}>Monthly ({selectedMonths.length} mo)</span><span style={{ color: '#86efac', fontWeight: 600 }}>UGX {monthly.toLocaleString()}</span></div>}
+                    {initChoice > 0 && <div className="flex justify-between"><span style={{ color: '#94a3b8' }}>Opening balance</span><span style={{ color: '#fbbf24', fontWeight: 600 }}>UGX {initChoice.toLocaleString()}</span></div>}
+                    {rem > 0 && rem !== initChoice && <div className="flex justify-between"><span style={{ color: '#94a3b8' }}>Extra credit</span><span style={{ color: '#a5b4fc', fontWeight: 600 }}>UGX {(rem - initChoice).toLocaleString()}</span></div>}
+                    <div className="flex justify-between pt-1" style={{ borderTop: '1px solid #334155' }}><span style={{ color: '#f1f5f9', fontWeight: 600 }}>Total</span><span style={{ color: '#f1f5f9', fontWeight: 600 }}>UGX {amount.toLocaleString()}</span></div>
+                  </div>
+                )
+              })()}
+            </>
+          )}
+
+          {/* ── STEP 3 — Review ── */}
+          {step === 3 && preview && (() => {
+            const fam = ledger.find(f => f.family_id === familyId)
+            const famName = fam ? 'The ' + fam.family_name.charAt(0) + fam.family_name.slice(1).toLowerCase() : ''
+            const row = (lbl: string, val: string, color = '#f1f5f9') => (
+              <div key={lbl} className="flex justify-between py-1.5 text-sm" style={{ borderBottom: '1px solid #1e293b' }}>
+                <span style={{ color: '#94a3b8' }}>{lbl}</span>
+                <span style={{ color, fontWeight: 600 }}>{val}</span>
+              </div>
+            )
+            const curBal3 = preview.current_balance
+            const isArrears = curBal3 > 0 && amount < curBal3
+            const newBal = preview.combined_balance - amount
+
+            return (
+              <div>
+                <div className="rounded-xl p-4 space-y-0" style={{ background: '#1e293b' }}>
+                  <div className="font-semibold text-sm mb-3" style={{ color: '#f1f5f9' }}>Payment Summary</div>
+                  {row('Family', famName)}
+                  {row('Amount', 'UGX ' + amount.toLocaleString())}
+                  {ref && row('Reference', ref, '#a5b4fc')}
+                  {isCase2 && <>
+                    {row('Monthly arrears cleared', 'UGX ' + curBal3.toLocaleString(), '#86efac')}
+                    {excessToInit > 0 && row('Opening balance', 'UGX ' + excessToInit.toLocaleString() + ' applied', '#fbbf24')}
+                    {row('Future monthly credit', 'UGX ' + (excess - excessToInit).toLocaleString(), '#a5b4fc')}
+                  </>}
+                  {!isCase2 && selectedMonths.length > 0 && <>
+                    {row('Monthly obligations', `UGX ${(selectedMonths.length * rate).toLocaleString()} (${selectedMonths.length} month${selectedMonths.length > 1 ? 's' : ''}, to ${monthLabel(selectedMonths[selectedMonths.length - 1])})`, '#86efac')}
+                    {initChoice > 0 && row('Opening balance', 'UGX ' + initChoice.toLocaleString() + ' applied', '#fbbf24')}
+                  </>}
+                  {isArrears && <>
+                    {newBal > 0 && row('Balance after', 'UGX ' + newBal.toLocaleString() + ' still owed', '#f87171')}
+                    {newBal === 0 && row('Balance after', 'Fully cleared', '#22c55e')}
+                    <div className="text-xs pt-1" style={{ color: '#475569' }}>Applied FIFO to oldest unpaid months first.</div>
+                  </>}
+                  {file && <div className="text-xs pt-2" style={{ color: '#64748b' }}>Receipt: {file.name}</div>}
+                </div>
+                <div className="mt-2 rounded-lg px-3 py-2 text-xs text-center" style={{ background: '#1e1b4b', color: '#a5b4fc' }}>
+                  Pay to: ABSA Uganda 6004961127 (TUSIIME HELLEN)
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* success */}
+          {success && (
+            <div className="rounded-xl p-4 text-center" style={{ background: '#052e16', border: '1px solid #166534' }}>
+              <div className="text-2xl mb-2">✓</div>
+              <div style={{ color: '#4ade80', fontWeight: 700 }}>UGX {success.amount.toLocaleString()} submitted!</div>
+              <div className="text-xs mt-1" style={{ color: '#64748b' }}>Payment #{success.paymentId} — awaiting Hellen's confirmation.</div>
+            </div>
+          )}
+
+          {err && <p className="text-xs rounded-lg px-3 py-2" style={{ background: '#450a0a', color: '#fca5a5' }}>{err}</p>}
+        </div>
+
+        {/* footer buttons */}
+        <div className="px-5 py-4 flex gap-2" style={{ borderTop: '1px solid #1e293b' }}>
+          {success ? (
+            <button onClick={onClose} className="flex-1 rounded-xl py-3 font-semibold text-sm" style={{ background: '#166534', color: '#fff' }}>Done</button>
+          ) : (
+            <>
+              <button
+                onClick={() => { setErr(''); step === 1 ? onClose() : setStep((step - 1) as Step) }}
+                className="flex-1 rounded-xl py-3 text-sm"
+                style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+                {step === 1 ? 'Cancel' : '← Back'}
+              </button>
+              {step < 3 && (
+                <button onClick={step === 1 ? goNext : goReview}
+                  className="rounded-xl py-3 text-sm font-semibold"
+                  style={{ flex: 2, background: '#1d4ed8', color: '#fff' }}>
+                  Next →
+                </button>
+              )}
+              {step === 3 && (
+                <button onClick={doSubmit} disabled={busy}
+                  className="rounded-xl py-3 text-sm font-semibold disabled:opacity-50"
+                  style={{ flex: 2, background: '#166534', color: '#fff' }}>
+                  {busy ? 'Submitting...' : 'Confirm & Submit'}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// POST /api/contributions/admin/bank-balance  { balance_ugx, note }
+// Only admins (role=admin). Records the physical ABSA balance Hellen sees in the app.
+function UpdateBankBalanceModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [amtRaw, setAmtRaw] = useState('')
+  const [note, setNote]     = useState('')
+  const [err, setErr]       = useState('')
+  const [busy, setBusy]     = useState(false)
+
+  const submit = async () => {
+    const balance_ugx = parseInt(amtRaw.replace(/[^0-9]/g, '')) || 0
+    if (!balance_ugx) return setErr('Enter the current ABSA balance.')
+    setBusy(true); setErr('')
+    try {
+      const r = await fetch('/api/contributions/admin/bank-balance', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ balance_ugx, note: note.trim() || null }),
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        setErr(j.detail || 'Failed to update balance.')
+        setBusy(false); return
+      }
+      onSaved()
+    } catch { setErr('Network error.') }
+    setBusy(false)
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.7)' }}>
-      <div className="w-full max-w-md rounded-2xl p-5 space-y-3" style={{ background: 'var(--bg-card)' }}>
-        <h2 className="font-semibold" style={{ color: 'var(--text-primary)' }}>Submit a Payment</h2>
-
-        <div className="rounded-xl p-3 text-center mb-2" style={{ background: '#0a2a14', border: '1px solid #166534' }}>
-          <div className="text-xs mb-1" style={{ color: '#94a3b8' }}>Pay to ABSA Uganda</div>
-          <div className="text-xl font-bold tracking-widest" style={{ color: '#22c55e' }}>6004961127</div>
-          <div className="text-sm mt-1" style={{ color: '#cbd5e1' }}>TUSIIME HELLEN</div>
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: 'rgba(0,0,0,0.75)' }}>
+      <div className="w-full max-w-md rounded-t-2xl p-5 space-y-3" style={{ background: '#0d1829', border: '1px solid #334155' }}>
+        <div className="flex justify-between items-center">
+          <div className="font-bold" style={{ color: '#f1f5f9' }}>Update Bank Balance</div>
+          <button onClick={onClose} style={{ background: '#1e293b', border: 'none', borderRadius: 8, padding: 6, cursor: 'pointer', color: '#64748b' }}>✕</button>
         </div>
-
-        <select value={family} onChange={e => setFamily(e.target.value)} className="w-full rounded-lg px-3 py-2 text-sm"
-          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
-          <option value="">Select family...</option>
-          {FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
-        </select>
-
-        <input
-          type="text" inputMode="numeric" placeholder="Amount (UGX)"
-          value={amount}
-          onChange={e => { const raw = e.target.value.replace(/[^0-9]/g, ''); setAmount(raw ? parseInt(raw).toLocaleString() : '') }}
-          className="w-full rounded-lg px-3 py-2 text-sm outline-none"
-          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+        <p className="text-xs" style={{ color: '#94a3b8' }}>
+          Enter the actual ABSA balance as shown in your banking app. This confirms the physical balance so the reconciliation gap is up to date.
+        </p>
+        <input type="text" inputMode="numeric" placeholder="ABSA balance (UGX)"
+          value={amtRaw}
+          onChange={e => { const d = e.target.value.replace(/[^0-9]/g, ''); setAmtRaw(d ? parseInt(d).toLocaleString() : '') }}
+          className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+          style={{ background: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }}
         />
-
-        <select value={period} onChange={e => setPeriod(e.target.value)} className="w-full rounded-lg px-3 py-2 text-sm"
-          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
-          <option value="">Period (month)...</option>
-          {months.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-
-        <select value={alloc} onChange={e => setAlloc(e.target.value)} className="w-full rounded-lg px-3 py-2 text-sm"
-          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
-          <option value="monthly">Monthly contribution</option>
-          <option value="initial_obligation">Initial obligation (2023)</option>
-        </select>
-
-        <input type="text" placeholder="Payment reference (optional)" value={ref}
-          onChange={e => setRef(e.target.value)}
-          className="w-full rounded-lg px-3 py-2 text-sm outline-none"
-          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+        <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
+          className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+          style={{ background: '#0f172a', color: '#f1f5f9', border: '1px solid #334155' }}
         />
-
-        <div>
-          <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>Receipt (optional)</label>
-          <input type="file" accept="image/*,.pdf" onChange={e => setFile(e.target.files?.[0] || null)}
-            className="text-xs w-full" style={{ color: 'var(--text-muted)' }} />
-        </div>
-
-        {err && <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{err}</p>}
-
+        {err && <p className="text-xs rounded-lg px-3 py-2" style={{ background: '#450a0a', color: '#fca5a5' }}>{err}</p>}
         <div className="flex gap-2 pt-1">
-          <button onClick={onClose} className="flex-1 rounded-lg py-2.5 text-sm"
-            style={{ background: '#1e293b', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
-            {t('common.cancel')}
-          </button>
-          <button onClick={submit} disabled={busy} className="flex-2 rounded-lg py-2.5 text-sm font-semibold disabled:opacity-60"
-            style={{ flex: 2, background: '#166534', color: '#fff' }}>
-            {busy ? 'Submitting...' : t('common.submit')}
+          <button onClick={onClose} className="flex-1 rounded-xl py-3 text-sm"
+            style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="rounded-xl py-3 text-sm font-semibold disabled:opacity-50"
+            style={{ flex: 2, background: '#b45309', color: '#fff' }}>
+            {busy ? 'Saving...' : 'Save Balance'}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function PendingConfirmations({ pending, onDone }: { pending: PendingPayment[]; onDone: () => void }) {
+  const [busy, setBusy] = useState<number | null>(null)
+  const [rejectId, setRejectId] = useState<number | null>(null)
+  const [rejectNote, setRejectNote] = useState('')
+  const [err, setErr] = useState('')
+
+  const review = async (id: number, action: 'confirm' | 'reject', note?: string) => {
+    setBusy(id); setErr('')
+    try {
+      const r = await fetch(`/api/contributions/${id}/${action}`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: note || null }),
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        setErr(j.detail || `Failed to ${action}.`)
+      } else {
+        setRejectId(null); setRejectNote(''); onDone()
+      }
+    } catch { setErr('Network error.') }
+    setBusy(null)
+  }
+
+  return (
+    <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid #f59e0b' }}>
+      <h3 className="font-semibold mb-3" style={{ color: '#f59e0b' }}>
+        Pending Confirmations ({pending.length})
+      </h3>
+      {err && <p className="text-xs mb-2 rounded px-2 py-1" style={{ background: '#450a0a', color: '#fca5a5' }}>{err}</p>}
+      <div className="space-y-3">
+        {pending.map(p => (
+          <div key={p.id} className="rounded-lg p-3" style={{ border: '1px solid #334155' }}>
+            <div className="flex justify-between mb-1">
+              <strong style={{ color: '#f1f5f9' }}>
+                {'The ' + p.family_name.charAt(0) + p.family_name.slice(1).toLowerCase()}
+              </strong>
+              <span style={{ color: '#22c55e', fontWeight: 700 }}>{ugx(p.amount_ugx)}</span>
+            </div>
+            <div className="text-xs mb-2" style={{ color: '#94a3b8' }}>
+              Period: {p.period_month}
+              {p.submitted_by_user_id ? ` · Submitted by ${p.submitted_by_user_id}` : ''}
+              {p.submitted_at ? ` on ${p.submitted_at.slice(0, 10)}` : ''}
+              {p.payment_reference ? ` · Ref: ${p.payment_reference}` : ''}
+            </div>
+            {p.receipt_url && (
+              <a href={p.receipt_url} target="_blank" rel="noreferrer"
+                className="text-xs block mb-2" style={{ color: '#22c55e' }}>
+                View receipt ↗
+              </a>
+            )}
+
+            {/* reject reason input (shown when reject tapped) */}
+            {rejectId === p.id && (
+              <div className="mb-2">
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Reason for rejection (optional)"
+                  value={rejectNote}
+                  onChange={e => setRejectNote(e.target.value)}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none mb-1"
+                  style={{ background: '#0f172a', color: '#f1f5f9', border: '1px solid #7f1d1d' }}
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => review(p.id, 'reject', rejectNote)}
+                    disabled={busy === p.id}
+                    className="flex-1 rounded-lg py-2 text-sm font-semibold disabled:opacity-50"
+                    style={{ background: '#991b1b', color: '#fff' }}>
+                    {busy === p.id ? 'Rejecting…' : 'Confirm Rejection'}
+                  </button>
+                  <button
+                    onClick={() => { setRejectId(null); setRejectNote('') }}
+                    className="rounded-lg py-2 px-4 text-sm"
+                    style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {rejectId !== p.id && (
+              <div className="flex gap-2 mt-1">
+                <button
+                  onClick={() => review(p.id, 'confirm')}
+                  disabled={busy === p.id}
+                  className="flex-1 rounded-lg py-2 text-sm font-semibold disabled:opacity-50"
+                  style={{ background: '#166534', color: '#fff' }}>
+                  {busy === p.id ? 'Confirming…' : '✓ Confirm'}
+                </button>
+                <button
+                  onClick={() => { setRejectId(p.id); setRejectNote('') }}
+                  disabled={busy === p.id}
+                  className="flex-1 rounded-lg py-2 text-sm font-semibold disabled:opacity-50"
+                  style={{ background: '#1e293b', color: '#f87171', border: '1px solid #7f1d1d' }}>
+                  ✕ Reject
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -233,8 +832,10 @@ function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
 export default function FinancesPage() {
   const { t } = useTranslation()
   const { user } = useAuth()
-  const isAdmin = ADMIN_USERS.includes(user?.name || '')
-  const [showPayment, setShowPayment] = useState(false)
+  const qc = useQueryClient()
+  const isAdmin = user?.role === 'admin'
+  const [showPayment, setShowPayment]         = useState(false)
+  const [showBankBalance, setShowBankBalance] = useState(false)
 
   const { data: summary, isLoading: summLoading } = useQuery<Summary>({
     queryKey: ['contributions-summary'],
@@ -259,38 +860,11 @@ export default function FinancesPage() {
 
       {/* Admin: pending confirmations */}
       {isAdmin && pending && pending.length > 0 && (
-        <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid #f59e0b' }}>
-          <h3 className="font-semibold mb-3" style={{ color: '#f59e0b' }}>
-            Pending Confirmations ({pending.length})
-          </h3>
-          <div className="space-y-3">
-            {pending.map(p => (
-              <div key={p.id} className="rounded-lg p-3" style={{ border: '1px solid var(--border)' }}>
-                <div className="flex justify-between mb-1">
-                  <strong style={{ color: '#f1f5f9' }}>{p.family_name}</strong>
-                  <span style={{ color: '#22c55e' }}>{ugx(p.amount_ugx)}</span>
-                </div>
-                <div className="text-xs mb-2" style={{ color: '#94a3b8' }}>
-                  Period: {p.period_month} · By: {p.submitted_by_user_id} on {p.submitted_at?.slice(0, 10)}
-                </div>
-                {p.receipt_url && (
-                  <a href={p.receipt_url} target="_blank" rel="noreferrer"
-                    className="text-xs" style={{ color: '#22c55e' }}>View receipt ↗</a>
-                )}
-                <div className="flex gap-2 mt-2">
-                  <button onClick={() => fetch(`/api/contributions/${p.id}/review`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'confirm' }) })}
-                    className="flex-1 rounded-lg py-2 text-sm font-medium" style={{ background: '#166534', color: '#fff' }}>
-                    Confirm
-                  </button>
-                  <button onClick={() => fetch(`/api/contributions/${p.id}/review`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reject' }) })}
-                    className="flex-1 rounded-lg py-2 text-sm font-medium" style={{ background: '#991b1b', color: '#fff' }}>
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <PendingConfirmations pending={pending} onDone={() => {
+          qc.invalidateQueries({ queryKey: ['contributions-pending'] })
+          qc.invalidateQueries({ queryKey: ['contributions-summary'] })
+          qc.invalidateQueries({ queryKey: ['contributions-ledger'] })
+        }} />
       )}
 
       {/* Summary card */}
@@ -318,8 +892,17 @@ export default function FinancesPage() {
             <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Confirmed Bank Balance (ABSA)</span>
             <span className="text-lg font-bold" style={{ color: '#22c55e' }}>{ugx(summary.confirmed_bank_balance)}</span>
           </div>
-          <div className="text-xs mb-1" style={{ color: '#64748b' }}>
-            Confirmed {summary.confirmed_balance_date} · Hellen (Treasurer)
+          <div className="flex justify-between items-center mb-1">
+            <div className="text-xs" style={{ color: '#64748b' }}>
+              Confirmed {summary.confirmed_balance_date} · Hellen (Treasurer)
+            </div>
+            {isAdmin && (
+              <button onClick={() => setShowBankBalance(true)}
+                className="text-xs rounded-lg px-3 py-1 font-semibold"
+                style={{ background: '#b45309', color: '#fff', border: 'none', cursor: 'pointer' }}>
+                Update
+              </button>
+            )}
           </div>
           <ReconciliationBadge confirmed={summary.confirmed_bank_balance} computed={summary.computed_balance} />
           <div className="flex justify-between text-sm py-1.5 mt-3" style={{ borderTop: '1px solid var(--border)' }}>
@@ -356,7 +939,18 @@ export default function FinancesPage() {
         </div>
       )}
 
+      {/* Expenditure — also accessible via More → Expenditure */}
+      <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
+        <ExpenditurePage />
+      </div>
+
       {showPayment && <SubmitPaymentModal onClose={() => setShowPayment(false)} />}
+      {showBankBalance && (
+        <UpdateBankBalanceModal
+          onClose={() => setShowBankBalance(false)}
+          onSaved={() => { setShowBankBalance(false); qc.invalidateQueries({ queryKey: ['contributions-summary'] }) }}
+        />
+      )}
     </div>
   )
 }

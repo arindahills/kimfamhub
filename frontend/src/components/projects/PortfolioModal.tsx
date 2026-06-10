@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Card, Inset } from '@/components/ui/card'
-import { LoadingRow } from '@/components/ui/spinner'
+import { AiThinking } from './AiThinking'
+import { useSseJob } from '@/lib/sseJob'
 import { ugx } from '@/lib/utils'
 
 /* ── Ranking ──────────────────────────────────────────────────────────────── */
@@ -26,11 +26,6 @@ interface AiRanking {
   biggest_risk: string
   compounding_play: string
 }
-interface RankingResponse {
-  portfolio_data: Record<string, unknown>
-  ai_ranking: AiRanking
-}
-
 const TIER_TONE: Record<string, BadgeProps['tone']> = {
   'MOVE NOW': 'success',
   'BUILD CAREFULLY': 'warning',
@@ -58,36 +53,42 @@ function Insight({ label, body, color }: { label: string; body?: string; color: 
 }
 
 function RankingPane() {
-  const ranking = useMutation<RankingResponse>({
-    mutationFn: () => fetch('/api/portfolio/ranking', { credentials: 'include' }).then(r => r.json()),
-  })
+  const job = useSseJob<AiRanking>()
+  const start = () => job.start('/api/portfolio/ranking/stream')
 
-  if (ranking.isPending) {
+  if (job.error) {
     return (
-      <LoadingRow label="Ranking all 7 projects across capital, speed, and risk…" />
+      <div className="px-2 py-8 text-center">
+        <div className="mb-2 text-3xl">⚠️</div>
+        <p className="mx-auto mb-4 max-w-sm text-xs text-[var(--danger)]">{job.error}</p>
+        <Button onClick={start}>Try again</Button>
+      </div>
     )
   }
-  if (!ranking.data) {
+  if (job.running || (job.steps.length > 0 && !job.result)) {
+    return <AiThinking title="Ranking the portfolio" steps={job.steps} step={job.step} total={job.total} running={job.running} startedAt={job.startedAt} />
+  }
+  if (!job.result) {
     return (
       <div className="px-2 py-8 text-center">
         <div className="mb-3 text-4xl">📊</div>
         <div className="mb-1 text-sm font-semibold text-[var(--foreground)]">Strategic Portfolio Ranking</div>
         <p className="mx-auto mb-4 max-w-sm text-xs text-[var(--muted-2)]">
-          The AI ranks every project into tiers, Move Now, Build Carefully, Let Compound, and tells you what to do in the next 90 days.
+          The AI ranks every project into tiers, Move Now, Build Carefully, Let Compound, and tells you what to do in the next 90 days. Watch it think.
         </p>
-        <Button onClick={() => ranking.mutate()}>⚡ Rank Portfolio</Button>
+        <Button onClick={start}>⚡ Rank Portfolio</Button>
       </div>
     )
   }
 
-  const r = ranking.data.ai_ranking
+  const r = job.result
   const ranked = [...(r.ranked || [])].sort((a, b) => a.rank - b.rank)
 
   return (
     <div>
       <div className="mb-3 flex items-center gap-2">
         <span className="text-[11px] text-[var(--muted-2)]">{ranked.length} projects ranked</span>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => ranking.mutate()}>🔄 Refresh</Button>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={start}>🔄 Refresh</Button>
       </div>
 
       {ranked.map(item => {
@@ -147,11 +148,7 @@ interface Venture {
   first_step: string
   external_resources: Resource[]
 }
-interface VenturesResponse {
-  status: string
-  focus_area: string
-  result: { ventures: Venture[]; strategic_commentary?: string; compounding_sequence?: string }
-}
+interface VenturesResult { ventures: Venture[]; strategic_commentary?: string; compounding_sequence?: string }
 
 function VentureCard({ v }: { v: Venture }) {
   const [open, setOpen] = useState(false)
@@ -224,40 +221,44 @@ function ListField({ label, items, color }: { label: string; items: string[]; co
 }
 
 function VenturesPane() {
-  const ventures = useMutation<VenturesResponse>({
-    mutationFn: () =>
-      fetch('/api/portfolio/new_ventures', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ focus_area: 'all' }),
-      }).then(r => r.json()),
+  const job = useSseJob<VenturesResult>()
+  const start = () => job.start('/api/portfolio/new_ventures/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ focus_area: 'all' }),
   })
 
-  if (ventures.isPending) {
+  if (job.error) {
     return (
-      <LoadingRow label="Researching new ventures for Western Uganda, this can take a minute…" />
+      <div className="px-2 py-8 text-center">
+        <div className="mb-2 text-3xl">⚠️</div>
+        <p className="mx-auto mb-4 max-w-sm text-xs text-[var(--danger)]">{job.error}</p>
+        <Button onClick={start}>Try again</Button>
+      </div>
     )
   }
-  if (!ventures.data) {
+  if (job.running || (job.steps.length > 0 && !job.result)) {
+    return <AiThinking title="Researching new ventures" steps={job.steps} step={job.step} total={job.total} running={job.running} startedAt={job.startedAt} />
+  }
+  if (!job.result) {
     return (
       <div className="px-2 py-8 text-center">
         <div className="mb-3 text-4xl">🚀</div>
         <div className="mb-1 text-sm font-semibold text-[var(--foreground)]">New Venture Ideas</div>
         <p className="mx-auto mb-4 max-w-sm text-xs text-[var(--muted-2)]">
-          The AI reads the club mandate, existing assets, and Uganda market context, then proposes 5 fresh, auditable opportunities.
+          The AI reads the club mandate, existing assets, and Uganda market context, then proposes 5 fresh, auditable opportunities. Watch it work.
         </p>
-        <Button onClick={() => ventures.mutate()}>⚡ Propose Ventures</Button>
+        <Button onClick={start}>⚡ Propose Ventures</Button>
       </div>
     )
   }
 
-  const res = ventures.data.result
+  const res = job.result
   return (
     <div>
       <div className="mb-3 flex items-center gap-2">
         <span className="text-[11px] text-[var(--muted-2)]">{res.ventures?.length || 0} ventures proposed</span>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => ventures.mutate()}>🔄 Regenerate</Button>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={start}>🔄 Regenerate</Button>
       </div>
       {(res.ventures || []).map(v => <VentureCard key={v.rank} v={v} />)}
       <Insight label="Strategic commentary" body={res.strategic_commentary} color="#60a5fa" />

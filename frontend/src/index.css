@@ -71,7 +71,7 @@
 }
 
 /* NOTE: do NOT add `margin:0; padding:0` here. Tailwind v4 puts utilities in a
-   cascade layer, and an unlayered universal reset overrides EVERY mb-*/p-*
+   cascade layer, and an unlayered universal reset overrides EVERY margin/padding
    utility regardless of specificity — which silently zeroed all card spacing.
    Tailwind Preflight already resets margins correctly inside its layer. */
 *, *::before, *::after {
@@ -99,3 +99,110 @@ body {
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes pop-in { from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Motion layer — rotating rim highlight, enticing CTA pulse, scroll focus.
+   All animations respect prefers-reduced-motion (see guard at the bottom).
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Animatable angle for the conic rim. @property lets the gradient angle tween
+   (iOS Safari 16.4+); without it the conic just snaps. */
+@property --rim-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* Rotating gradient "highlight" travelling around a pill/card border.
+   Set --rim (theme colour) on the element. Uses a masked padding-box so only
+   the 1.5px rim shows, never the fill. */
+.glow-rim { position: relative; isolation: isolate; }
+.glow-rim::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--rim-angle),
+    transparent 0deg,
+    var(--rim) 60deg,
+    transparent 140deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+  animation: rim-spin 3.2s linear infinite;
+  pointer-events: none;
+}
+@keyframes rim-spin { to { --rim-angle: 360deg; } }
+
+/* Enticing CTA — soft breathing glow + gentle scale to pull the eye, used on
+   "Express Interest" when the member has not yet shown interest. */
+@keyframes cta-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,.0), 0 0 8px 0 rgba(34,197,94,.25); transform: scale(1); }
+  50%      { box-shadow: 0 0 0 4px rgba(34,197,94,.12), 0 0 16px 2px rgba(34,197,94,.45); transform: scale(1.035); }
+}
+.cta-entice { animation: cta-pulse 2s ease-in-out infinite; }
+
+/* Continuous-status shimmer for the "checking approval" pill. */
+@keyframes status-shimmer {
+  0% { background-position: -120% 0; }
+  100% { background-position: 220% 0; }
+}
+.status-checking {
+  background-image: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.14) 50%, transparent 80%);
+  background-size: 200% 100%;
+  animation: status-shimmer 1.8s linear infinite;
+}
+
+/* Scroll-focus cards are driven per-frame (rAF) — no CSS transition, or it
+   would lag a quarter-second behind the scroll. Just hint the compositor. */
+.scroll-focus { will-change: opacity, transform; }
+
+/* Reveal for word-only hero highlights (no number to count up). */
+@keyframes metric-reveal { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.metric-reveal { animation: metric-reveal .5s ease both; }
+
+/* "Why join" floating bubble entrance. */
+@keyframes bubble-pop { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
+.bubble-pop { animation: bubble-pop .28s cubic-bezier(.22,1,.36,1) both; }
+
+/* Ask KimFam bottom-tab attention magnet — a periodic wiggle plus a constant
+   coloured glow pulse, so the eye keeps getting pulled back to it. */
+@keyframes ask-wiggle {
+  0%, 58%, 100% { transform: rotate(0) scale(1); }
+  62% { transform: rotate(-15deg) scale(1.22); }
+  68% { transform: rotate(12deg) scale(1.2); }
+  74% { transform: rotate(-9deg) scale(1.16); }
+  80% { transform: rotate(7deg) scale(1.1); }
+  86% { transform: rotate(-4deg) scale(1.06); }
+  92% { transform: rotate(2deg) scale(1.02); }
+}
+@keyframes ask-glow {
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(96,165,250,.35)); }
+  50%      { filter: drop-shadow(0 0 7px rgba(96,165,250,.95)) drop-shadow(0 0 13px rgba(167,139,250,.6)); }
+}
+.attention-ask {
+  display: inline-block;
+  transform-origin: 50% 65%;
+  animation: ask-wiggle 3s ease-in-out infinite, ask-glow 1.5s ease-in-out infinite;
+}
+
+/* Typewriter caret */
+@keyframes caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.tw-caret { animation: caret-blink 1s step-end infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .glow-rim::before,
+  .cta-entice,
+  .status-checking,
+  .metric-reveal,
+  .bubble-pop,
+  .attention-ask,
+  .tw-caret { animation: none !important; }
+  .cta-entice { transform: none !important; }
+  .scroll-focus { transition: none !important; opacity: 1 !important; transform: none !important; filter: none !important; }
+}

@@ -108,8 +108,13 @@ pages: cards go on the canvas, never on a near-same-shade surface.
 Project cards are kept roomy: a card shows identity (avatar + title + status + lead), the themed hero
 metric, the latest update, then a single **full-width "View Management Actions" trigger** that
 collapses Analysis / Audit / Show Details (+ Income) — instead of a cramped multi-column button row —
-then the Team Interest accordion. Cards are "islands": `mb-8` gap, 16px radius, border + shadow, on
-the canvas so the gap is a clear visual channel.
+then the Team Interest accordion. Cards are "islands": `mb-5` (20px) gap, 16px radius, border + shadow,
+on the canvas so the gap is a clear visual channel. (Halved from the original 40px on 2026-06-10 —
+40px read as too loose once cards stood off the background properly.)
+
+**Safe areas (notched devices):** `index.html` viewport is `viewport-fit=cover`; the top bar pads
+`calc(8px + env(safe-area-inset-top))`, the bottom nav grows by and pads `env(safe-area-inset-bottom)`,
+and `main` adds the same to its bottom padding so content never hides under the notch or home indicator.
 
 ## Analysis modal (executive dashboard, not a data dump)
 
@@ -135,6 +140,25 @@ What did NOT change: canvas `#121824` / card `#1E293B`, no neon borders, Inter t
 - **All modals are native bottom sheets on mobile** — slide up from the base, full width, rounded top corners (`22px`), a grab handle, `max-h 92vh`, safe-area padding. Desktop keeps the centred dialog. Implemented in `ui/dialog.tsx` via a viewport hook (not `md:`, which is unreliable here).
 - **Express Interest modal:** YOUR ROLE is now a **full-width segmented pill control** (active = emerald gradient fill). CONTRIBUTION MODES use **custom square checkbox components** (no native browser checkboxes), generous spacing, lead-locked items dimmed.
 - Standing rule going forward: **never ship a centred desktop dialog on mobile, and never use raw `<input type=checkbox>` visuals** — use the sheet + custom controls.
+
+**Rev 4 (2026-06-10) — Motion layer (purposeful, not decorative):** animation is added only where it directs attention or conveys state. All of it respects `prefers-reduced-motion` (single guard in `index.css`).
+- **Rotating rim highlight** on the Portfolio AI / New Ventures feature pills — a conic-gradient "highlight" travels around the border (`.glow-rim`, colour via `--rim`; uses `@property --rim-angle`). Reserved for the two special launchers, never on data cards.
+- **Enticing CTA pulse** on `Express Interest` when the member has NOT yet applied (`.cta-entice`, soft green breathing glow + micro-scale) — pulls them to act. Once they apply, the button is **replaced by an approval-status control** (`MyInterestStatus`): `Checking approval…` (shimmer) → `Awaiting Chairman` → `Interest Confirmed` (shield-check). Rejected reverts to the enticing button so they can re-express.
+- **Scroll-focus** on the project list: the card whose centre is nearest the viewport centre stays full; neighbours dim (to ~0.45) and shrink (to ~0.95). Driven per-frame via a single rAF scroll listener in `ProjectsPage` (no CSS transition — it would lag the scroll).
+- **Count-up + reveal hero metrics**: the first numeric token of each headline (e.g. `60%`, `580K`) counts 0→target when the card scrolls into view; headlines with NO number get a fade/slide reveal instead so every highlight animates. `useInView` re-triggers (flips false on exit), so both **replay on every re-entry** (`AnimatedHeadline` + `useInView`).
+- **Typewriter brand line**: the top-bar subtitle types through the club's mission lines, first phrase = "KIM FAM Investment Club" so it reads correctly on first paint (`Typewriter` in `AppShell`).
+- **"All" pill** is now a real control: closes any open feature modal and smooth-scrolls the list to the top (was a dead `<span>`).
+- **"Why join" bubble** (`JoinBubble` in `ProjectsPage`): when a card settles into focus (nearest viewport centre, after ~650ms) and the member has NOT expressed interest, a floating bubble pops over the card bottom with a pitch + "Not now" / "Express Interest". Dismiss is suppressed for the session (`sessionStorage`). Only the single focused card shows it, so it is never spammy. It chimes a soft synthesised "pop" on appear (`lib/sound.ts`, Web Audio, unlocked on first gesture — no asset shipped). The pitch text is **AI-cooked, figure-led** (`GET /api/projects/pitches`, from the `pitch_engine.py` always-cooking service, DeepSeek→Haiku→Gemini, cheap models only — see ADR-009); falls back to a static per-category line until cooked.
+- **Ask KimFam attention magnet**: the bottom-tab 🤖 runs a periodic wiggle + constant blue/violet glow pulse (`.attention-ask`) so the eye keeps returning to it.
+- **Spacing**: project cards `mb-3` (12px) island gap; filter-pill row to first card `mb-4` (16px). Tightened from the earlier 20/40px once the motion made the list feel busier.
+
+**Rev 5 (2026-06-10) — In-app media + inline accounting:**
+- **Media slider + lightbox.** Card media (`MediaCarousel`) is a horizontal in-card slider; tapping any tile opens a full-screen in-app carousel (swipeable, dots, prev/next, `index/total`). Videos use `playsInline` + `controls` so they play inline and never hijack to the OS player; closing returns to the app. The lightbox is **portaled to `<body>`** because the card carries a scroll-focus transform that would otherwise trap a `position:fixed` overlay. Replaces the old +X grid that did `window.open` (which left the app). Standing rule: **never open media in a new tab; keep the member in the app.**
+- **Washing Bay capital accountability** (`WashingBayCapital`): an inline module under the washing_bay management actions showing a balancing progress bar (accounted vs the 25.9M CapEx target), the unaccounted amount, a per-contributor split, and a risk callout when not balanced. Contributor is a dropdown (Dad and Alex first, then the rest, then free text). PIN-gated writes. The Analysis modal also surfaces a "No capital accountability" risk while the CapEx is unproven. See ADR-010.
+
+**Rev 6 (2026-06-10) — Constitution-aligned category filters:** the Projects header has a real filter row — **All / Farming / Business / Unit Trusts / Real Estate** (each with a live count), filtering the card list in place (`FILTERS` in `ProjectsPage`). "All" is the reset (it was previously a dead scroll-to-top button, now removed). The **Portfolio AI / New Ventures** AI launchers moved to their own row below the filters (no longer mixed with the filter). Each card also carries a small **constitution asset-class tag** (`ASSET_CLASS`): the club's Investment & Reward Guidelines define four asset classes — **Real estate, Unit trusts, Government securities, Alternative investments** — so most operating projects (farming, business) are tagged "Alternative investment", `fortune_credit` = Unit trust, `kakoba` = Real estate. (Guidelines are Draft 1, not yet ratified; Constitution Clause 5 Objectives is the ratified source.)
+
+**Rev 7 (2026-06-11) — "Watch the AI think":** the AI Portfolio Analysis modal (Portfolio AI / New Ventures) now consumes the **SSE streaming** endpoints (`/api/portfolio/ranking/stream`, `/api/portfolio/new_ventures/stream`) instead of the blocking ones, and renders a live **`AiThinking`** panel: animated stepper (spinner on the active line, green check on completed), a progress bar, a running timer, and each stage fading in (`useSseJob` hook + `lib/sseJob.ts`). The backend emits **real interim findings** as steps (e.g. "Lead pick so far: 🍯 Apiary at 9/10") and **heartbeat "thinking" lines every ~7s during slow model calls** — which both keeps the SSE alive past nginx's idle timeout and makes the reasoning visible. Standing rule: long AI operations stream their progress; never a single static spinner for a multi-stage job.
 
 ## Anti-patterns (explicitly rejected)
 

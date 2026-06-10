@@ -1,11 +1,18 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BarChart3, ClipboardList, ChevronDown, TrendingUp, Play, SlidersHorizontal, LayoutGrid, Tag } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { BarChart3, ClipboardList, ChevronDown, TrendingUp, SlidersHorizontal, LayoutGrid, Tag, Sparkles, X } from 'lucide-react'
 import { AuditModal, AUDITABLE } from '@/components/projects/AuditModal'
 import { WashingBayIncome } from '@/components/projects/WashingBayIncome'
+import { WashingBayCapital } from '@/components/projects/WashingBayCapital'
 import { PortfolioModal } from '@/components/projects/PortfolioModal'
 import { DetailModal, ANALYSABLE } from '@/components/projects/DetailModal'
 import { InterestModal, TeamInterest } from '@/components/projects/InterestModal'
+import { MediaCarousel } from '@/components/projects/MediaCarousel'
+import { AnimatedHeadline } from '@/components/AnimatedHeadline'
+import { useInView } from '@/lib/useInView'
+import { useAuth } from '@/context/AuthContext'
+import { playPop } from '@/lib/sound'
 import { cn, ugx } from '@/lib/utils'
 
 interface ProjectData { label: string; value: string }
@@ -39,6 +46,25 @@ const CATEGORY_THEME: Record<string, { bar: string; text: string; from: string; 
 }
 const categoryTheme = (c: string) => CATEGORY_THEME[c] ?? CATEGORY_THEME['Farming & Agriculture']
 
+/** Constitution (Investment & Reward Guidelines) asset class per operating category.
+ *  Operating tags are what we filter by; the asset class is shown as a tag on each card. */
+const ASSET_CLASS: Record<string, string> = {
+  'Farming & Agriculture': 'Alternative investment',
+  'Business Ventures': 'Alternative investment',
+  'Unit Trusts': 'Unit trust',
+  'Real Estate': 'Real estate',
+}
+const assetClass = (c: string) => ASSET_CLASS[c] ?? 'Alternative investment'
+
+/** Operating-category filters (constitution-aligned grouping). null = All. */
+const FILTERS: { label: string; value: string | null }[] = [
+  { label: 'All', value: null },
+  { label: 'Farming', value: 'Farming & Agriculture' },
+  { label: 'Business', value: 'Business Ventures' },
+  { label: 'Unit Trusts', value: 'Unit Trusts' },
+  { label: 'Real Estate', value: 'Real Estate' },
+]
+
 const fmtCell = (v?: string) => {
   if (v == null || v === '') return '—'
   const n = Number(String(v).replace(/,/g, ''))
@@ -61,40 +87,6 @@ function Sparkline({ color }: { color: string }) {
       {bars.map((h, i) => (
         <div key={i} className="w-[3px] rounded-[2px]" style={{ height: `${h}%`, background: color, opacity: 0.35 + (i / bars.length) * 0.65 }} />
       ))}
-    </div>
-  )
-}
-
-/** Uniform square media frames with a +X counter when more than 4 assets. */
-function MediaGrid({ images, videos }: { images: string[]; videos: string[] }) {
-  const items = [
-    ...images.map(src => ({ src, type: 'image' as const })),
-    ...videos.map(src => ({ src, type: 'video' as const })),
-  ]
-  if (!items.length) return null
-  const MAX = 4
-  const shown = items.slice(0, MAX)
-  const extra = items.length - MAX // overlaid on the last tile when > 0
-
-  return (
-    <div className="grid grid-cols-4 gap-2">
-      {shown.map((m, i) => {
-        const isLast = i === MAX - 1 && extra > 0
-        return (
-          <button
-            key={i}
-            onClick={() => window.open(m.src, '_blank')}
-            className="relative aspect-square overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--background)]"
-          >
-            {m.type === 'image'
-              ? <img src={m.src} className="h-full w-full object-cover" alt="" />
-              : <><video src={m.src} className="h-full w-full object-cover" /><span className="absolute inset-0 flex items-center justify-center bg-black/35"><Play size={16} className="text-white" fill="white" /></span></>}
-            {isLast && (
-              <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-sm font-bold text-white">+{extra + 1}</span>
-            )}
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -130,7 +122,102 @@ function ChickenLivePL({ c }: { c: LiveChicken }) {
 
 const fullActionBtn = 'flex h-11 w-full items-center gap-2.5 rounded-[10px] border border-[var(--border)] bg-[var(--card-inset)] px-4 text-[13px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40'
 
-function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
+/** Short "why join" pitch per venture category. */
+const JOIN_PITCH: Record<string, string> = {
+  'Farming & Agriculture': 'A hands-on farming venture with steady produce income. Bring labour, oversight, or capital and share the harvest.',
+  'Business Ventures': 'A cash-generating service business. Add capital or commercial muscle and earn from every shift.',
+  'Unit Trusts': 'Grow your money in professionally managed funds. Join with capital and let it compound.',
+  'Real Estate': 'Build long-term family wealth in property. Contribute capital or oversight and own a piece.',
+}
+const joinPitch = (c: string) => JOIN_PITCH[c] ?? 'Be part of this venture early. Add your skills, capital, or oversight and share in the returns.'
+
+interface InterestRow { member_name: string; status: string }
+
+/**
+ * Floating "why join" bubble. Appears over a card once it settles into focus,
+ * only if the member has NOT already expressed interest. They can dismiss it
+ * (suppressed for the session) or jump straight to Express Interest.
+ */
+function JoinBubble({
+  projectId, projectName, category, focused, onExpress,
+}: {
+  projectId: string; projectName: string; category: string; focused: boolean; onExpress: () => void
+}) {
+  const { user } = useAuth()
+  const me = user?.name || ''
+  const storeKey = `kf_join_dismissed_${projectId}`
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem(storeKey) === '1')
+  const [armed, setArmed] = useState(false)
+
+  const { data: interests = [], isSuccess } = useQuery<InterestRow[]>({
+    queryKey: ['interests', projectId],
+    queryFn: () => fetch(`/api/projects/interests?project_id=${projectId}`, { credentials: 'include' }).then(r => (r.ok ? r.json() : [])),
+    staleTime: 60_000,
+  })
+  const mine = interests.find(r => r.member_name === me && r.status !== 'rejected')
+
+  // AI-cooked, figure-led pitch (shared across all bubbles); falls back to the
+  // static category line until the engine has cooked one.
+  const { data: pitches } = useQuery<Record<string, string>>({
+    queryKey: ['project-pitches'],
+    queryFn: () => fetch('/api/projects/pitches', { credentials: 'include' }).then(r => (r.ok ? r.json() : {})),
+    staleTime: 10 * 60_000,
+  })
+  const pitch = pitches?.[projectId] || joinPitch(category)
+
+  // Only pop after the card has rested in focus for a beat — avoids flashing
+  // while the user is scrolling straight past it.
+  useEffect(() => {
+    if (!focused) { setArmed(false); return }
+    const t = setTimeout(() => setArmed(true), 650)
+    return () => clearTimeout(t)
+  }, [focused])
+
+  const show = armed && isSuccess && !mine && !dismissed
+
+  // Chime once when the bubble actually appears.
+  useEffect(() => { if (show) playPop() }, [show])
+
+  if (!show) return null
+
+  const dismiss = () => { sessionStorage.setItem(storeKey, '1'); setDismissed(true) }
+
+  return (
+    <div className="bubble-pop pointer-events-none absolute inset-x-3 bottom-3 z-30">
+      <div
+        className="pointer-events-auto rounded-[14px] border p-3.5"
+        style={{ background: 'rgba(16,24,40,.96)', borderColor: 'rgba(34,197,94,.45)', boxShadow: '0 14px 40px rgba(0,0,0,.6)', backdropFilter: 'blur(6px)' }}
+      >
+        <div className="flex items-start gap-2.5">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full" style={{ background: 'rgba(34,197,94,.16)', color: '#4ade80' }}>
+            <Sparkles size={15} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-bold text-[var(--foreground)]">Join {projectName}?</div>
+            <p className="mt-1 text-[12px] leading-relaxed text-[var(--muted)]">{pitch}</p>
+          </div>
+          <button onClick={dismiss} aria-label="Dismiss" className="shrink-0 rounded-md p-1 text-[var(--muted-2)] hover:text-[var(--foreground)]">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button onClick={dismiss} className="flex-1 rounded-[9px] border border-[var(--border)] bg-transparent py-2 text-[12px] font-semibold text-[var(--muted)] transition-colors hover:text-[var(--foreground)]">
+            Not now
+          </button>
+          <button
+            onClick={() => { dismiss(); onExpress() }}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-[9px] py-2 text-[12px] font-bold text-white"
+            style={{ background: 'linear-gradient(180deg,#22c55e,#16a34a)', boxShadow: '0 3px 12px rgba(34,197,94,.35)' }}
+          >
+            Express Interest
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; focused?: boolean }) {
   const [showDetails, setShowDetails] = useState(false)
   const [updExpanded, setUpdExpanded] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)
@@ -140,9 +227,23 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const hasAnalysis = ANALYSABLE.has(p.id)
   const hasAudit = AUDITABLE.has(p.id)
   const th = categoryTheme(p.category)
+  const { ref, seen } = useInView<HTMLDivElement>()
 
   return (
-    <div className="mb-10 overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--card)]" style={{ boxShadow: '0 12px 32px rgba(0,0,0,.5)' }}>
+    <div
+      ref={ref}
+      data-project-card
+      data-id={p.id}
+      className="scroll-focus relative mb-3 overflow-hidden rounded-[16px] border border-[var(--border)] bg-[var(--card)]"
+      style={{ boxShadow: '0 12px 32px rgba(0,0,0,.5)' }}
+    >
+      <JoinBubble
+        projectId={p.id}
+        projectName={p.name}
+        category={p.category}
+        focused={!!focused}
+        onExpress={() => setInterestOpen(true)}
+      />
       <div className="p-5">
         {/* Header */}
         <div className="mb-4 flex items-start gap-3">
@@ -155,7 +256,14 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
               <span className="text-[15px] font-bold leading-tight text-[var(--foreground)]">{p.name}</span>
               <StatusPill status={p.status} />
             </div>
-            <div className="mt-1 text-[12px] text-[var(--muted-2)]">{p.category}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[12px] text-[var(--muted-2)]">{p.category}</span>
+              <span
+                className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                style={{ background: 'rgba(167,139,250,0.13)', color: '#c4b5fd', border: '1px solid rgba(167,139,250,0.30)' }}
+                title="Constitution asset class"
+              >{assetClass(p.category)}</span>
+            </div>
             <div className="text-[12px] text-[var(--muted-2)]">Lead: <span className="text-[var(--muted)]">{p.lead}</span></div>
           </div>
         </div>
@@ -163,7 +271,9 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
         {/* Themed hero metric */}
         <div className="mb-4 flex items-center gap-2.5 rounded-[10px] px-3.5 py-3" style={{ background: `linear-gradient(90deg,${th.from},${th.to})` }}>
           <TrendingUp size={16} className="shrink-0" style={{ color: th.bar }} />
-          <span className="flex-1 text-[13px] font-bold uppercase tracking-wide" style={{ color: th.text }}>{p.headline}</span>
+          <span className="flex-1 text-[13px] font-bold uppercase tracking-wide" style={{ color: th.text }}>
+            <AnimatedHeadline text={p.headline} run={seen} />
+          </span>
           <Sparkline color={th.bar} />
         </div>
 
@@ -174,7 +284,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
               <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">Latest Update</span>
               <span className="text-[11px] text-[var(--muted-2)]">{p.update.date}</span>
             </div>
-            <MediaGrid images={p.update.images || []} videos={p.update.videos || []} />
+            <MediaCarousel images={p.update.images || []} videos={p.update.videos || []} />
             <p className="mt-2.5 text-[13px] leading-relaxed text-[#cbd5e1]">
               {p.update.text.length > 160 && !updExpanded ? p.update.text.slice(0, 160).trimEnd() + '…' : p.update.text}
               {p.update.text.length > 160 && (
@@ -216,6 +326,7 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
               <ChevronDown size={15} className={cn('transition-transform', showDetails && 'rotate-180')} /> {showDetails ? 'Hide Details' : 'Show Details'}
             </button>
             {p.id === 'washing_bay' && <WashingBayIncome />}
+            {p.id === 'washing_bay' && <WashingBayCapital />}
           </div>
         )}
 
@@ -245,23 +356,97 @@ export default function ProjectsPage() {
     staleTime: 120_000,
   })
 
+  const { t } = useTranslation()
   const openPortfolio = (tab: string) => { setPortfolioTab(tab); setPortfolioOpen(true) }
   const pill = 'flex items-center gap-2 rounded-full px-4 py-2.5 text-[13px] font-semibold transition-colors'
 
+  // Operating-category filter (constitution-aligned). null = All.
+  const [filter, setFilter] = useState<string | null>(null)
+  const shown = filter ? projects.filter(p => p.category === filter) : projects
+
+  // The single project currently in focus (nearest viewport centre) — drives
+  // the "why join" bubble so only one appears at a time, on the project reached.
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const focusedRef = useRef<string | null>(null)
+
+  // Scroll-driven focus: the card whose centre is nearest the viewport centre
+  // stays full, neighbours dim and shrink slightly so attention follows scroll.
+  useEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    let raf = 0
+    const update = () => {
+      raf = 0
+      const center = window.innerHeight / 2
+      const span = window.innerHeight * 0.62
+      let nearestId: string | null = null
+      let nearestDist = Infinity
+      document.querySelectorAll<HTMLElement>('[data-project-card]').forEach(el => {
+        const r = el.getBoundingClientRect()
+        const dist = Math.abs(r.top + r.height / 2 - center)
+        if (!reduce) {
+          const norm = Math.min(1, dist / span)
+          el.style.opacity = String(1 - norm * 0.55)
+          el.style.transform = `scale(${1 - norm * 0.05})`
+        }
+        // only consider cards actually on screen as "focused"
+        if (r.bottom > 0 && r.top < window.innerHeight && dist < nearestDist) {
+          nearestDist = dist
+          nearestId = el.dataset.id ?? null
+        }
+      })
+      if (nearestId !== focusedRef.current) {
+        focusedRef.current = nearestId
+        setFocusedId(nearestId)
+      }
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(update) }
+    update()
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
+    return () => {
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [projects.length, filter])
+
   return (
     <div className="mx-auto max-w-3xl pt-1">
-      <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">Our Projects</h1>
-      <p className="mt-1 text-[13px] text-[var(--muted)]">{projects.length} ventures across the portfolio</p>
+      <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">{t('projects.ourProjects')}</h1>
+      <p className="mt-1 text-[13px] text-[var(--muted)]">
+        {shown.length} {filter ? `in ${filter}` : t('projects.ventures')}
+      </p>
 
-      <div className="mb-10 mt-5 flex flex-wrap gap-3">
-        <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/10')}><SlidersHorizontal size={14} /> All</span>
-        <button onClick={() => openPortfolio('ranking')} className={pill} style={{ background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.45)', color: '#c4b5fd' }}><LayoutGrid size={14} color="#a78bfa" /> Portfolio AI</button>
-        <button onClick={() => openPortfolio('ventures')} className={pill} style={{ background: 'rgba(34,197,94,0.13)', border: '1px solid rgba(34,197,94,0.45)', color: '#86efac' }}><Tag size={14} color="#4ade80" /> New Ventures</button>
+      {/* Constitution-aligned category filters */}
+      <div className="mt-5 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {FILTERS.map(f => {
+          const count = f.value === null ? projects.length : projects.filter(p => p.category === f.value).length
+          if (f.value !== null && count === 0) return null
+          const active = filter === f.value
+          return (
+            <button
+              key={f.label}
+              onClick={() => setFilter(f.value)}
+              className={cn(pill, 'shrink-0 active:scale-95', active ? 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/10' : 'text-[var(--muted)]')}
+              style={active ? undefined : { border: '1px solid var(--border)' }}
+            >
+              {f.label === 'All' && <SlidersHorizontal size={14} />}
+              {f.label}
+              <span className="text-[var(--muted-2)]">{count}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* AI tools — centered */}
+      <div className="mb-4 mt-2.5 flex justify-center gap-3">
+        <button onClick={() => openPortfolio('ranking')} className={cn(pill, 'glow-rim active:scale-95')} style={{ background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.45)', color: '#c4b5fd', ['--rim' as string]: '#a78bfa' }}><LayoutGrid size={14} color="#a78bfa" /> {t('projects.portfolioAI')}</button>
+        <button onClick={() => openPortfolio('ventures')} className={cn(pill, 'glow-rim active:scale-95')} style={{ background: 'rgba(34,197,94,0.13)', border: '1px solid rgba(34,197,94,0.45)', color: '#86efac', ['--rim' as string]: '#4ade80' }}><Tag size={14} color="#4ade80" /> {t('projects.newVentures')}</button>
       </div>
 
       {isLoading && <p className="py-6 text-center text-xs text-[var(--muted)]">Loading projects…</p>}
 
-      {projects.map(p => <ProjectCard key={p.id} p={p} live={liveData?.chicken} />)}
+      {shown.map(p => <ProjectCard key={p.id} p={p} live={liveData?.chicken} focused={focusedId === p.id} />)}
 
       <PortfolioModal open={portfolioOpen} onOpenChange={setPortfolioOpen} tab={portfolioTab} onTabChange={setPortfolioTab} />
     </div>

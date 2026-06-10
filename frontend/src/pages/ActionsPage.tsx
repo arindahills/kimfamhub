@@ -27,7 +27,9 @@ const STATUS_STYLE: Record<ActionItem['status'], { label: string; color: string;
 
 function daysLeft(deadline: string | null): number | null {
   if (!deadline) return null
-  return Math.round((new Date(deadline).getTime() - Date.now()) / 86_400_000)
+  const t = new Date(deadline).getTime()
+  if (Number.isNaN(t)) return null // unparseable date → no chip (was showing "NaNd left")
+  return Math.round((t - Date.now()) / 86_400_000)
 }
 
 function DeadlineChip({ deadline, status }: { deadline: string | null; status: ActionItem['status'] }) {
@@ -116,7 +118,9 @@ export default function ActionsPage() {
             status,
             meeting_id: null,
             meeting_date: null,
-            meeting_number: a.meeting || null,
+            // value may already include "KIM" (e.g. "KIM 008/2026"); strip it so the
+            // card's "KIM {number}" prefix doesn't produce "KIM KIM 008/2026"
+            meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
             updated_at: a.note || null,
           })
         }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Plus, Check } from 'lucide-react'
+import { ChevronRight, Plus, Check, Clock, ShieldCheck } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -154,6 +154,34 @@ const STATUS_COLOR: Record<string, string> = {
 const titleCase = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 const initials = (name: string) => name.trim().slice(0, 1).toUpperCase()
 
+/**
+ * Replaces the "Express Interest" button once the member has already applied —
+ * the control now reflects where their application sits in the approval flow.
+ */
+function MyInterestStatus({ status, onClick }: { status: string; onClick: () => void }) {
+  const base = 'flex items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-semibold'
+  if (status === 'confirmed') {
+    return (
+      <button onClick={onClick} className={base} style={{ color: '#34d399', background: 'rgba(52,211,153,.13)', border: '1px solid rgba(52,211,153,.4)' }}>
+        <ShieldCheck size={13} /> Interest Confirmed
+      </button>
+    )
+  }
+  if (status === 'awaiting_chairman') {
+    return (
+      <button onClick={onClick} className={base} style={{ color: '#a5b4fc', background: 'rgba(129,140,248,.13)', border: '1px solid rgba(129,140,248,.4)' }}>
+        <Clock size={13} /> Awaiting Chairman
+      </button>
+    )
+  }
+  // pending / anything else mid-review — animated "checking approval" shimmer
+  return (
+    <button onClick={onClick} className={cn(base, 'status-checking')} style={{ color: '#fcd34d', background: 'rgba(251,191,36,.13)', border: '1px solid rgba(251,191,36,.4)' }}>
+      <Clock size={13} /> Checking approval…
+    </button>
+  )
+}
+
 export function TeamInterest({ projectId, onExpressInterest }: { projectId: string; onExpressInterest: () => void }) {
   const { user } = useAuth()
   const me = user?.name || ''
@@ -166,6 +194,9 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
   })
 
   const visible = interests.filter(r => r.status !== 'rejected' || r.member_name === me)
+  // The member's own live application (a rejected one is treated as "not yet in",
+  // so they can re-express). Drives whether we entice or show approval status.
+  const mine = interests.find(r => r.member_name === me && r.status !== 'rejected')
 
   return (
     <div className="mt-4 rounded-[12px]" style={{ background: 'rgba(59,130,246,0.09)', border: '1px solid rgba(96,165,250,0.30)' }}>
@@ -179,12 +210,17 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
           <span className="text-[13px] font-semibold text-[var(--foreground)]">Team Interest</span>
           <span className="rounded-full bg-[var(--primary)]/15 px-1.5 text-[11px] font-semibold text-[#93c5fd]">{visible.length}</span>
         </button>
-        <button
-          onClick={onExpressInterest}
-          className="flex items-center gap-1 rounded-[8px] border border-[var(--border)] bg-[var(--card)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)]"
-        >
-          <Plus size={13} /> Express Interest
-        </button>
+        {mine ? (
+          <MyInterestStatus status={mine.status} onClick={() => visible.length && setOpen(true)} />
+        ) : (
+          <button
+            onClick={onExpressInterest}
+            className="cta-entice flex items-center gap-1 rounded-[8px] px-2.5 py-1.5 text-[12px] font-semibold text-[#bbf7d0]"
+            style={{ background: 'rgba(34,197,94,.16)', border: '1px solid rgba(34,197,94,.5)' }}
+          >
+            <Plus size={13} /> Express Interest
+          </button>
+        )}
       </div>
 
       {open && visible.length > 0 && (

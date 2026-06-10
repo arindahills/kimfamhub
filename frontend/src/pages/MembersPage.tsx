@@ -89,7 +89,7 @@ export default function MembersPage() {
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold"
                   style={{ background: col + '33', color: col }}>
-                  {m.name[0]}
+                  {(m.name.replace(/^THE\s+/i, '')[0] || m.name[0] || '?').toUpperCase()}
                 </div>
                 <div>
                   <div className="font-semibold text-sm" style={{ color: '#f1f5f9' }}>{m.name}</div>
