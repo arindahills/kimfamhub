@@ -54,6 +54,7 @@ def screenshot(route: str) -> bytes:
 
 
 def critique(png: bytes, route: str) -> str:
+    import time
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=KEY)
@@ -70,11 +71,17 @@ Rules:
 - Be specific ("gap between pills too tight, needs ~12px" not "improve spacing").
 - Max 8 bullets.
 Finish with one line: `VERDICT: SHIP` or `VERDICT: ITERATE`."""
-    resp = client.models.generate_content(
-        model=CRITIQUE_MODEL,
-        contents=[prompt, types.Part.from_bytes(data=png, mime_type="image/png")],
-    )
-    return (resp.text or "").strip()
+    contents = [prompt, types.Part.from_bytes(data=png, mime_type="image/png")]
+    last = ""
+    for attempt in range(4):                       # tolerate transient 429/503
+        try:
+            resp = client.models.generate_content(model=CRITIQUE_MODEL, contents=contents)
+            return (resp.text or "").strip()
+        except Exception as e:
+            last = str(e)
+            if attempt < 3:
+                time.sleep(8 * (attempt + 1))
+    return f"[critique unavailable after retries: {last[:200]}]"
 
 
 def mockup(png: bytes, route: str) -> str | None:

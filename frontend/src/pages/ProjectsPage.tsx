@@ -73,28 +73,28 @@ function MediaGrid({ images, videos }: { images: string[]; videos: string[] }) {
   ]
   if (!items.length) return null
   const MAX = 4
-  const shown = items.length > MAX ? items.slice(0, MAX - 1) : items.slice(0, MAX)
-  const extra = items.length - shown.length
+  const shown = items.slice(0, MAX)
+  const extra = items.length - MAX // overlaid on the last tile when > 0
 
   return (
     <div className="grid grid-cols-4 gap-2">
-      {shown.map((m, i) => (
-        <button
-          key={i}
-          onClick={() => window.open(m.src, '_blank')}
-          className="relative aspect-square overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--background)]"
-        >
-          {m.type === 'image'
-            ? <img src={m.src} className="h-full w-full object-cover" alt="" />
-            : <><video src={m.src} className="h-full w-full object-cover" /><span className="absolute inset-0 flex items-center justify-center bg-black/35"><Play size={18} className="text-white" fill="white" /></span></>}
-        </button>
-      ))}
-      {extra > 0 && (
-        <button
-          onClick={() => window.open(items[shown.length].src, '_blank')}
-          className="flex aspect-square items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--card-inset)] text-sm font-bold text-[var(--muted)]"
-        >+{extra}</button>
-      )}
+      {shown.map((m, i) => {
+        const isLast = i === MAX - 1 && extra > 0
+        return (
+          <button
+            key={i}
+            onClick={() => window.open(m.src, '_blank')}
+            className="relative aspect-square overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--background)]"
+          >
+            {m.type === 'image'
+              ? <img src={m.src} className="h-full w-full object-cover" alt="" />
+              : <><video src={m.src} className="h-full w-full object-cover" /><span className="absolute inset-0 flex items-center justify-center bg-black/35"><Play size={16} className="text-white" fill="white" /></span></>}
+            {isLast && (
+              <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-sm font-bold text-white">+{extra + 1}</span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -242,8 +242,8 @@ export default function ProjectsPage() {
       <h1 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">Our Projects</h1>
       <p className="mt-1 text-xs text-[var(--muted-2)]">{projects.length} ventures across the portfolio</p>
 
-      <div className="mb-7 mt-5 flex flex-wrap gap-3">
-        <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)]')}><SlidersHorizontal size={14} /> All</span>
+      <div className="mb-7 mt-5 flex flex-wrap gap-3.5">
+        <span className={cn(pill, 'bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-white/5')}><SlidersHorizontal size={14} /> All</span>
         <button onClick={() => openPortfolio('ranking')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><LayoutGrid size={14} /> Portfolio AI</button>
         <button onClick={() => openPortfolio('ventures')} className={cn(pill, 'bg-[var(--card)] text-[var(--muted)] hover:bg-[var(--surface)]')}><Tag size={14} /> New Ventures</button>
       </div>

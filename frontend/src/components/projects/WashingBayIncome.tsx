@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Receipt } from 'lucide-react'
 import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Inset } from '@/components/ui/card'
@@ -117,7 +118,7 @@ export function WashingBayIncome() {
   return (
     <Dialog open={open} onOpenChange={o => { setOpen(o); if (!o) setAdding(false) }}>
       <DialogTrigger asChild>
-        <Button variant="subtle" size="sm" className="flex-1">🧾 Income</Button>
+        <Button variant="subtle" size="sm" className="w-full"><Receipt size={15} /> Income</Button>
       </DialogTrigger>
       <DialogContent title="🚗 Washing Bay Income" subtitle="Recorded collections">
         {isLoading || !data ? (
