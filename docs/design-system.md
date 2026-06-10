@@ -72,13 +72,29 @@ first 3 (or 4) and a final **`+X` counter** tile instead of a ragged scroll.
 **Filter pills (page header)** — segmented pills with **generous gap** (never tight); active pill is
 a lighter filled `--surface`, inactive are flat/ghost. Small monochrome Lucide icon + label.
 
-**Bottom navigation** — **monochromatic Lucide line icons** (one icon family), active state =
-`--foreground` + accent tint, inactive = `--muted-2`. No multicolored emoji icons.
+**Bottom navigation** — **full-colour icons** (Rev 2 override of Rev 1's monochrome). Project/domain
+emoji icons, as before. Active label/icon = accent; inactive = muted. Colour is intentional here for
+fast recognition.
 
 ## Iconography
 
-Lucide React, line style, consistent stroke. No emoji in chrome/navigation. Project domain emoji
-may remain *inside* a circular muted avatar tile on cards (brand flavor), but UI controls use Lucide.
+Two-tier (Rev 2): **Lucide line icons** for in-card *controls* (buttons, toggles, chevrons) — consistent
+stroke, clean. **Full-colour emoji** for *identity & navigation*: project domain icons inside a circular
+avatar tile (with a soft themed glow behind), and the bottom-nav destinations. Colour is reserved for
+recognition/identity; controls stay line-style for calm.
+
+## Amendment Log (the journey — for defence & recreation)
+
+**Rev 1 (base spec):** depth-over-contrast slate theme; monochrome Lucide nav; status pills; accordion; uniform 8px outline buttons; +Interest demoted; +X media.
+
+**Rev 2 (2026-06-10) — "Coherence Meets Color":** keep the structural cleanliness of Rev 1, re-introduce intentional colour that *aids navigation* rather than cluttering. Overrides parts of Rev 1:
+- **Colourful icons restored.** Project domain emoji stay multicolour (chicken warm, car blue/red, mango gradient). **Bottom navigation reverts to full-colour icons** (was monochrome in Rev 1) — colour is wanted here.
+- **Subtle colour glow behind the icon only** (not the card border) for depth — soft halo in the venture's theme colour.
+- **Themed metric panels.** The hero metric (e.g. "60% Production Rate" bar) is colour-coded by venture **category**: Farming & Agriculture = green, Business Ventures (Washing Bay) = water blue, Unit Trusts = violet, Real Estate = amber. Aids subconscious categorisation. See `CATEGORY_THEME` in `ProjectsPage.tsx`.
+- **Cleaner padding / breathable spacing.** Cards slightly taller; every element gets air; headers align (F-shape scan path); sub-details subtly indented. `Show Details` restored as the 3rd uniform button (Analysis / Audit / Details).
+- Status pills, Team Interest accordion (collapsed default), and +X media standardisation from Rev 1 are **kept**.
+
+What did NOT change: canvas `#121824` / card `#1E293B`, no neon borders, Inter type, low-saturation status pills, the accordion pattern, uniform 8px buttons, demoted Interest action.
 
 ## Anti-patterns (explicitly rejected)
 
@@ -87,4 +103,5 @@ may remain *inside* a circular muted avatar tile on cards (brand flavor), but UI
 - Inconsistent button radii; an over-intense filled CTA absorbing the metric matrix.
 - Raw status tokens like `awaiting_chairman` — always title-case ("Awaiting Chairman").
 - Camera-crop images in compressed/uneven aspect ratios.
-- Multicolored / emoji nav icons.
+- Colour on *card borders* or as neon outlines (colour belongs on icons, glows, and themed metric
+  panels only — never as a loud structural border).

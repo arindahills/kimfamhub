@@ -30,6 +30,15 @@ const STATUS_TINT: Record<string, { bg: string; fg: string }> = {
 }
 const statusTint = (s: string) => STATUS_TINT[s] ?? { bg: 'rgba(148,163,184,.12)', fg: '#cbd5e1' }
 
+/** Themed accent per venture type — colour aids subconscious categorisation. */
+const CATEGORY_THEME: Record<string, { bar: string; text: string; from: string; to: string; glow: string; tint: string }> = {
+  'Farming & Agriculture': { bar: '#34d399', text: '#86efac', from: 'rgba(34,197,94,.16)', to: 'rgba(34,197,94,.02)', glow: 'rgba(34,197,94,.30)', tint: 'rgba(34,197,94,.14)' },
+  'Business Ventures':     { bar: '#38bdf8', text: '#7dd3fc', from: 'rgba(56,189,248,.16)', to: 'rgba(56,189,248,.02)', glow: 'rgba(56,189,248,.30)', tint: 'rgba(56,189,248,.14)' },
+  'Unit Trusts':           { bar: '#a78bfa', text: '#c4b5fd', from: 'rgba(167,139,250,.16)', to: 'rgba(167,139,250,.02)', glow: 'rgba(167,139,250,.30)', tint: 'rgba(167,139,250,.14)' },
+  'Real Estate':           { bar: '#fbbf24', text: '#fcd34d', from: 'rgba(245,158,11,.16)', to: 'rgba(245,158,11,.02)', glow: 'rgba(245,158,11,.30)', tint: 'rgba(245,158,11,.14)' },
+}
+const categoryTheme = (c: string) => CATEGORY_THEME[c] ?? CATEGORY_THEME['Farming & Agriculture']
+
 const fmtCell = (v?: string) => {
   if (v == null || v === '') return '—'
   const n = Number(String(v).replace(/,/g, ''))
@@ -45,12 +54,12 @@ function StatusPill({ status }: { status: string }) {
   )
 }
 
-function Sparkline() {
-  const bars = [40, 55, 45, 70, 60, 90, 75]
+function Sparkline({ color }: { color: string }) {
+  const bars = [38, 52, 44, 66, 58, 88, 72, 95]
   return (
     <div className="flex h-7 items-end gap-[3px]">
       {bars.map((h, i) => (
-        <div key={i} className="w-[3px] rounded-[2px] bg-[#34d399]" style={{ height: `${h}%`, opacity: 0.35 + (i / bars.length) * 0.65 }} />
+        <div key={i} className="w-[3px] rounded-[2px]" style={{ height: `${h}%`, background: color, opacity: 0.35 + (i / bars.length) * 0.65 }} />
       ))}
     </div>
   )
@@ -129,28 +138,32 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const [interestOpen, setInterestOpen] = useState(false)
   const hasAnalysis = ANALYSABLE.has(p.id)
   const hasAudit = AUDITABLE.has(p.id)
+  const th = categoryTheme(p.category)
 
   return (
-    <div className="mb-3.5 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 4px 20px rgba(0,0,0,.28)' }}>
-      <div className="p-4">
+    <div className="mb-4 overflow-hidden rounded-[16px] bg-[var(--card)]" style={{ boxShadow: '0 4px 20px rgba(0,0,0,.28)' }}>
+      <div className="p-[18px]">
         {/* Header */}
-        <div className="mb-3 flex items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--surface-2)] text-[22px]">{p.icon}</div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-[15px] font-bold leading-tight text-[var(--foreground)]">{p.name}</span>
+        <div className="mb-3.5 flex items-start gap-3">
+          <div
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-[24px]"
+            style={{ background: th.tint, boxShadow: `0 0 16px ${th.glow}` }}
+          >{p.icon}</div>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[15px] font-bold leading-tight text-[var(--foreground)]">{p.name}</span>
               <StatusPill status={p.status} />
             </div>
-            <div className="mt-0.5 text-[12px] text-[var(--muted-2)]">{p.category}</div>
+            <div className="mt-1 text-[12px] text-[var(--muted-2)]">{p.category}</div>
             <div className="text-[12px] text-[var(--muted-2)]">Lead: <span className="text-[var(--muted)]">{p.lead}</span></div>
           </div>
         </div>
 
-        {/* Hero metric */}
-        <div className="mb-3 flex items-center gap-2.5 rounded-[10px] px-3 py-2.5" style={{ background: 'linear-gradient(90deg,rgba(34,197,94,.15),rgba(34,197,94,.03))' }}>
-          <TrendingUp size={16} className="shrink-0 text-[#34d399]" />
-          <span className="flex-1 text-[13px] font-bold uppercase tracking-wide text-[#86efac]">{p.headline}</span>
-          <Sparkline />
+        {/* Themed hero metric */}
+        <div className="mb-3.5 flex items-center gap-2.5 rounded-[10px] px-3.5 py-3" style={{ background: `linear-gradient(90deg,${th.from},${th.to})` }}>
+          <TrendingUp size={16} className="shrink-0" style={{ color: th.bar }} />
+          <span className="flex-1 text-[13px] font-bold uppercase tracking-wide" style={{ color: th.text }}>{p.headline}</span>
+          <Sparkline color={th.bar} />
         </div>
 
         {/* Latest update */}
