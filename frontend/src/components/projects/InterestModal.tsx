@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronRight, Plus } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -151,9 +152,10 @@ const STATUS_COLOR: Record<string, string> = {
 const titleCase = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 const initials = (name: string) => name.trim().slice(0, 1).toUpperCase()
 
-export function TeamInterest({ projectId }: { projectId: string }) {
+export function TeamInterest({ projectId, onExpressInterest }: { projectId: string; onExpressInterest: () => void }) {
   const { user } = useAuth()
   const me = user?.name || ''
+  const [open, setOpen] = useState(false)
 
   const { data: interests = [] } = useQuery<Interest[]>({
     queryKey: ['interests', projectId],
@@ -162,41 +164,50 @@ export function TeamInterest({ projectId }: { projectId: string }) {
   })
 
   const visible = interests.filter(r => r.status !== 'rejected' || r.member_name === me)
-  if (!visible.length) return null
 
   return (
-    <div className="mt-2.5 overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--card-inset)]">
-      <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.08em] text-[#60a5fa]">
-        Team Interest
-        <span className="ml-auto rounded-full bg-[var(--surface)] px-1.5 py-px text-[10px] font-semibold text-[var(--muted-2)]">{visible.length}</span>
+    <div className="mt-3 rounded-[12px] bg-[var(--card-inset)]">
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <button
+          onClick={() => visible.length && setOpen(o => !o)}
+          className="flex flex-1 items-center gap-1.5 text-left"
+          disabled={!visible.length}
+        >
+          <ChevronRight size={15} className={cn('text-[var(--muted-2)] transition-transform', open && 'rotate-90')} />
+          <span className="text-[12px] font-semibold text-[var(--muted)]">Team Interest</span>
+          <span className="rounded-full bg-[var(--surface)] px-1.5 text-[11px] font-semibold text-[var(--muted-2)]">{visible.length}</span>
+        </button>
+        <button
+          onClick={onExpressInterest}
+          className="flex items-center gap-1 rounded-[8px] border border-[var(--border)] px-2.5 py-1 text-[12px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+        >
+          <Plus size={13} /> Express Interest
+        </button>
       </div>
-      <div className="divide-y divide-[var(--border-soft)]">
-        {visible.map(r => {
-          const color = STATUS_COLOR[r.status] ?? '#64748b'
-          const roleLabel = r.preferred_role === 'project_lead' ? 'Project Lead' : 'Team Member'
-          const modes = r.contribution_modes?.length ? r.contribution_modes.join(', ') : ''
-          const isMe = r.member_name === me
-          return (
-            <div key={r.id} className="flex items-center gap-2.5 px-3 py-2">
-              <div
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
-                style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}
-              >{initials(r.member_name)}</div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-[13px] leading-tight">
-                  <span className="font-semibold text-[var(--foreground)]">{isMe ? 'You' : r.member_name}</span>
-                  {r.family_name && <span className="text-[11px] text-[var(--muted-2)]">{r.family_name}</span>}
+
+      {open && visible.length > 0 && (
+        <div className="divide-y divide-[var(--border-soft)] border-t border-[var(--border-soft)]">
+          {visible.map(r => {
+            const color = STATUS_COLOR[r.status] ?? '#64748b'
+            const roleLabel = r.preferred_role === 'project_lead' ? 'Project Lead' : 'Team Member'
+            const modes = r.contribution_modes?.length ? r.contribution_modes.join(', ') : ''
+            const isMe = r.member_name === me
+            return (
+              <div key={r.id} className="flex items-center gap-2.5 px-3 py-2.5">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold" style={{ background: `${color}22`, color }}>{initials(r.member_name)}</div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-[13px] leading-tight">
+                    <span className="font-semibold text-[var(--foreground)]">{isMe ? 'You' : r.member_name}</span>
+                    {r.family_name && <span className="text-[11px] text-[var(--muted-2)]">{r.family_name}</span>}
+                  </div>
+                  <div className="truncate text-[11px] text-[var(--muted-2)]">{roleLabel}{modes ? ` · ${modes}` : ''}</div>
                 </div>
-                <div className="truncate text-[11px] text-[var(--muted-2)]">{roleLabel}{modes ? ` · ${modes}` : ''}</div>
+                <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ color, background: `${color}1f` }}>{titleCase(r.status)}</span>
               </div>
-              <span
-                className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                style={{ color, background: `${color}1f`, border: `1px solid ${color}3a` }}
-              >{titleCase(r.status)}</span>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

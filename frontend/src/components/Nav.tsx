@@ -1,7 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ComponentType } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import {
+  Home, Newspaper, CheckSquare, Wallet, Users, Sprout, Scale, Landmark,
+  CalendarDays, FolderClosed, Bot, Settings, Menu, type LucideProps,
+} from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+
+const ICONS: Record<string, ComponentType<LucideProps>> = {
+  home: Home, updates: Newspaper, actions: CheckSquare, finances: Wallet,
+  members: Users, projects: Sprout, equity: Scale, loans: Landmark,
+  meetings: CalendarDays, docs: FolderClosed, ask: Bot, admin: Settings,
+}
 
 function useIsDesktop() {
   const [desktop, setDesktop] = useState(() => window.innerWidth >= 640)
@@ -82,7 +92,7 @@ export default function Nav() {
               transition: 'opacity 0.15s',
             })}
           >
-            <span style={{ fontSize: 16 }}>{tab.icon}</span>
+            {(() => { const Icon = ICONS[tab.key] ?? Home; return <Icon size={18} strokeWidth={2} /> })()}
             <span>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
@@ -151,7 +161,7 @@ export default function Nav() {
               opacity: isActive ? 1 : 0.75,
             })}
           >
-            <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{tab.icon}</span>
+            <span style={{ width: 24, display: 'flex', justifyContent: 'center' }}>{(() => { const Icon = ICONS[tab.key] ?? Home; return <Icon size={19} strokeWidth={2} /> })()}</span>
             <span>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
@@ -181,13 +191,13 @@ export default function Nav() {
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 3,
+              gap: 4,
               textDecoration: 'none',
-              color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+              color: isActive ? 'var(--foreground)' : 'var(--muted-2)',
             })}
           >
-            <span style={{ fontSize: 20, lineHeight: 1 }}>{tab.icon}</span>
-            <span style={{ fontSize: 10 }}>{t(`nav.${tab.key}`)}</span>
+            {(() => { const Icon = ICONS[tab.key] ?? Home; return <Icon size={21} strokeWidth={2} /> })()}
+            <span style={{ fontSize: 10, fontWeight: 500 }}>{t(`nav.${tab.key}`)}</span>
           </NavLink>
         ))}
         {/* Hamburger — opens full drawer */}
@@ -199,15 +209,15 @@ export default function Nav() {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 3,
+            gap: 4,
             background: 'transparent',
             border: 'none',
             cursor: 'pointer',
-            color: 'var(--text-muted)',
+            color: 'var(--muted-2)',
           }}
         >
-          <span style={{ fontSize: 20, lineHeight: 1 }}>☰</span>
-          <span style={{ fontSize: 10 }}>More</span>
+          <Menu size={21} strokeWidth={2} />
+          <span style={{ fontSize: 10, fontWeight: 500 }}>More</span>
         </button>
       </nav>
     </>

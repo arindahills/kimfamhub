@@ -5,16 +5,16 @@
    Dark slate + green palette, carried over from the original KimFam Hub.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
-  --background: #0f172a;
-  --surface: #1e293b;
-  --surface-2: #0f172a;
+  --background: #121824;
+  --surface: #1a2230;
+  --surface-2: #161e2b;
   --card: #1e293b;
-  --card-inset: #0f172a;
+  --card-inset: #161e2b;
   --foreground: #f1f5f9;
   --muted: #94a3b8;
   --muted-2: #64748b;
-  --border: #334155;
-  --border-soft: #2d3748;
+  --border: #27303f;
+  --border-soft: #222b39;
 
   --primary: #3b82f6;
   --primary-fg: #ffffff;
@@ -81,7 +81,7 @@ html, body, #root {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
