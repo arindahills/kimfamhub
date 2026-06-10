@@ -44,8 +44,12 @@ const fmtCell = (v?: string) => {
 const gridBtn = 'flex items-center justify-center gap-1.5 rounded-[8px] px-1.5 text-xs font-semibold min-h-[40px] transition-colors'
 
 function ChickenLivePL({ c }: { c: LiveChicken }) {
-  const gp = Number(String(c['Gross Position']?.value || '0').replace(/,/g, ''))
-  const np = Number(String(c['Net Position (with CapEx)']?.value || '0').replace(/,/g, ''))
+  const num = (k: string) => Number(String(c[k]?.value || '0').replace(/,/g, ''))
+  const gp = num('Gross Position')
+  const np = num('Net Position (with CapEx)')
+  // Hide the whole block when the farm app has no live figures yet (e.g. staging).
+  const keys = ['sales', 'Available Stock (Cost)', 'Operating Expenses (OPEX)', 'Capital Expenses (CapEx)', 'Gross Position', 'Net Position (with CapEx)']
+  if (!keys.some(k => num(k) !== 0)) return null
   const Stat = ({ v, l, color }: { v?: string; l: string; color: string }) => (
     <div className="rounded-[8px] bg-[var(--card)] p-2.5 text-center">
       <div className="text-sm font-bold" style={{ color }}>{fmtCell(v)}</div>
@@ -70,6 +74,7 @@ function ChickenLivePL({ c }: { c: LiveChicken }) {
 
 function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const [showDetails, setShowDetails] = useState(false)
+  const [updExpanded, setUpdExpanded] = useState(false)
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [interestOpen, setInterestOpen] = useState(false)
@@ -113,18 +118,25 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
                 {p.update.videos.map((src, i) => <video key={i} src={src} controls className="h-[180px] shrink-0 rounded-lg bg-black" />)}
               </div>
             )}
-            <p className="text-[13px] leading-relaxed text-[#cbd5e1]">{p.update.text}</p>
+            <p className="text-[13px] leading-relaxed text-[#cbd5e1]">
+              {p.update.text.length > 180 && !updExpanded ? p.update.text.slice(0, 180).trimEnd() + '…' : p.update.text}
+              {p.update.text.length > 180 && (
+                <button onClick={() => setUpdExpanded(e => !e)} className="ml-1 text-[var(--info)]">
+                  {updExpanded ? 'Show less' : 'Read more'}
+                </button>
+              )}
+            </p>
             <div className="mt-1 text-[11px] text-[var(--muted)]">— {p.update.author}</div>
           </div>
         )}
 
         {showDetails && (
-          <div className="pb-1">
-            <div className="space-y-1.5">
+          <div className="mt-1 border-t border-[var(--border)] pt-3 pb-1">
+            <div className="space-y-2.5">
               {p.data.map(d => (
-                <div key={d.label} className="flex justify-between gap-3 text-xs">
+                <div key={d.label} className="flex justify-between gap-4 text-[13px] leading-snug">
                   <span className="shrink-0 text-[var(--muted-2)]">{d.label}</span>
-                  <span className="text-right text-[#cbd5e1]" style={{ maxWidth: '60%' }}>{d.value}</span>
+                  <span className="text-right text-[#cbd5e1]" style={{ maxWidth: '62%' }}>{d.value}</span>
                 </div>
               ))}
             </div>
@@ -194,7 +206,7 @@ export default function ProjectsPage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <h1 className="mb-3 text-center text-2xl font-bold text-[var(--foreground)]">Our Projects</h1>
+      <h1 className="mb-2.5 px-1 text-[20px] font-bold text-[var(--foreground)]">Our Projects</h1>
 
       <div className="mb-4 grid grid-cols-2 gap-2">
         <button onClick={() => openPortfolio('ranking')} className="min-h-[44px] rounded-[10px] px-2 py-2.5 text-[13px] font-bold" style={{ background: '#1e1b4b', border: '1px solid #7c3aed', color: '#a78bfa' }}>🎯 Portfolio AI</button>
