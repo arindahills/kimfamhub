@@ -11,9 +11,9 @@ export function Spinner({ className }: { className?: string }) {
 
 export function LoadingRow({ label = 'Loading…' }: { label?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-10 text-[var(--muted)]">
+    <div className="flex min-h-[42vh] flex-col items-center justify-center gap-3 text-center text-[var(--muted)]">
       <Spinner />
-      <span className="text-xs">{label}</span>
+      <span className="max-w-xs px-6 text-xs">{label}</span>
     </div>
   )
 }

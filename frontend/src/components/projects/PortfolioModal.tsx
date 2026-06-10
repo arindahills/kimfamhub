@@ -5,7 +5,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Card, Inset } from '@/components/ui/card'
-import { Spinner } from '@/components/ui/spinner'
+import { LoadingRow } from '@/components/ui/spinner'
 import { ugx } from '@/lib/utils'
 
 /* ── Ranking ──────────────────────────────────────────────────────────────── */
@@ -64,10 +64,7 @@ function RankingPane() {
 
   if (ranking.isPending) {
     return (
-      <div className="flex flex-col items-center gap-3 py-12 text-center text-[var(--muted)]">
-        <Spinner />
-        <span className="text-xs">Ranking all 7 projects across capital, speed, and risk…</span>
-      </div>
+      <LoadingRow label="Ranking all 7 projects across capital, speed, and risk…" />
     )
   }
   if (!ranking.data) {
@@ -239,10 +236,7 @@ function VenturesPane() {
 
   if (ventures.isPending) {
     return (
-      <div className="flex flex-col items-center gap-3 py-12 text-center text-[var(--muted)]">
-        <Spinner />
-        <span className="text-xs">Researching new ventures for Western Uganda, this can take a minute…</span>
-      </div>
+      <LoadingRow label="Researching new ventures for Western Uganda, this can take a minute…" />
     )
   }
   if (!ventures.data) {

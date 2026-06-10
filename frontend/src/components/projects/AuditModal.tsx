@@ -4,7 +4,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Inset } from '@/components/ui/card'
-import { LoadingRow, Spinner } from '@/components/ui/spinner'
+import { LoadingRow } from '@/components/ui/spinner'
 import { ugx } from '@/lib/utils'
 
 /** Projects the backend can build an audit for. */
@@ -81,12 +81,7 @@ function AiBrief({ projectId }: { projectId: string }) {
   })
 
   if (narrative.isPending) {
-    return (
-      <div className="flex flex-col items-center gap-3 py-10 text-center text-[var(--muted)]">
-        <Spinner />
-        <span className="text-xs">Analysing the project, this can take up to a minute…</span>
-      </div>
-    )
+    return <LoadingRow label="Analysing the project, this can take up to a minute…" />
   }
 
   if (!narrative.data) {
