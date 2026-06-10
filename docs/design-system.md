@@ -96,6 +96,28 @@ stroke, clean. **Full-colour emoji** for *identity & navigation*: project domain
 avatar tile (with a soft themed glow behind), and the bottom-nav destinations. Colour is reserved for
 recognition/identity; controls stay line-style for calm.
 
+## Modals & card contrast
+
+Modals/bottom-sheets sit on the **dark canvas** (`--background` #121824), NOT on `--surface`, so
+that `--card` (#1E293B) panels inside them visibly rise off the background. The palette is
+low-contrast by design; cards only read as distinct when placed on the darkest layer. Same rule on
+pages: cards go on the canvas, never on a near-same-shade surface.
+
+## Project card decompression ("View Management Actions")
+
+Project cards are kept roomy: a card shows identity (avatar + title + status + lead), the themed hero
+metric, the latest update, then a single **full-width "View Management Actions" trigger** that
+collapses Analysis / Audit / Show Details (+ Income) — instead of a cramped multi-column button row —
+then the Team Interest accordion. Cards are "islands": `mb-8` gap, 16px radius, border + shadow, on
+the canvas so the gap is a clear visual channel.
+
+## Analysis modal (executive dashboard, not a data dump)
+
+Project `/detail` data renders as an **executive dashboard**, never a raw table: hero KPI card(s) for
+the headline money figures at the very top; scalar objects as label-left / value-right KPI rows
+(money values green); arrays/logs as **feed cards** (date bold + count badge + reason in a left-accent
+callout), never `<table>`; long notes in callout boxes; subtle `white/5%` dividers.
+
 ## Amendment Log (the journey — for defence & recreation)
 
 **Rev 1 (base spec):** depth-over-contrast slate theme; monochrome Lucide nav; status pills; accordion; uniform 8px outline buttons; +Interest demoted; +X media.

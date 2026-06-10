@@ -128,11 +128,12 @@ function ChickenLivePL({ c }: { c: LiveChicken }) {
   )
 }
 
-const outlineBtn = 'flex h-10 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--border)] bg-transparent text-[13px] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--card-inset)] active:scale-[0.98] disabled:cursor-not-allowed disabled:text-[#3a4759] disabled:hover:bg-transparent'
+const fullActionBtn = 'flex h-11 w-full items-center gap-2.5 rounded-[10px] border border-[var(--border)] bg-[var(--card-inset)] px-4 text-[13px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40'
 
 function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
   const [showDetails, setShowDetails] = useState(false)
   const [updExpanded, setUpdExpanded] = useState(false)
+  const [actionsOpen, setActionsOpen] = useState(false)
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [interestOpen, setInterestOpen] = useState(false)
@@ -199,14 +200,24 @@ function ProjectCard({ p, live }: { p: Project; live?: LiveChicken }) {
           </div>
         )}
 
-        {/* Uniform action buttons */}
-        <div className="grid grid-cols-3 gap-2.5">
-          <button className={outlineBtn} disabled={!hasAnalysis} onClick={() => setAnalysisOpen(true)}><BarChart3 size={15} /> Analysis</button>
-          <button className={outlineBtn} disabled={!hasAudit} onClick={() => setAuditOpen(true)}><ClipboardList size={15} /> Audit</button>
-          <button className={outlineBtn} onClick={() => setShowDetails(s => !s)}><ChevronDown size={15} className={cn('transition-transform', showDetails && 'rotate-180')} /> {showDetails ? 'Hide' : 'Details'}</button>
-        </div>
-
-        {p.id === 'washing_bay' && <div className="mt-2"><WashingBayIncome /></div>}
+        {/* Management actions — collapsed under one full-width trigger to decompress the card */}
+        <button
+          onClick={() => setActionsOpen(o => !o)}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--card-inset)] text-[13px] font-semibold text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)]"
+        >
+          <SlidersHorizontal size={15} /> View Management Actions
+          <ChevronDown size={15} className={cn('transition-transform', actionsOpen && 'rotate-180')} />
+        </button>
+        {actionsOpen && (
+          <div className="mt-2 space-y-2">
+            {hasAnalysis && <button className={fullActionBtn} onClick={() => setAnalysisOpen(true)}><BarChart3 size={15} className="text-[#60a5fa]" /> Analysis</button>}
+            {hasAudit && <button className={fullActionBtn} onClick={() => setAuditOpen(true)}><ClipboardList size={15} className="text-[#94a3b8]" /> Audit</button>}
+            <button className={fullActionBtn} onClick={() => setShowDetails(s => !s)}>
+              <ChevronDown size={15} className={cn('transition-transform', showDetails && 'rotate-180')} /> {showDetails ? 'Hide Details' : 'Show Details'}
+            </button>
+            {p.id === 'washing_bay' && <WashingBayIncome />}
+          </div>
+        )}
 
         {/* Team Interest accordion (collapsed by default) + demoted Express Interest */}
         <TeamInterest projectId={p.id} onExpressInterest={() => setInterestOpen(true)} />

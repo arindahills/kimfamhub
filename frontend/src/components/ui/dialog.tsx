@@ -37,7 +37,7 @@ export function DialogContent({
       />
       <DialogPrimitive.Content
         className={cn(
-          'fixed z-[101] overflow-y-auto bg-[var(--surface)] shadow-2xl focus:outline-none',
+          'fixed z-[101] overflow-y-auto bg-[var(--background)] shadow-2xl focus:outline-none',
           desktop
             ? 'left-1/2 top-1/2 w-[calc(100vw-24px)] max-w-lg max-h-[88vh] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border border-[var(--border)]'
             : 'inset-x-0 bottom-0 max-h-[92vh] rounded-t-[22px] border-t border-[var(--border)]',
