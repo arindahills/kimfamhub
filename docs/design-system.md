@@ -96,6 +96,11 @@ recognition/identity; controls stay line-style for calm.
 
 What did NOT change: canvas `#121824` / card `#1E293B`, no neon borders, Inter type, low-saturation status pills, the accordion pattern, uniform 8px buttons, demoted Interest action.
 
+**Rev 3 (2026-06-10) — Mobile sheet overlays & custom controls:** modals were desktop-style centred dialogs with raw native checkboxes ("Component Amnesia"). Fixed:
+- **All modals are native bottom sheets on mobile** — slide up from the base, full width, rounded top corners (`22px`), a grab handle, `max-h 92vh`, safe-area padding. Desktop keeps the centred dialog. Implemented in `ui/dialog.tsx` via a viewport hook (not `md:`, which is unreliable here).
+- **Express Interest modal:** YOUR ROLE is now a **full-width segmented pill control** (active = emerald gradient fill). CONTRIBUTION MODES use **custom square checkbox components** (no native browser checkboxes), generous spacing, lead-locked items dimmed.
+- Standing rule going forward: **never ship a centred desktop dialog on mobile, and never use raw `<input type=checkbox>` visuals** — use the sheet + custom controls.
+
 ## Anti-patterns (explicitly rejected)
 
 - Loud neon/saturated borders; dark-on-dark over-saturation.

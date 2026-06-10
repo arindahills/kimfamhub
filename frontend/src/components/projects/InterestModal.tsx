@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Plus, Check } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -69,16 +69,14 @@ export function InterestModal({
       <DialogContent title={`Express Interest — ${projectName}`} subtitle="Tell the club how you would like to take part">
         <div className="space-y-3">
           <div>
-            <div className="mb-1.5 text-[11px] font-bold uppercase text-[var(--muted-2)]">Your role</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Your role</div>
+            <div className="grid grid-cols-2 gap-1 rounded-[12px] bg-[var(--card-inset)] p-1">
               {([['project_lead', 'Project Lead'], ['team_member', 'Team Member']] as const).map(([val, label]) => (
                 <button
                   key={val}
                   onClick={() => pickRole(val)}
-                  className={cn(
-                    'rounded-[10px] border bg-[var(--card-inset)] px-3 py-2.5 text-sm font-semibold transition-colors',
-                    role === val ? 'border-[var(--success)] text-[var(--foreground)]' : 'border-[var(--border)] text-[var(--muted)]',
-                  )}
+                  className={cn('rounded-[9px] py-2.5 text-[13px] font-semibold transition-all', role === val ? 'text-white' : 'text-[var(--muted)]')}
+                  style={role === val ? { background: 'linear-gradient(180deg,#22c55e,#16a34a)', boxShadow: '0 2px 8px rgba(34,197,94,.25)' } : undefined}
                 >
                   {label}
                 </button>
@@ -88,8 +86,8 @@ export function InterestModal({
 
           {role && (
             <div>
-              <div className="mb-1.5 text-[11px] font-bold uppercase text-[var(--muted-2)]">Contribution modes</div>
-              <div className="space-y-1.5">
+              <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Contribution modes</div>
+              <div className="space-y-2.5">
                 {PP_MODES.map(m => {
                   const locked = role === 'project_lead' && LOCKED_FOR_LEAD.includes(m.key)
                   const checked = modes.includes(m.key)
@@ -97,13 +95,17 @@ export function InterestModal({
                     <label
                       key={m.key}
                       className={cn(
-                        'flex items-start gap-2.5 rounded-[8px] border border-[var(--border)] bg-[var(--card-inset)] p-2.5',
-                        locked ? 'opacity-55' : 'cursor-pointer',
+                        'flex items-center gap-3 rounded-[12px] border bg-[var(--card-inset)] p-3 transition-colors',
+                        checked ? 'border-[#22c55e55]' : 'border-[var(--border)]',
+                        locked ? 'opacity-55' : 'cursor-pointer hover:border-[var(--muted-2)]',
                       )}
                     >
-                      <input type="checkbox" className="mt-0.5 shrink-0" checked={checked} disabled={locked} onChange={() => toggleMode(m.key)} />
-                      <div>
-                        <div className="text-[13px] text-[var(--foreground)]">{m.label}</div>
+                      <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border-2 transition-colors', checked ? 'border-[#22c55e] bg-[#22c55e]' : 'border-[var(--muted-2)] bg-transparent')}>
+                        {checked && <Check size={13} strokeWidth={3.5} className="text-white" />}
+                      </span>
+                      <input type="checkbox" className="sr-only" checked={checked} disabled={locked} onChange={() => toggleMode(m.key)} />
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-[var(--foreground)]">{m.label}</div>
                         <div className="text-[11px] text-[var(--muted-2)]">{m.desc}</div>
                       </div>
                     </label>
