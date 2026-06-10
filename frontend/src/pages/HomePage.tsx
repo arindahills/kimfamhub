@@ -1,6 +1,32 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { FAMILY_TREE, parseAge } from '../data/familyTree'
+
+// Compute upcoming birthdays across all family members (within next 30 days)
+function getUpcomingBirthdays(withinDays = 30) {
+  const today = new Date()
+  const results: { name: string; birthday: string; daysAway: number; age: number | null }[] = []
+  const allMembers = FAMILY_TREE.flatMap(f => [
+    ...f.members.map(m => ({ name: m.name.split(' ')[0], birthday: m.birthday })),
+    ...f.children.map(c => ({ name: c.name, birthday: c.birthday })),
+  ])
+  for (const { name, birthday } of allMembers) {
+    if (!birthday) continue
+    const parts = birthday.match(/(\d{1,2})\s+(\w+)/)
+    if (!parts) continue
+    const MON: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 }
+    const mon = MON[parts[2].toLowerCase().slice(0, 3)]
+    if (mon === undefined) continue
+    let next = new Date(today.getFullYear(), mon, parseInt(parts[1]))
+    if (next < today) next = new Date(today.getFullYear() + 1, mon, parseInt(parts[1]))
+    const daysAway = Math.ceil((next.getTime() - today.getTime()) / 86400000)
+    if (daysAway <= withinDays) {
+      results.push({ name, birthday, daysAway, age: parseAge(birthday) })
+    }
+  }
+  return results.sort((a, b) => a.daysAway - b.daysAway)
+}
 
 interface Summary {
   confirmed_bank_balance?: number
@@ -26,6 +52,32 @@ function timeAgo(iso: string): string {
 
 function fmt(n: number) {
   return 'UGX ' + Math.abs(n).toLocaleString()
+}
+
+function BirthdayStrip() {
+  const upcoming = useMemo(() => getUpcomingBirthdays(30), [])
+  if (upcoming.length === 0) return null
+  return (
+    <div className="rounded-xl p-3 mb-4" style={{ background: '#1e293b', border: '1px solid #334155' }}>
+      <div className="text-xs font-semibold mb-2" style={{ color: '#f59e0b' }}>🎂 Upcoming birthdays</div>
+      <div className="space-y-1.5">
+        {upcoming.slice(0, 4).map(b => (
+          <div key={b.name + b.birthday} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 14 }}>{b.daysAway === 0 ? '🎉' : '🎂'}</span>
+              <div>
+                <span style={{ fontSize: 12, color: '#f1f5f9', fontWeight: 600 }}>{b.name}</span>
+                {b.age !== null && <span style={{ fontSize: 11, color: '#64748b', marginLeft: 5 }}>turns {b.age + 1}</span>}
+              </div>
+            </div>
+            <span style={{ fontSize: 11, fontWeight: 600, color: b.daysAway === 0 ? '#f59e0b' : b.daysAway <= 7 ? '#fbbf24' : '#64748b' }}>
+              {b.daysAway === 0 ? 'Today! 🎊' : b.daysAway === 1 ? 'Tomorrow' : `in ${b.daysAway}d`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function ActivityCard({ item }: { item: ActivityItem }) {
@@ -112,6 +164,9 @@ export default function HomePage() {
           ))}
         </ul>
       </div>
+
+      {/* Upcoming birthdays */}
+      <BirthdayStrip />
 
       {/* Activity feed */}
       <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-muted)' }}>
