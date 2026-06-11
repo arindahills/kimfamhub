@@ -25,6 +25,7 @@ const TABS = [
   { to: '/meetings',    icon: '📋', key: 'meetings',    tour: 'nav-meetings'    },
   { to: '/docs',        icon: '📁', key: 'docs',        tour: 'nav-docs'        },
   { to: '/expenditure', icon: '💸', key: 'expenditure', tour: 'nav-expenditure' },
+  { to: '/engagement',  icon: '🏆', key: 'engagement',  tour: 'nav-engagement'  },
   { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
@@ -44,6 +45,18 @@ export default function Nav() {
 
   // Close drawer on navigation
   useEffect(() => { setDrawerOpen(false) }, [location.pathname])
+
+  // Walkthrough tour can open/close the drawer via custom events
+  useEffect(() => {
+    const open  = () => setDrawerOpen(true)
+    const close = () => setDrawerOpen(false)
+    window.addEventListener('kimfam:openDrawer',  open)
+    window.addEventListener('kimfam:closeDrawer', close)
+    return () => {
+      window.removeEventListener('kimfam:openDrawer',  open)
+      window.removeEventListener('kimfam:closeDrawer', close)
+    }
+  }, [])
 
   if (isDesktop) {
     return (
@@ -70,6 +83,7 @@ export default function Nav() {
             key={tab.to}
             to={tab.to}
             end={tab.to === '/'}
+            data-tour={(tab as any).tour}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
@@ -143,6 +157,7 @@ export default function Nav() {
             key={tab.to}
             to={tab.to}
             end={tab.to === '/'}
+            data-tour={(tab as any).tour}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
@@ -180,6 +195,7 @@ export default function Nav() {
             key={tab.to}
             to={tab.to}
             end={tab.to === '/'}
+            data-tour={(tab as any).tour}
             style={({ isActive }) => ({
               flex: 1,
               display: 'flex',
@@ -197,6 +213,7 @@ export default function Nav() {
         ))}
         {/* Hamburger — opens full drawer */}
         <button
+          data-tour="nav-more"
           onClick={() => setDrawerOpen(true)}
           style={{
             flex: 1,

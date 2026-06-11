@@ -1,8 +1,21 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import ExpenditurePage from './ExpenditurePage'
+import { FamilyProfileModal } from '../components/FamilyProfileModal'
+import { LABEL_TO_KEY } from '../data/familyTree'
+
+// Member → family name mapping (matches backend _MEMBER_FAMILY_NAME)
+const MEMBER_FAMILY: Record<string, string> = {
+  Hillary: 'ARINDAS', Esther: 'ARINDAS',
+  Viola: 'ARUNGAS', Simon: 'ARUNGAS',
+  Israel: 'KIKANGIS', Merab: 'KIKANGIS',
+  Max: 'TURAMYES', Janet: 'TURAMYES',
+  Solomon: 'ARIHOS',
+  Hellen: 'KOFUNAS', Lawi: 'KOFUNAS',
+  Alex: 'TUHIMBISES', Priscilla: 'TUHIMBISES',
+}
 
 
 interface Summary {
@@ -84,12 +97,82 @@ function ReconciliationBadge({ confirmed, computed }: { confirmed: number; compu
   )
 }
 
-function FamilyCard({ f }: { f: FamilyBalance }) {
+// Family head avatar key map (for card avatar display)
+const FAMILY_HEAD_AVATAR: Record<string, string> = {
+  ARINDAS:    'hillaryarinda',
+  ARUNGAS:    'violaarunga',
+  KIKANGIS:   'israelkikangi',
+  TURAMYES:   'maxturamye',
+  ARIHOS:     'solomonariho',
+  KOFUNAS:    'hellenkofuna',
+  TUHIMBISES: 'alextuhimbise',
+}
+
+function FamilyAvatar({ familyName, size = 36 }: { familyName: string; size?: number }) {
+  const [err, setErr] = useState(false)
+  const key = FAMILY_HEAD_AVATAR[familyName.toUpperCase()]
+  const initial = familyName.charAt(0).toUpperCase()
+  if (err || !key) {
+    return (
+      <div style={{ width: size, height: size, borderRadius: '50%', background: '#1e3a5f', border: '2px solid #334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.38, fontWeight: 700, color: '#64748b', flexShrink: 0 }}>
+        {initial}
+      </div>
+    )
+  }
+  return (
+    <img src={`/static/avatars/${key}.jpg`} onError={() => setErr(true)} alt={familyName}
+      style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '2px solid #334155', flexShrink: 0 }} />
+  )
+}
+
+// Toaster messages per balance status — personalized but deterministic
+function toastMessage(familyLabel: string, curBal: number, rate: number, outstanding: number): string {
+  const name = familyLabel  // e.g. "The Arindas"
+  const paidTo = paidToLabel(curBal, rate)
+  if (outstanding === 0 && curBal <= 0) {
+    const msgs = [
+      `${name} are fully paid up${paidTo ? ` to ${paidTo}` : ''}! You're ahead of the curve. The club thanks you 🏆`,
+      `Nothing owed and ${paidTo ? `paid to ${paidTo}` : 'all clear'}! ${name} are keeping the club healthy 💚`,
+      `All clear! ${name} are setting the standard this month. Keep going 🌟`,
+    ]
+    return msgs[Math.floor(Date.now() / 1000) % msgs.length]
+  }
+  if (outstanding > 0 && outstanding <= rate) {
+    return `Almost there! ${name} are just UGX ${outstanding.toLocaleString()} away from being all clear this month. One quick transfer does it 💪`
+  }
+  if (outstanding > 0 && outstanding <= rate * 3) {
+    return `${name} have UGX ${outstanding.toLocaleString()} outstanding. A steady payment now keeps the club moving forward — every contribution matters 🤝`
+  }
+  return `${name} have UGX ${outstanding.toLocaleString()} outstanding. The club's growth depends on everyone keeping up — please reach out to Hellen if you need a payment plan 💛`
+}
+
+function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; onOpen?: () => void }) {
   const rate = f.current_monthly_rate || 0
   const curBal = f.current_balance || 0
   const initBal = f.initial_balance || 0
   const outstanding = curBal <= 0 ? initBal : f.combined_balance
   const borderCol = outstanding === 0 ? '#166534' : outstanding <= rate * 3 ? '#d97706' : '#dc2626'
+
+  const [showToast, setShowToast] = useState(false)
+  const [toastDismissed, setToastDismissed] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+
+  // Show toaster shortly after mount for the logged-in user's card
+  useEffect(() => {
+    if (!isMyFamily || toastDismissed) return
+    const t = setTimeout(() => setShowToast(true), 1200)
+    return () => clearTimeout(t)
+  }, [isMyFamily, toastDismissed])
+
+  // Auto-dismiss toast after 6 seconds
+  useEffect(() => {
+    if (!showToast) return
+    const t = setTimeout(() => { setShowToast(false); setToastDismissed(true) }, 6000)
+    return () => clearTimeout(t)
+  }, [showToast])
+
+  const familyLabel = 'The ' + f.family_name.charAt(0) + f.family_name.slice(1).toLowerCase()
+  const hasProfileKey = !!LABEL_TO_KEY[familyLabel]
 
   const paidTo = paidToLabel(curBal, rate)
   const mStatus = paidTo
@@ -105,30 +188,87 @@ function FamilyCard({ f }: { f: FamilyBalance }) {
     : <span style={{ color: '#4ade80' }}>Cleared</span>
 
   return (
-    <div className="rounded-xl p-3" style={{ background: '#1e293b', border: `1px solid ${borderCol}` }}>
-      <div className="flex justify-between items-baseline mb-0.5">
-        <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>{f.family_name}</span>
-        <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
-      </div>
-      <div className="text-[11px] mb-2" style={{ color: '#475569' }}>
-        {f.composition}
-      </div>
-      <div className="flex justify-between text-xs mb-1">
-        <span style={{ color: 'var(--text-muted)' }}>Monthly</span>
-        {mStatus}
-      </div>
-      <div className="flex justify-between text-xs mb-1">
-        <span style={{ color: 'var(--text-muted)' }}>Initial (2023)</span>
-        {iStatus}
-      </div>
-      <div className="flex justify-between text-xs font-semibold mt-2">
-        <span style={{ color: 'var(--text-muted)' }}>Total outstanding</span>
-        {outstanding === 0
-          ? <span style={{ color: '#4ade80' }}>Nothing owed</span>
-          : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
+    <>
+      {/* Animated border keyframe injected once */}
+      <style>{`
+        @keyframes familyCardGlow {
+          0%,100% { box-shadow: 0 0 0 0 ${borderCol}00; }
+          50%      { box-shadow: 0 0 14px 3px ${borderCol}88; }
         }
+        @keyframes toastIn  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes toastOut { from { opacity:1; } to { opacity:0; } }
+      `}</style>
+
+      <div
+        className="rounded-xl p-3"
+        style={{
+          background: '#1e293b',
+          border: `1px solid ${borderCol}`,
+          cursor: hasProfileKey ? 'pointer' : 'default',
+          animation: isMyFamily ? `familyCardGlow 2.5s ease-in-out infinite` : undefined,
+          position: 'relative',
+        }}
+        onClick={hasProfileKey ? () => setProfileOpen(true) : undefined}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <FamilyAvatar familyName={f.family_name} size={38} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="flex justify-between items-baseline">
+              <span className="font-bold text-sm" style={{ color: '#f1f5f9' }}>
+                {f.family_name}
+                {isMyFamily && <span style={{ marginLeft: 5, fontSize: 10, color: borderCol }}>● you</span>}
+              </span>
+              <span className="text-[11px]" style={{ color: '#64748b' }}>UGX {rate.toLocaleString()}/mo</span>
+            </div>
+            <div className="text-[10px]" style={{ color: '#475569' }}>{f.composition}</div>
+          </div>
+        </div>
+        <div className="flex justify-between text-xs mb-1">
+          <span style={{ color: 'var(--text-muted)' }}>Monthly</span>
+          {mStatus}
+        </div>
+        <div className="flex justify-between text-xs mb-1">
+          <span style={{ color: 'var(--text-muted)' }}>Initial (2023)</span>
+          {iStatus}
+        </div>
+        <div className="flex justify-between text-xs font-semibold mt-2">
+          <span style={{ color: 'var(--text-muted)' }}>Total outstanding</span>
+          {outstanding === 0
+            ? <span style={{ color: '#4ade80' }}>Nothing owed</span>
+            : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
+          }
+        </div>
+        {hasProfileKey && (
+          <div className="text-[10px] mt-1.5 text-right" style={{ color: '#334155' }}>Tap to view family profile →</div>
+        )}
       </div>
-    </div>
+
+      {/* AI-style toaster for logged-in user's card */}
+      {isMyFamily && showToast && (
+        <div
+          onClick={() => { setShowToast(false); setToastDismissed(true) }}
+          style={{
+            position: 'fixed', bottom: 90, left: 12, right: 12, zIndex: 999,
+            background: borderCol === '#166534' ? '#052e16' : borderCol === '#d97706' ? '#431407' : '#450a0a',
+            border: `1px solid ${borderCol}`,
+            borderRadius: 14, padding: '12px 14px',
+            boxShadow: `0 4px 24px ${borderCol}44`,
+            animation: 'toastIn 0.35s ease-out',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ fontSize: 12, lineHeight: 1.5, color: borderCol === '#166534' ? '#4ade80' : borderCol === '#d97706' ? '#fbbf24' : '#fca5a5' }}>
+            {toastMessage(familyLabel, curBal, rate, outstanding)}
+          </div>
+          <div style={{ fontSize: 10, marginTop: 4, color: '#475569' }}>Tap to dismiss</div>
+        </div>
+      )}
+
+      {/* Family profile modal */}
+      {profileOpen && hasProfileKey && (
+        <FamilyProfileModal familyLabel={familyLabel} onClose={() => setProfileOpen(false)} />
+      )}
+    </>
   )
 }
 
@@ -659,6 +799,93 @@ function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── My Submissions — member's own payment history ──────────────────────────
+// API: GET /api/contributions/my-submissions
+// Shows last 8 payments, status badges, rejected reason + Resubmit button.
+interface Submission {
+  id: number; period_month: string; amount_ugx: number; payment_reference: string | null
+  status: 'pending' | 'confirmed' | 'rejected'; confirmation_note: string | null
+  submitted_at: string; receipt_url: string | null; submitted_by_user_id: string | null
+}
+interface MySubsResponse { family_id: number | null; family_name: string | null; payments: Submission[] }
+
+function MySubmissions() {
+  const qc = useQueryClient()
+  const { data } = useQuery<MySubsResponse>({
+    queryKey: ['my-submissions'],
+    queryFn: () => fetch('/api/contributions/my-submissions', { credentials: 'include' }).then(r => r.json()),
+    staleTime: 30_000,
+  })
+  const payments = data?.payments ?? []
+  const actionableRejected = payments.filter((p, i) =>
+    p.status === 'rejected' && !payments.slice(0, i).some(q => q.status !== 'rejected')
+  )
+
+  if (!data?.family_id || payments.length === 0) return null
+
+  const StatusBadge = ({ status }: { status: string }) => {
+    const map: Record<string, [string, string]> = {
+      confirmed: ['#14532d', '#4ade80'],
+      rejected:  ['#450a0a', '#fca5a5'],
+      pending:   ['#2d1b69', '#c4b5fd'],
+    }
+    const [bg, color] = map[status] ?? ['#1e293b', '#94a3b8']
+    return <span style={{ background: bg, color, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{status}</span>
+  }
+
+  return (
+    <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid #334155' }}>
+      <h3 className="font-semibold mb-3 text-sm" style={{ color: '#f1f5f9' }}>
+        My Submissions — {data.family_name ? 'The ' + data.family_name.charAt(0) + data.family_name.slice(1).toLowerCase() : ''}
+      </h3>
+
+      {actionableRejected.length > 0 && (
+        <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: '#450a0a', color: '#fca5a5' }}>
+          ⚠ {actionableRejected.length} payment{actionableRejected.length > 1 ? 's' : ''} rejected. Review the reason and resubmit.
+        </div>
+      )}
+
+      <div className="space-y-0">
+        {payments.slice(0, 8).map((p, idx) => {
+          const isActionableReject = p.status === 'rejected' && !payments.slice(0, idx).some(q => q.status !== 'rejected')
+          return (
+            <div key={p.id}
+              style={{
+                padding: '10px 0',
+                borderBottom: idx < Math.min(payments.length, 8) - 1 ? '1px solid #1e293b' : 'none',
+                borderLeft: isActionableReject ? '3px solid #f87171' : 'none',
+                paddingLeft: isActionableReject ? 10 : 0,
+                display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontSize: 13, color: '#f1f5f9' }}>UGX {Math.abs(p.amount_ugx).toLocaleString()}</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  {p.submitted_at?.slice(0, 10)}{p.payment_reference ? ` · Ref: ${p.payment_reference}` : ''}
+                </div>
+                {p.confirmation_note && (
+                  <div style={{ marginTop: 4, padding: '5px 8px', background: '#450a0a', borderLeft: '3px solid #f87171', borderRadius: '0 6px 6px 0', fontSize: 11, color: '#fca5a5' }}>
+                    Reason: {p.confirmation_note}
+                  </div>
+                )}
+                {isActionableReject && (
+                  <button
+                    onClick={() => qc.invalidateQueries({ queryKey: ['my-submissions'] })}
+                    style={{ marginTop: 8, background: '#166534', color: '#4ade80', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Resubmit →
+                  </button>
+                )}
+              </div>
+              <StatusBadge status={p.status} />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // POST /api/contributions/admin/bank-balance  { balance_ugx, note }
 // Only admins (role=admin). Records the physical ABSA balance Hellen sees in the app.
 function UpdateBankBalanceModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
@@ -834,6 +1061,7 @@ export default function FinancesPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
   const isAdmin = user?.role === 'admin'
+  const myFamilyName = user?.name ? MEMBER_FAMILY[user.name] ?? null : null
   const [showPayment, setShowPayment]         = useState(false)
   const [showBankBalance, setShowBankBalance] = useState(false)
 
@@ -920,12 +1148,17 @@ export default function FinancesPage() {
           <div className="text-2xl font-bold tracking-widest" style={{ color: '#22c55e' }}>6004961127</div>
           <div className="text-sm mt-1" style={{ color: '#cbd5e1' }}>TUSIIME HELLEN</div>
         </div>
-        <button onClick={() => setShowPayment(true)}
+        <button
+          data-tour="submit-payment"
+          onClick={() => setShowPayment(true)}
           className="w-full rounded-xl py-3 font-semibold text-sm"
           style={{ background: '#166534', color: '#fff' }}>
           {t('finances.submitPayment')}
         </button>
       </div>
+
+      {/* My Submissions — member's own payment history */}
+      <MySubmissions />
 
       {/* Family ledger */}
       {ledger && ledger.length > 0 && (
@@ -934,7 +1167,14 @@ export default function FinancesPage() {
             {t('finances.family')} {t('finances.balance')}s
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {ledger.map(f => <FamilyCard key={f.family_name} f={f} />)}
+            {ledger.map(f => (
+              <FamilyCard
+                key={f.family_name}
+                f={f}
+                isMyFamily={myFamilyName !== null && f.family_name.toUpperCase() === myFamilyName}
+                onOpen={() => {}}
+              />
+            ))}
           </div>
         </div>
       )}

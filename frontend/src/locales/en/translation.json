@@ -3,7 +3,7 @@
     "home": "Home", "updates": "Updates", "actions": "Action Points",
     "finances": "Finances", "members": "Members", "projects": "Projects",
     "equity": "Equity", "loans": "Loans", "meetings": "Meetings",
-    "docs": "Documents", "expenditure": "Expenditure", "ask": "Ask KimFam", "admin": "Admin"
+    "docs": "Documents", "expenditure": "Expenditure", "engagement": "Engagement", "ask": "Ask KimFam", "admin": "Admin"
   },
   "common": {
     "loading": "Loading...", "error": "Something went wrong", "retry": "Try again",

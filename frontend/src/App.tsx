@@ -19,6 +19,7 @@ import DocsPage from './pages/DocsPage'
 import AskPage from './pages/AskPage'
 import AdminPage from './pages/AdminPage'
 import ExpenditurePage from './pages/ExpenditurePage'
+import EngagementPage from './pages/EngagementPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -53,7 +54,8 @@ function AuthGate() {
         <Route path="/docs"     element={<DocsPage />} />
         <Route path="/ask"      element={<AskPage />} />
         <Route path="/admin"       element={<AdminPage />} />
-        <Route path="/expenditure" element={<ExpenditurePage />} />
+        <Route path="/expenditure"  element={<ExpenditurePage />} />
+        <Route path="/engagement"   element={<EngagementPage />} />
         <Route path="*"            element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
