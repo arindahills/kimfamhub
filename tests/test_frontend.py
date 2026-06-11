@@ -205,7 +205,7 @@ class TestAuthSession:
         """After logout, /api/auth/me must return 401."""
         _login(page)
         # Click the logout button
-        page.get_by_role("button", name="Log Out").click()
+        page.locator("button[aria-label='Sign out']").click()
         page.wait_for_timeout(1000)
         # Login form should reappear
         assert page.is_visible("input[autocomplete='username']"), (
