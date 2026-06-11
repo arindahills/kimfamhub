@@ -294,28 +294,35 @@ def submit_payment(req: SubmitPaymentRequest, request: Request):
           req.amount_ugx, req.payment_reference, apply_init))
     _pid = row[0]
 
-    # Notify Hillary and Hellen via WhatsApp so they can confirm promptly
+    # Notify Hillary, Hellen, and the KimFam group via WhatsApp
     try:
+        import os as _os
         _fam_name = fam[0]["family_name"].title() if fam else "Unknown"
         _submitter = user.get("sub", "A member")
         _ref_note = f" · Ref: {req.payment_reference}" if req.payment_reference else ""
-        _msg = (
+        _is_staging = _os.environ.get("KIMFAM_ENV", "prod") == "staging"
+
+        # Private message to Hillary + Hellen only — group gets ONE message after receipt upload
+        _private_msg = (
             f"💰 *New KimFam Payment Submitted*\n"
             f"Family: The {_fam_name}\n"
             f"Amount: UGX {req.amount_ugx:,}\n"
             f"Period: {req.period_month}\n"
             f"Submitted by: {_submitter}{_ref_note}\n"
-            f"Payment #{_pid} — awaiting your confirmation."
+            f"Payment #{_pid} — awaiting your confirmation on the app."
         )
+
         import requests as _req_lib
         _BRIDGE = "http://localhost:8080/api/send"
         _HILLARY = "256775102684"
         _HELLEN  = "254716595631"
+
         for _num in [_HILLARY, _HELLEN]:
             try:
-                _req_lib.post(_BRIDGE, json={"recipient": _num, "message": _msg}, timeout=5)
+                _req_lib.post(_BRIDGE, json={"recipient": _num, "message": _private_msg}, timeout=5)
             except Exception:
                 pass
+        # NOTE: group notification sent in upload_receipt() after receipt is attached
     except Exception:
         pass  # never block the response over a notification failure
 
@@ -723,13 +730,23 @@ async def upload_receipt(payment_id: int, request: Request):
             (payment_id,)
         )
         if _row:
-            _notif.notify_payment_submitted(
-                family_name=_row[0]["family_name"],
-                amount_ugx=_row[0]["amount_ugx"],
-                period_month=_row[0]["period_month"],
-                payment_id=payment_id,
-                submitted_by=_row[0]["submitted_by_user_id"] or "",
-                receipt_url=url,
+            import os as _os2, requests as _req_lib2
+            _r = _row[0]
+            _is_stg = _os2.environ.get("KIMFAM_ENV", "prod") == "staging"
+            _base_url = "https://staging.kimfamhub.com" if _is_stg else "https://kimfamhub.com"
+            _receipt_full = f"{_base_url}{url}"
+            _group = "120363429341325971@g.us" if _is_stg else "254716595631-1631997730@g.us"
+            _fam = _r["family_name"].title()
+            _receipt_msg = (
+                f"📎 Receipt attached for The {_fam}'s payment of UGX {_r['amount_ugx']:,} "
+                f"(Period: {_r['period_month']}).\n"
+                f"View receipt: {_receipt_full}\n"
+                f"Payment #{payment_id} — awaiting Hellen's confirmation."
             )
+            try:
+                _req_lib2.post("http://localhost:8080/api/send",
+                               json={"recipient": _group, "message": _receipt_msg}, timeout=5)
+            except Exception:
+                pass
     except Exception: pass
     return {"url": url}
