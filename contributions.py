@@ -302,7 +302,7 @@ def submit_payment(req: SubmitPaymentRequest, request: Request):
         _ref_note = f" · Ref: {req.payment_reference}" if req.payment_reference else ""
         _is_staging = _os.environ.get("KIMFAM_ENV", "prod") == "staging"
 
-        # Private message to Hillary + Hellen (detailed, includes action prompt)
+        # Private message to Hillary + Hellen only — group gets ONE message after receipt upload
         _private_msg = (
             f"💰 *New KimFam Payment Submitted*\n"
             f"Family: The {_fam_name}\n"
@@ -312,31 +312,17 @@ def submit_payment(req: SubmitPaymentRequest, request: Request):
             f"Payment #{_pid} — awaiting your confirmation on the app."
         )
 
-        # Group message — will be updated with receipt link after upload
-        _group_msg = (
-            f"💰 *Payment Submitted*\n"
-            f"The {_fam_name} have submitted UGX {req.amount_ugx:,} for {req.period_month}.\n"
-            f"Submitted by {_submitter}.{_ref_note}\n"
-            f"Awaiting treasurer confirmation. 📋"
-        )
-
         import requests as _req_lib
         _BRIDGE = "http://localhost:8080/api/send"
         _HILLARY = "256775102684"
         _HELLEN  = "254716595631"
-        # Production group JID; staging uses the test group
-        _GROUP = "120363429341325971@g.us" if _is_staging else "254716595631-1631997730@g.us"
 
         for _num in [_HILLARY, _HELLEN]:
             try:
                 _req_lib.post(_BRIDGE, json={"recipient": _num, "message": _private_msg}, timeout=5)
             except Exception:
                 pass
-        # Post to the KimFam group
-        try:
-            _req_lib.post(_BRIDGE, json={"recipient": _GROUP, "message": _group_msg}, timeout=5)
-        except Exception:
-            pass
+        # NOTE: group notification sent in upload_receipt() after receipt is attached
     except Exception:
         pass  # never block the response over a notification failure
 

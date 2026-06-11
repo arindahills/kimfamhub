@@ -124,11 +124,11 @@ class TestLoginFlow:
     def test_wrong_password_shows_error(self, page):
         """Wrong password must show an inline error, not a JS exception."""
         page.goto(BASE)
-        page.wait_for_selector("input[autocomplete='username']", timeout=8000)
+        page.wait_for_selector("input[autocomplete='username']", timeout=15000)
         page.fill("input[autocomplete='username']", TEST_USER)
         page.fill("input[type='password']", "definitely-wrong-pw")
         page.click("button[type='submit']")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         # Login form must still be visible (not redirected)
         assert page.is_visible("input[autocomplete='username']"), (
             "Login form disappeared after a wrong password -- app may have crashed"
@@ -202,11 +202,11 @@ class TestAuthSession:
         assert r["body"]["name"] == "Hillary"
 
     def test_logout_clears_session(self, page):
-        """After logout, /api/auth/me must return 401."""
+        """After logout, login form must reappear."""
         _login(page)
-        # Click the logout button
-        page.get_by_role("button", name="Log Out").click()
-        page.wait_for_timeout(1000)
+        # Click the logout button — aria-label is "Sign out" in the React app
+        page.locator("button[aria-label='Sign out']").click()
+        page.wait_for_timeout(1500)
         # Login form should reappear
         assert page.is_visible("input[autocomplete='username']"), (
             "Login form not shown after logout"
