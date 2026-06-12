@@ -55,7 +55,7 @@ export default function DocsPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-2">
-      <div style={{ padding: '1rem' }}>
+      <div style={{ padding: '0.5rem 0' }}>
         <input
           type="text"
           placeholder={t('documents.searchPlaceholder')}
