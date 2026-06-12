@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 
 interface DocFile {
   name: string
@@ -31,19 +32,48 @@ function ext(filename: string) {
 }
 
 export default function DocsPage() {
+  const { t } = useTranslation()
   const [openCat, setOpenCat] = useState<string | null>('minutes')
+  const [search, setSearch] = useState('')
 
   const { data, isLoading } = useQuery<DocsData>({
     queryKey: ['docs'],
     queryFn: () => fetch('/api/docs', { credentials: 'include' }).then(r => r.json()),
   })
 
+  const filtered = search.trim() === '' ? data : data ? Object.fromEntries(
+    Object.entries(data).map(([key, cat]) => [
+      key,
+      { ...cat, files: cat.files.filter(f => f.name.toLowerCase().includes(search.toLowerCase())) }
+    ])
+  ) : data
+
   if (isLoading) return <p className="text-xs text-center py-10" style={{ color: 'var(--text-muted)' }}>Loading...</p>
 
-  const categories = Object.entries(data || {})
+  const categories = Object.entries(filtered || {})
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-2">
+      <div style={{ position: 'sticky', top: 0, paddingTop: '0.5rem', paddingBottom: '0.5rem', background: 'var(--bg-page)', zIndex: 10 }}>
+        <input
+          type="text"
+          placeholder={t('documents.searchPlaceholder')}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full px-4 py-3 rounded-lg text-sm"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {search && (
+          <p className="text-[10px] mt-1" style={{ color: '#475569' }}>
+            {categories.reduce((sum, [, cat]) => sum + cat.files.length, 0)} results
+          </p>
+        )}
+      </div>
+
       {categories.map(([key, cat]) => {
         const isOpen = openCat === key
         return (

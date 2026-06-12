@@ -28,7 +28,16 @@
     "obj4": "Share profits among members in proportion to contributions",
     "recentUpdates": "Recent Updates",
     "showMore": "Show more", "showLess": "Show less",
-    "bankBalance": "Bank Balance", "familyGroups": "Family Groups", "activeProjects": "Active Projects"
+    "bankBalance": "Bank Balance", "familyGroups": "Family Groups", "activeProjects": "Active Projects",
+    "upcomingBirthdays": "Upcoming birthdays",
+    "familyTree": "Family Tree",
+    "tapToExplore": "Tap to explore lineage",
+    "noActivity": "No recent activity.",
+    "replayTour": "Replay guided tour",
+    "turns": "turns",
+    "todayCelebrate": "Today! 🎊",
+    "tomorrow": "Tomorrow",
+    "inDays": "in {{count}}d"
   },
   "projects": {
     "title": "Projects", "ourProjects": "Our Projects",
@@ -63,7 +72,16 @@
     "title": "Members", "asOf": "As of",
     "totalContributed": "Total Contributed", "monthlyBalance": "Monthly Balance",
     "initialObligation": "Initial Obligation", "initialBalance": "Initial Balance",
-    "allClear": "All clear", "owed": "owed"
+    "allClear": "All clear", "owed": "owed", "credit": "credit",
+    "dataUnavailable": "Members data unavailable",
+    "dataUnavailableSub": "Member data is temporarily unavailable. The finance team has been notified.",
+    "viewFamilyProfile": "View family profile",
+    "children": "Children",
+    "allClearFamilies": "All families are up to date.",
+    "allClearObl": "All families are clear.",
+    "chartContributions": "Current Contributions vs. Member",
+    "chartOblWith": "Obligations (with Initial) vs. Member",
+    "chartOblWithout": "Obligations (without Initial) vs. Member"
   },
   "loans": {
     "title": "Loans", "member": "Member", "principal": "Principal",
@@ -77,7 +95,8 @@
   },
   "documents": {
     "title": "Documents", "meetingMinutes": "Meeting Minutes",
-    "governance": "Governance", "view": "View", "download": "Download"
+    "governance": "Governance", "view": "View", "download": "Download",
+    "searchPlaceholder": "Search documents..."
   },
   "ask": {
     "title": "Ask KimFam", "placeholder": "Ask anything about KimFam...",
@@ -89,5 +108,44 @@
   },
   "updates": {
     "title": "Updates", "allProjects": "All Projects", "post": "+ Post"
+  },
+  "family": {
+    "coreMembers": "Core members",
+    "members": "Members",
+    "grandchildren": "Grandchildren",
+    "children": "Children",
+    "ageRange": "Age range",
+    "additionsSince": "addition",
+    "additionsSincePlural": "additions",
+    "familyBranches": "Family branches",
+    "age": "Age",
+    "ageUnknown": "Age?",
+    "worksAt": "Works at",
+    "studiesAt": "Studies at",
+    "familyLabel": "Family",
+    "familyHead": "Family head",
+    "member": "Member",
+    "about": "About",
+    "interests": "Interests",
+    "keyMilestones": "Key Milestones",
+    "profileComingSoon": "Profile details coming soon",
+    "profileComingSoonSub": "Profession, interests and milestones will appear here",
+    "birthday": "Birthday",
+    "birthdayUnknown": "Birthday unknown",
+    "partOf": "Part of",
+    "growingUp": "Growing up, more details soon",
+    "noProjectInterests": "No project interests recorded yet.",
+    "role": "Role:",
+    "foundingFamily": "Founding Family",
+    "bornFrom": "Born from",
+    "childOf": "Child of",
+    "lineage": "Lineage",
+    "projects": "Projects",
+    "yearsOld": "yrs old",
+    "yrs": "yrs",
+    "today": "Today!",
+    "tomorrow": "Tomorrow!",
+    "inDays": "In {{days}}d",
+    "childNumber": "is child #{{n}} of 6"
   }
 }

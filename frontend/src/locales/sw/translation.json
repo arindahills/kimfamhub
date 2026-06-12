@@ -28,7 +28,16 @@
     "obj4": "Kugawana faida kwa wanachama kulingana na michango yao",
     "recentUpdates": "Habari za Hivi Karibuni",
     "showMore": "Onyesha zaidi", "showLess": "Onyesha kidogo",
-    "bankBalance": "Salio la Benki", "familyGroups": "Vikundi vya Familia", "activeProjects": "Miradi Inayoendelea"
+    "bankBalance": "Salio la Benki", "familyGroups": "Vikundi vya Familia", "activeProjects": "Miradi Inayoendelea",
+    "upcomingBirthdays": "Siku za Kuzaliwa Zinazokuja",
+    "familyTree": "Mti wa Familia",
+    "tapToExplore": "Gusa kuchunguza ukoo",
+    "noActivity": "Hakuna shughuli za hivi karibuni.",
+    "replayTour": "Rudia ziara ya mwongozo",
+    "turns": "anatimiza",
+    "todayCelebrate": "Leo! 🎊",
+    "tomorrow": "Kesho",
+    "inDays": "katika siku {{count}}"
   },
   "projects": {
     "title": "Miradi", "ourProjects": "Miradi Yetu",
@@ -63,7 +72,16 @@
     "title": "Wanachama", "asOf": "Kufikia",
     "totalContributed": "Jumla Iliyochangwa", "monthlyBalance": "Salio la Kila Mwezi",
     "initialObligation": "Wajibu wa Awali", "initialBalance": "Salio la Awali",
-    "allClear": "Hakuna deni", "owed": "inadaiwa"
+    "allClear": "Hakuna deni", "owed": "inadaiwa", "credit": "ziada",
+    "dataUnavailable": "Taarifa za wanachama hazipatikani",
+    "dataUnavailableSub": "Taarifa za wanachama hazipatikani kwa sasa. Timu ya fedha imearifiwa.",
+    "viewFamilyProfile": "Tazama wasifu wa familia",
+    "children": "Watoto",
+    "allClearFamilies": "Familia zote ziko sawa.",
+    "allClearObl": "Familia zote ziko safi.",
+    "chartContributions": "Michango ya Sasa dhidi ya Mwanachama",
+    "chartOblWith": "Madeni (na ya Awali) dhidi ya Mwanachama",
+    "chartOblWithout": "Madeni (bila ya Awali) dhidi ya Mwanachama"
   },
   "loans": {
     "title": "Mikopo", "member": "Mwanachama", "principal": "Mkopo wa Awali",
@@ -77,7 +95,8 @@
   },
   "documents": {
     "title": "Nyaraka", "meetingMinutes": "Kumbukumbu za Mkutano",
-    "governance": "Utawala", "view": "Tazama", "download": "Pakua"
+    "governance": "Utawala", "view": "Tazama", "download": "Pakua",
+    "searchPlaceholder": "Tafuta nyaraka..."
   },
   "ask": {
     "title": "Uliza KimFam", "placeholder": "Uliza chochote kuhusu KimFam...",
@@ -89,5 +108,44 @@
   },
   "updates": {
     "title": "Habari", "allProjects": "Miradi Yote", "post": "+ Chapisha"
+  },
+  "family": {
+    "coreMembers": "Wanachama Wakuu",
+    "members": "Wanachama",
+    "grandchildren": "Wajukuu",
+    "children": "Watoto",
+    "ageRange": "Kipindi cha Umri",
+    "additionsSince": "nyongeza",
+    "additionsSincePlural": "nyongeza",
+    "familyBranches": "Matawi ya Familia",
+    "age": "Umri",
+    "ageUnknown": "Umri?",
+    "worksAt": "Anafanya kazi",
+    "studiesAt": "Anasoma",
+    "familyLabel": "Familia",
+    "familyHead": "Mkuu wa Familia",
+    "member": "Mwanachama",
+    "about": "Kuhusu",
+    "interests": "Maslahi",
+    "keyMilestones": "Hatua Muhimu",
+    "profileComingSoon": "Maelezo ya wasifu yanakuja hivi karibuni",
+    "profileComingSoonSub": "Kazi, maslahi na hatua muhimu zitaonekana hapa",
+    "birthday": "Siku ya Kuzaliwa",
+    "birthdayUnknown": "Siku ya kuzaliwa haijulikani",
+    "partOf": "Sehemu ya",
+    "growingUp": "Anakua, maelezo zaidi hivi karibuni",
+    "noProjectInterests": "Hakuna maslahi ya miradi yaliyorekodiwa.",
+    "role": "Jukumu:",
+    "foundingFamily": "Familia ya Mwanzilishi",
+    "bornFrom": "Amezaliwa na",
+    "childOf": "Mtoto wa",
+    "lineage": "Ukoo",
+    "projects": "Miradi",
+    "yearsOld": "miaka",
+    "yrs": "mik",
+    "today": "Leo!",
+    "tomorrow": "Kesho!",
+    "inDays": "Baada ya siku {{days}}",
+    "childNumber": "ni mtoto wa {{n}} kati ya 6"
   }
 }

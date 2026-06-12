@@ -10,7 +10,7 @@
     "loans": "Enyingye",
     "meetings": "Entegyeka",
     "docs": "Ebikwate", "expenditure": "Ebikoozesebwa", "engagement": "Okweshongora",
-    "ask": "Bibuuza KimFam",
+    "ask": "Buuza KimFam",
     "admin": "Entekateeka"
   },
   "common": {
@@ -43,12 +43,12 @@
     "password": "Ekigambo",
     "member": "Omugwi",
     "loginPrompt": "Tukwanukirize omu KimFam Hub",
-    "loginSubtitle": "Ekibiina ky'Okuteekateeka ebyamafaranga kya KimFam"
+    "loginSubtitle": "KimFam Investment Club"
   },
   "home": {
     "welcome": "Tukwanukirize",
-    "tagline": "Ekibiina ky'Okuteekateeka ebyamafaranga kya KimFam",
-    "mission": "Okuteekateeka ebyamafaranga omu mirimo erikuruha ebyaro",
+    "tagline": "KimFam Investment Club",
+    "mission": "Invest in profitable projects that yield quick returns",
     "clubIntro": "Shanga emirimo y'okuteekateeka ebyamafaranga egituukagamu oburyo bw'amagara.",
     "obj1": "Teekateeka ebyamafaranga omu mirimo erikuruha ebyaro",
     "obj2": "Shiinga eizibu ry'okuteekateeka ebyamafaranga",
@@ -59,7 +59,16 @@
     "showLess": "Hanga",
     "bankBalance": "Emirari y'Eibanki",
     "familyGroups": "Amaka",
-    "activeProjects": "Emirimo Emiriho"
+    "activeProjects": "Emirimo Emiriho",
+    "upcomingBirthdays": "Amazaarwa Agatuuka",
+    "familyTree": "Omuti gw'Eka",
+    "tapToExplore": "Kuba okunoorana Omuzimu",
+    "noActivity": "Nta bikorwa birikiriho.",
+    "replayTour": "Garukaho okweterekwa",
+    "turns": "agira emyaka",
+    "todayCelebrate": "Erizooba! 🎊",
+    "tomorrow": "Nyenkyakare",
+    "inDays": "Omu ebiro {{count}}"
   },
   "projects": {
     "title": "Emirimo",
@@ -128,7 +137,16 @@
     "initialObligation": "Ekiteekwa ky'Embera",
     "initialBalance": "Emirari y'Embera",
     "allClear": "Nikyamalirire",
-    "owed": "Ekirikusanirwa"
+    "owed": "Ekirikusanirwa", "credit": "ekirikukuza",
+    "dataUnavailable": "Ebikwate by'abagwi ntibiripatikani",
+    "dataUnavailableSub": "Ebikwate by'abagwi ntibiripatikani kati. Itswe ry'ebyamafaranga riimenyesibwe.",
+    "viewFamilyProfile": "Laga ebikwate by'eka",
+    "children": "Abaana",
+    "allClearFamilies": "Amaka gona nigatuuriire.",
+    "allClearObl": "Amaka gona nigatongoire.",
+    "chartContributions": "Amakaaro ga Kati kontra Omugwi",
+    "chartOblWith": "Ekiteekwa (n'eky'Embera) kontra Omugwi",
+    "chartOblWithout": "Ekiteekwa (hatari eky'Embera) kontra Omugwi"
   },
   "loans": {
     "title": "Enyingye",
@@ -153,7 +171,8 @@
     "meetingMinutes": "Ebikwate by'Entegyeka",
     "governance": "Entekateeka",
     "view": "Laga",
-    "download": "Toora"
+    "download": "Toora",
+    "searchPlaceholder": "Noorana ebikwate..."
   },
   "ask": {
     "title": "Bibuuza KimFam",
@@ -169,5 +188,44 @@
     "title": "Amakuru",
     "allProjects": "Emirimo Yona",
     "post": "Kwatiriza"
+  },
+  "family": {
+    "coreMembers": "Abakuru b'Eka",
+    "members": "Abantu b'Eka",
+    "grandchildren": "Abaijukuru",
+    "children": "Abaana",
+    "ageRange": "Omwanya gw'Emyaka",
+    "additionsSince": "okwongerwa",
+    "additionsSincePlural": "ebyongerwa",
+    "familyBranches": "Amashami g'Eka",
+    "age": "Emyaka",
+    "ageUnknown": "Emyaka?",
+    "worksAt": "Nakorera",
+    "studiesAt": "Nashomera",
+    "familyLabel": "Ow'Eka",
+    "familyHead": "Omukuru w'Eka",
+    "member": "Omugwi",
+    "about": "Ebikuru",
+    "interests": "Ebyo Akunda",
+    "keyMilestones": "Ebyakoreeka Eby'Omukuru",
+    "profileComingSoon": "Biriheihi Kwiija",
+    "profileComingSoonSub": "Omushaho, ebyo akunda n'ebyakoreeka biragwa aaha",
+    "birthday": "Eizooba ry'Okuzaarwa",
+    "birthdayUnknown": "Eizooba ry'okuzaarwa tirikumanywa",
+    "partOf": "Omu",
+    "growingUp": "Biriheihi Kwiija",
+    "noProjectInterests": "Nta butaka bw'emirimo burikwatiikwe kati.",
+    "role": "Ekikorwa:",
+    "foundingFamily": "Eka y'Embera",
+    "bornFrom": "Akazarirwa Nkahi",
+    "childOf": "Omwana wa",
+    "lineage": "Omuzimu",
+    "projects": "Emirimo",
+    "yearsOld": "emyaka",
+    "yrs": "emyk",
+    "today": "Erizooba!",
+    "tomorrow": "Nyenkyakare!",
+    "inDays": "Omu ebiro {{days}}",
+    "childNumber": "ni omwana wa{{n}} omu 6"
   }
 }
