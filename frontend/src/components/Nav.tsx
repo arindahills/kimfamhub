@@ -29,8 +29,9 @@ const TABS = [
   { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
-// 5 tabs pinned to the mobile bottom bar — chosen based on usage data
-const BOTTOM_TABS = ['/', '/finances', '/updates', '/projects', '/ask']
+// 5 tabs pinned to the mobile bottom bar — chosen based on usage data.
+// Updates moved to the drawer (2026-06-13); Members promoted to the bottom bar.
+const BOTTOM_TABS = ['/', '/finances', '/members', '/projects', '/ask']
 
 export default function Nav() {
   const { t } = useTranslation()
