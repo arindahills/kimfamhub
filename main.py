@@ -885,7 +885,9 @@ async def ask_history(request: Request):
     session_id = payload["sub"]
     from ask_agent import load_history
     turns = load_history(session_id)
-    return {"turns": turns[-10:]}
+    # Remap q/a keys to question/answer so the frontend normaliseHistory() can read them
+    mapped = [{"question": t["q"], "answer": t["a"]} for t in turns[-10:]]
+    return {"turns": mapped}
 
 @app.post("/api/ask")
 async def ask_kimfam(request: Request):
