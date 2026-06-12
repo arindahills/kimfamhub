@@ -2159,19 +2159,20 @@ def _fetch_family_equity():
     for _, fid, amt in all_pmts:
         total_contribs[fid] += amt
 
-    # Running balances — start with opening credit, grow with contributions,
-    # shrink with each expense allocation.  A family that runs out pays nothing.
+    # Running balances for A and B — start with opening credit, grow with contributions,
+    # shrink with each expense allocation.
+    # Model C does NOT use running balances: equity = total_club_equity × fixed_weight.
+    # We still compute per-expense aC for the expense log display, but final equity
+    # is derived at the end from the total pool, not from a running balance.
     bal_A = {fid: OPENING_PF for fid in fids}
     bal_B = {fid: OPENING_PF for fid in fids}
-    bal_C = {fid: OPENING_PF for fid in fids}
 
     pmt_idx = 0   # pointer into all_pmts
     loan_idx = 0  # pointer into loan_repayments
 
     cum_A = {fid: 0.0 for fid in fids}
     cum_B = {fid: 0.0 for fid in fids}
-    cum_C = {fid: 0.0 for fid in fids}
-    shortfall_C = {fid: 0.0 for fid in fids}  # amount Model C wanted to charge but couldn't
+    cum_C = {fid: 0.0 for fid in fids}  # cumulative for expense log only
     proj_A, proj_B, proj_C, proj_meta = {}, {}, {}, {}
     expense_detail = []
 
@@ -2185,9 +2186,7 @@ def _fetch_family_equity():
         tot = sum(bal_B.values())
         for fid in fids:
             bal_B[fid] += (bal_B[fid] / tot * repay_amt) if tot else repay_amt / len(fids)
-        # Model C: fixed weight (same as how expenses are charged)
-        for fid in fids:
-            bal_C[fid] += weight_C[fid] * repay_amt
+        # Model C: no running balance — equity computed from total pool at the end
 
     for r in exp_rows:
         txn_date = r["txn_date"]; desc = r["description"]
@@ -2234,16 +2233,13 @@ def _fetch_family_equity():
         # Model C: fixed weight proportional to family monthly obligation
         aC = {fid: weight_C[fid] * amount for fid in fids}
 
-        # Deduct allocations from running balances
+        # Deduct allocations from running balances (A and B only)
         for fid in fids:
             bal_A[fid] = max(0.0, bal_A[fid] - aA[fid])
             bal_B[fid] = max(0.0, bal_B[fid] - aB[fid])
-            actual_C   = min(bal_C[fid], aC[fid])   # what was actually deducted
-            shortfall_C[fid] += aC[fid] - actual_C  # track the gap
-            bal_C[fid] = max(0.0, bal_C[fid] - aC[fid])
             cum_A[fid] += aA[fid]
             cum_B[fid] += aB[fid]
-            cum_C[fid] += aC[fid]
+            cum_C[fid] += aC[fid]  # tracked for expense log display only
 
         pk = project if project else category
         if pk not in proj_A:
@@ -2281,18 +2277,23 @@ def _fetch_family_equity():
         _, fid, amt = all_pmts[pmt_idx]
         bal_A[fid] += amt
         bal_B[fid] += amt
-        bal_C[fid] += amt
         pmt_idx += 1
     while loan_idx < len(loan_repayments):
         _apply_loan_repayment(loan_repayments[loan_idx][1])
         loan_idx += 1
+
+    # Model C equity: total club equity × fixed weight.
+    # Does not depend on when/how much individual families contributed —
+    # only on what's currently in the pool and each family's headcount weight.
+    total_pool_C = sum(bal_A.values())  # same total as A (pool is shared)
+    eq_C_by_fid = {fid: total_pool_C * weight_C[fid] for fid in fids}
 
     family_summary = []
     for fid, nm in families:
         m   = members.get(fid, 4)
         eqA = bal_A[fid]
         eqB = bal_B[fid]
-        eqC = bal_C[fid]
+        eqC = eq_C_by_fid[fid]
         family_summary.append({
             "family":          nm,
             "family_id":       fid,
@@ -2313,14 +2314,11 @@ def _fetch_family_equity():
             "equity_A_pp":     round(eqA/m) if m else 0,
             "equity_B_pp":     round(eqB/m) if m else 0,
             "equity_C_pp":     round(eqC/m) if m else 0,
-            "shortfall_C":     round(shortfall_C[fid]),
         })
 
     tot_eqA = sum(f["equity_A"] for f in family_summary)
     tot_eqB = sum(f["equity_B"] for f in family_summary)
     tot_eqC = sum(f["equity_C"] for f in family_summary)
-    total_shortfall_C = sum(f["shortfall_C"] for f in family_summary)
-    shortfall_C_families = [f["family"] for f in family_summary if f["shortfall_C"] > 0]
     for f in family_summary:
         f["equity_A_pct"] = round(f["equity_A"]/tot_eqA*100, 1) if tot_eqA else 0
         f["equity_B_pct"] = round(f["equity_B"]/tot_eqB*100, 1) if tot_eqB else 0
@@ -2352,8 +2350,6 @@ def _fetch_family_equity():
         "total_eq_A":         tot_eqA,
         "total_eq_B":         tot_eqB,
         "total_eq_C":         tot_eqC,
-        "model_c_shortfall":  round(total_shortfall_C),
-        "model_c_shortfall_families": shortfall_C_families,
         "family_summary":     family_summary,
         "expense_detail":     expense_detail,
         "project_summaries":  project_summaries,

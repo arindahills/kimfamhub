@@ -48,8 +48,6 @@ interface EquityData {
   total_eq_A: number
   total_eq_B: number
   total_eq_C: number
-  model_c_shortfall: number
-  model_c_shortfall_families: string[]
   family_summary: FamilyRow[]
   expense_detail: ExpenseDetail[]
   project_summaries: ProjectSummary[]
@@ -278,12 +276,6 @@ export default function EquityPage() {
     return (
       <>
         <SummaryCard label={`Total Club Equity (Model ${m})`} value={total} color={color} />
-        {m === 'C' && data.model_c_shortfall > 0 && (
-          <div style={{ padding: '8px 12px', borderRadius: 10, background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.25)', fontSize: 11 }}>
-            <span style={{ color: '#fb923c', fontWeight: 700 }}>⚠ UGX {data.model_c_shortfall.toLocaleString()} unallocated gap: </span>
-            <span style={{ color: '#94a3b8' }}>{data.model_c_shortfall_families.join(', ')} ran out of balance and their unpaid share was not redistributed. This inflates the Model C total vs actual bank balance.</span>
-          </div>
-        )}
         {renderStackedBar(m)}
         {list.map((f, i) => (
           <div key={f.family} className="rounded-xl p-4"
@@ -322,20 +314,7 @@ export default function EquityPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-4">
         <SummaryCard label="Total Equity — Model A" value={data.total_eq_A} color={MODEL_A_COLOR} />
         <SummaryCard label="Total Equity — Model B" value={data.total_eq_B} color={MODEL_B_COLOR} />
-        <div className="rounded-xl p-5 text-center" style={{ background: 'var(--bg-card)' }}>
-          <div className="text-xs mb-1" style={{ color: '#94a3b8' }}>Total Equity — Model C</div>
-          <div className="text-2xl font-bold" style={{ color: MODEL_C_COLOR }}>{ugx(data.total_eq_C)}</div>
-          {data.model_c_shortfall > 0 && (
-            <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 8, background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.3)' }}>
-              <div style={{ fontSize: 11, color: '#fb923c', fontWeight: 600 }}>
-                ⚠ UGX {data.model_c_shortfall.toLocaleString()} unallocated
-              </div>
-              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                {data.model_c_shortfall_families.join(', ')} ran out of balance — their unpaid share was not redistributed. Under Model A it would be covered by other families.
-              </div>
-            </div>
-          )}
-        </div>
+        <SummaryCard label="Total Equity — Model C" value={data.total_eq_C} color={MODEL_C_COLOR} />
       </div>
 
       {/* Model description cards */}
@@ -394,10 +373,10 @@ export default function EquityPage() {
       {/* Per-project breakdown */}
       <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid #1e3a5f' }}>
         <div style={{ fontSize: 11, color: '#60a5fa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
-          Per-Project Investment Share
+          Per-Project Profit Entitlement
         </div>
         <div style={{ fontSize: 10, color: '#64748b', marginBottom: 10 }}>
-          How much each family funded each expense category under all three models.
+          Each family's share of what was invested per project — and the % they receive back when that project returns money.
         </div>
         {data.project_summaries.map(ps => {
           const hc = PROJ_COLORS[ps.key] || '#64748b'
