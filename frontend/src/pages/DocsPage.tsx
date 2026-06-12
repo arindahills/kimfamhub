@@ -54,7 +54,7 @@ export default function DocsPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-2">
-      <div style={{ position: 'sticky', top: 0, paddingTop: '0.5rem', paddingBottom: '0.5rem', background: 'var(--bg-page)', zIndex: 10 }}>
+      <div style={{ position: 'sticky', top: 0, paddingTop: 'max(0.5rem, env(safe-area-inset-top))', paddingBottom: '0.5rem', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)', background: 'var(--bg-page)', zIndex: 10 }}>
         <input
           type="text"
           placeholder={t('documents.searchPlaceholder')}
