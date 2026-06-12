@@ -2139,6 +2139,16 @@ def _fetch_family_equity():
     exp_rows = _dbq("""SELECT txn_date, description, amount_ugx, category, project
         FROM expenditure_records ORDER BY txn_date""")
 
+    # Loan repayments: money that left the pool as an expense but came back.
+    # Merge into the event timeline as dated credits, distributed back to families
+    # using the same model logic as the original expense (equal/proportional/fixed).
+    loan_repayment_rows = _dbq("""SELECT paid_at::date AS pay_date, SUM(amount_ugx) AS amount
+        FROM loan_payments GROUP BY paid_at::date ORDER BY paid_at::date""")
+    loan_repayments = sorted(
+        [(r["pay_date"], int(r["amount"])) for r in loan_repayment_rows],
+        key=lambda x: x[0]
+    )
+
     # per-family payment timeline
     # Build sorted contribution list for running-balance approach
     all_pmts = sorted(
@@ -2155,13 +2165,28 @@ def _fetch_family_equity():
     bal_B = {fid: OPENING_PF for fid in fids}
     bal_C = {fid: OPENING_PF for fid in fids}
 
-    pmt_idx = 0  # pointer into all_pmts
+    pmt_idx = 0   # pointer into all_pmts
+    loan_idx = 0  # pointer into loan_repayments
 
     cum_A = {fid: 0.0 for fid in fids}
     cum_B = {fid: 0.0 for fid in fids}
     cum_C = {fid: 0.0 for fid in fids}
     proj_A, proj_B, proj_C, proj_meta = {}, {}, {}, {}
     expense_detail = []
+
+    def _apply_loan_repayment(repay_amt):
+        """Credit a loan repayment back to all families using each model's own logic."""
+        # Model A: equal share back (mirrors equal-share expense)
+        eq_back = repay_amt / len(fids)
+        for fid in fids:
+            bal_A[fid] += eq_back
+        # Model B: proportional to current pool (same as how expenses are charged)
+        tot = sum(bal_B.values())
+        for fid in fids:
+            bal_B[fid] += (bal_B[fid] / tot * repay_amt) if tot else repay_amt / len(fids)
+        # Model C: fixed weight (same as how expenses are charged)
+        for fid in fids:
+            bal_C[fid] += weight_C[fid] * repay_amt
 
     for r in exp_rows:
         txn_date = r["txn_date"]; desc = r["description"]
@@ -2174,6 +2199,11 @@ def _fetch_family_equity():
             bal_B[fid] += amt
             bal_C[fid] += amt
             pmt_idx += 1
+
+        # Credit loan repayments made on or before this expense date
+        while loan_idx < len(loan_repayments) and loan_repayments[loan_idx][0] <= txn_date:
+            _apply_loan_repayment(loan_repayments[loan_idx][1])
+            loan_idx += 1
 
         eq       = amount / 7
         pools    = {fid: bal_A[fid] for fid in fids}   # snapshot before deductions (for display)
@@ -2243,13 +2273,16 @@ def _fetch_family_equity():
         })
 
     # current equity = remaining running balance after all expenses processed
-    # Also credit any contributions that arrived after the last expense date
+    # Also credit any contributions or loan repayments that arrived after the last expense date
     while pmt_idx < len(all_pmts):
         _, fid, amt = all_pmts[pmt_idx]
         bal_A[fid] += amt
         bal_B[fid] += amt
         bal_C[fid] += amt
         pmt_idx += 1
+    while loan_idx < len(loan_repayments):
+        _apply_loan_repayment(loan_repayments[loan_idx][1])
+        loan_idx += 1
 
     family_summary = []
     for fid, nm in families:
