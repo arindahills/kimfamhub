@@ -1,5 +1,14 @@
 # KimFam Hub — Complete App Guide
 
+## How to Navigate KimFam Hub
+
+**On a phone (mobile):** The navigation is a tab bar at the BOTTOM of the screen. You will see: Home, Finances, Members, Projects, Ask KimFam, and More. Tap any of these to go to that section. There is NO left sidebar or hamburger menu on mobile.
+
+**On a computer (desktop/tablet):** The navigation is a sidebar on the LEFT side of the screen. All sections are listed there.
+
+---
+
+
 ## How to Log In
 1. Open kimfamhub.com in your browser or on your phone.
 2. Tap "Sign In" at the top right.
@@ -22,7 +31,7 @@
 
 ## How to Replay the App Tour
 If you want to replay the welcome walkthrough that explains each section of the app:
-1. Go to "Ask KimFam" (tap the robot icon in the side menu).
+1. Go to "Ask KimFam" (tap Ask KimFam in the navigation).
 2. Scroll down to the bottom of the Ask section.
 3. Tap the "Replay App Tour" button.
 4. The guided walkthrough will start from the beginning, highlighting each tab and explaining what it does.
@@ -43,7 +52,7 @@ You do not need to do anything on the Home tab — it is a read-only dashboard.
 ## Finances Tab (💰)
 
 ### Viewing Club Finances
-1. Tap "Finances" in the left menu.
+1. Tap "Finances" in the app.
 2. At the top you will see the Club Summary: total contributions collected, total expenditure, expected balance, and the confirmed ABSA bank balance.
 3. Below that is the Reconciliation indicator: green (in sync), yellow (small gap — likely bank charges), or red (large gap — check for missing records).
 
@@ -111,7 +120,7 @@ You do not need to do anything on the Home tab — it is a read-only dashboard.
 ## Action Points Tab (✅)
 
 ### Viewing Club Action Points
-1. Tap "Action Points" in the left menu.
+1. Tap "Action Points" in the app.
 2. You will see all current action items with: who is responsible, the deadline, the meeting where it was raised, and the current status.
 3. Colour codes: Open (white/grey), In Progress (blue), Carried Over (yellow), Done (green), Cancelled (grey).
 4. You can filter by status using the buttons at the top (All, Open, In Progress, Done, etc.).
@@ -121,7 +130,7 @@ You do not need to do anything on the Home tab — it is a read-only dashboard.
 ## Members Tab (👨‍👩‍👧‍👦)
 
 ### Viewing Family Profiles
-1. Tap "Members" in the left menu.
+1. Tap "Members" in the app.
 2. You will see all seven families with their members listed.
 3. Each family card shows the family name and every registered member.
 4. This is a read-only view — changes to membership are made by the admin.
@@ -131,14 +140,14 @@ You do not need to do anything on the Home tab — it is a read-only dashboard.
 ## Projects Tab (🌾)
 
 ### Viewing All Projects
-1. Tap "Projects" in the left menu.
+1. Tap "Projects" in the app.
 2. You will see all active and planned club investments: Washing Bay, Sheep, Chicken, Dairy, Trees, Mango, Bees, etc.
 3. Each project card shows its category, status, and the latest update.
 4. Tap any project card to expand it and see full details, photos, and financial summaries.
 
 ### Washing Bay — Recording Monthly Income
 The washing bay (Eli's business at the family compound) reports monthly revenue to the club.
-1. Tap "Projects" in the left menu.
+1. Tap "Projects" in the app.
 2. Find the "Washing Bay" project card and tap it to expand it.
 3. Scroll down inside the Washing Bay card to the income section. You will see the income log and a green "Record Income" button.
 4. Tap "Record Income".
@@ -167,7 +176,7 @@ The chicken project has the most detailed tracking in the app.
 
 ### Equity Tab (standalone nav item, symbol ⚖️)
 The Equity tab is a dedicated top-level section covering all three proposed expense-sharing models across the entire club (not just one project).
-1. Tap "Equity" in the left navigation bar (between Projects and Loans).
+1. Tap "Equity" in the app (between Projects and Loans).
 2. You will see:
    - A banner showing the current vote status (pending or decided at KIM 009/2026)
    - Model A: equal share per family, with gap cover for low-balance families
@@ -185,7 +194,7 @@ The Equity tab is a dedicated top-level section covering all three proposed expe
 ## Loans Tab (🏦)
 
 ### Viewing Loans
-1. Tap "Loans" in the left menu.
+1. Tap "Loans" in the app.
 2. See all active and past loan applications, amounts, borrower names, and repayment status.
 3. Loans are currently view-only. To apply for a loan, raise it at a KIM meeting.
 
@@ -194,7 +203,7 @@ The Equity tab is a dedicated top-level section covering all three proposed expe
 ## Meetings Tab (📋)
 
 ### Viewing the Meeting Register
-1. Tap "Meetings" in the left menu.
+1. Tap "Meetings" in the app.
 2. You will see the full list of all KIM meetings: date, type, venue, attendees, and a link to the minutes.
 3. The next upcoming meeting is highlighted at the top.
 4. Tap any row to see the meeting details.
@@ -204,7 +213,7 @@ The Equity tab is a dedicated top-level section covering all three proposed expe
 ## Documents Tab (📁)
 
 ### Browsing Club Documents
-1. Tap "Documents" in the left menu.
+1. Tap "Documents" in the app.
 2. Documents are organised into categories: Minutes, Governance, Projects, Financial, Receipts.
 3. Tap any document to view or download it (meeting minutes, constitution, financial reports, equity model explainers, etc.).
 4. The most recent meeting minutes are always at the top of the Minutes section.
@@ -242,7 +251,7 @@ If Dad sends a photo and then a caption about the same project within a few minu
 ## Ask KimFam Tab (🤖)
 
 ### How to Ask a Question
-1. Tap "Ask KimFam" in the left menu (the robot icon).
+1. Tap "Ask KimFam" in the app (the robot icon).
 2. Type your question in the text box. You can ask about:
    - Club finances: "How much does the Kofuna family still owe?"
    - Meeting decisions: "What was decided about the washing bay at the last meeting?"
@@ -284,7 +293,7 @@ The Admin tab is only visible to Hillary (developer) and Hellen (Treasurer).
 4. Tap "Reject" and provide a reason to decline it (the member sees the reason and can resubmit).
 
 ### Resetting a Member's Password
-1. Tap "Admin" in the left menu.
+1. Tap "Admin" in the app.
 2. Find the member in the list.
 3. Tap "Reset Password" next to their name.
 4. Enter a temporary password and confirm.
