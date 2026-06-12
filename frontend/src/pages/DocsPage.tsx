@@ -51,27 +51,29 @@ export default function DocsPage() {
   if (isLoading) return <p className="text-xs text-center py-10" style={{ color: 'var(--text-muted)' }}>Loading...</p>
 
   const categories = Object.entries(filtered || {})
+  const resultCount = categories.reduce((sum, [, cat]) => sum + cat.files.length, 0)
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-2">
-      <div style={{ position: 'sticky', top: 0, paddingTop: 'max(0.5rem, env(safe-area-inset-top))', paddingBottom: '0.5rem', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)', background: 'var(--bg-page)', zIndex: 10 }}>
+      <div style={{ padding: '1rem' }}>
         <input
           type="text"
           placeholder={t('documents.searchPlaceholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full px-4 py-3 rounded-lg text-sm"
           style={{
+            width: '100%',
+            padding: '0.75rem 1rem',
+            borderRadius: '0.5rem',
             background: 'var(--bg-card)',
             border: '1px solid var(--border)',
             color: 'var(--text-primary)',
+            fontSize: '0.875rem',
+            boxSizing: 'border-box',
+            fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
           }}
         />
-        {search && (
-          <p className="text-[10px] mt-1" style={{ color: '#475569' }}>
-            {categories.reduce((sum, [, cat]) => sum + cat.files.length, 0)} results
-          </p>
-        )}
+        {search && <p style={{ fontSize: '10px', marginTop: '0.25rem', color: '#475569' }}>{resultCount} results</p>}
       </div>
 
       {categories.map(([key, cat]) => {
