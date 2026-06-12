@@ -4,6 +4,24 @@ import { Play, X, ChevronLeft, ChevronRight } from 'lucide-react'
 
 type Item = { src: string; type: 'image' | 'video' }
 
+function deriveCaption(src: string): string {
+  const file = src.split('/').pop() || src
+  const name = file.replace(/\.[^.]+$/, '')
+  // Date-stamped files (WhatsApp, estimate docs, etc.) → "19 May 2026"
+  const dateMatch = name.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (dateMatch) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    return `${parseInt(dateMatch[3])} ${months[parseInt(dateMatch[2]) - 1]} ${dateMatch[1]}`
+  }
+  // Clean underscores/hyphens, strip _img_ / _vid_ noise, title-case
+  return name
+    .replace(/_(img|vid)_?/gi, ' ')
+    .replace(/[_-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
 /**
  * In-card horizontal media slider. Tapping any tile opens a full-screen in-app
  * lightbox carousel (swipeable, videos play inline, closing returns to the app).
@@ -19,6 +37,13 @@ export function MediaCarousel({ images, videos }: { images: string[]; videos: st
   const [index, setIndex] = useState(0)
   if (!items.length) return null
 
+  const photoCount = images.length
+  const videoCount = videos.length
+  const countLabel = [
+    photoCount > 0 && `${photoCount} photo${photoCount > 1 ? 's' : ''}`,
+    videoCount > 0 && `${videoCount} video${videoCount > 1 ? 's' : ''}`,
+  ].filter(Boolean).join(' · ')
+
   return (
     <>
       <div className="-mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -26,19 +51,28 @@ export function MediaCarousel({ images, videos }: { images: string[]; videos: st
           <button
             key={i}
             onClick={() => { setIndex(i); setOpen(true) }}
-            className="relative aspect-square w-24 shrink-0 snap-start overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--background)]"
+            className="relative flex-shrink-0 snap-start overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--background)]"
+            style={{ width: 96 }}
           >
-            {m.type === 'image'
-              ? <img src={m.src} className="h-full w-full object-cover" alt="" loading="lazy" />
-              : (
-                <>
-                  <video src={m.src} className="h-full w-full object-cover" muted playsInline preload="metadata" />
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/35"><Play size={16} className="text-white" fill="white" /></span>
-                </>
-              )}
+            <div className="aspect-square w-full overflow-hidden">
+              {m.type === 'image'
+                ? <img src={m.src} className="h-full w-full object-cover" alt="" loading="lazy" />
+                : (
+                  <>
+                    <video src={m.src} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/35"><Play size={16} className="text-white" fill="white" /></span>
+                  </>
+                )}
+            </div>
+            <div className="px-1 py-1 text-center" style={{ fontSize: 9, color: '#64748b', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {deriveCaption(m.src)}
+            </div>
           </button>
         ))}
       </div>
+      {countLabel && (
+        <p className="mt-1 text-[10px]" style={{ color: '#475569' }}>{countLabel}</p>
+      )}
       {open && <Lightbox items={items} index={index} setIndex={setIndex} onClose={() => setOpen(false)} />}
     </>
   )
@@ -107,7 +141,11 @@ function Lightbox({
         </>
       )}
 
-      <div className="flex justify-center gap-1.5 py-3">
+      <div className="px-4 py-1 text-center">
+        <p className="text-[12px] font-medium" style={{ color: 'rgba(255,255,255,0.7)' }}>{deriveCaption(items[index].src)}</p>
+      </div>
+
+      <div className="flex justify-center gap-1.5 py-2">
         {items.map((_, i) => (
           <span key={i} className="h-1.5 rounded-full transition-all" style={{ width: i === index ? 18 : 6, background: i === index ? '#fff' : 'rgba(255,255,255,.4)' }} />
         ))}

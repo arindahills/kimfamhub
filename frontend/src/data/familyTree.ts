@@ -1,14 +1,29 @@
+export interface Milestone {
+  year: number
+  event: string
+}
+
 export interface FamilyMember {
   name: string
   role: string
   birthday: string | null   // "10 Oct 1990" (full) | "26 Jan" (day+month only) | null
   avatarKey: string         // maps to /static/avatars/{key}.jpg
   isHead?: boolean
+  // enrichment fields — all optional, fill in over time
+  profession?: string
+  location?: string         // city/country where they live
+  workplace?: string        // employer or business name
+  study?: string            // school/university if studying
+  interests?: string[]      // personal interests e.g. ["farming", "tech", "real estate"]
+  milestones?: Milestone[]  // key life events e.g. [{year:2015, event:"Joined KIM club"}]
+  bio?: string              // short personal bio
 }
 
 export interface FamilyChild {
   name: string
   birthday: string | null
+  avatarKey?: string        // maps to /static/avatars/{key}.jpg — most won't have one yet
+  bio?: string
 }
 
 export interface FamilyNode {
@@ -103,7 +118,21 @@ export const FAMILY_TREE: FamilyNode[] = [
     color: '#3b82f6',
     birthOrder: 5,
     members: [
-      { name: 'Hillary Arinda', role: '5th born / Secretary', birthday: '10 Oct 1990', avatarKey: 'hillaryarinda', isHead: true },
+      {
+        name: 'Hillary Arinda', role: '5th born / Secretary', birthday: '10 Oct 1990',
+        avatarKey: 'hillary', isHead: true,
+        profession: 'Software Engineer & CTO',
+        location: 'Kampala, Uganda',
+        workplace: 'Rincol Tech Solutions',
+        interests: ['Technology', 'Real Estate', 'Agriculture', 'Renewable Energy'],
+        milestones: [
+          { year: 2013, event: 'Graduated from Makerere University' },
+          { year: 2015, event: 'Joined KIM Investment Club' },
+          { year: 2021, event: 'Founded Rincol Tech Solutions' },
+          { year: 2023, event: 'Born: Hansel Arinda' },
+        ],
+        bio: 'Software engineer and entrepreneur based in Kampala. Secretary of KIM Investment Club.',
+      },
       { name: 'Esther Arinda', role: "Hillary's wife", birthday: '26 Jan 1993', avatarKey: 'estherarinda' },
     ],
     children: [
@@ -118,7 +147,19 @@ export const FAMILY_TREE: FamilyNode[] = [
     color: '#f97316',
     birthOrder: 6,
     members: [
-      { name: 'Hellen Kofuna', role: '6th born / Treasurer', birthday: '2 Oct 1992', avatarKey: 'hellenkofuna', isHead: true },
+      {
+        name: 'Hellen Kofuna', role: '6th born / Treasurer', birthday: '2 Oct 1992',
+        avatarKey: 'hellenkofuna', isHead: true,
+        profession: 'Advocate & Legal Consultant',
+        location: 'Kampala, Uganda',
+        workplace: 'Kofuna Advocates',
+        interests: ['Law', 'Real Estate', 'Agriculture'],
+        milestones: [
+          { year: 2015, event: 'Called to the Bar' },
+          { year: 2018, event: 'Founded Kofuna Advocates' },
+          { year: 2022, event: 'Born: Lael Kofuna' },
+        ],
+      },
       { name: 'Lawi Kofuna', role: "Hellen's husband", birthday: '16 Jul', avatarKey: 'lawikofuna' },
     ],
     children: [
@@ -127,6 +168,31 @@ export const FAMILY_TREE: FamilyNode[] = [
     ],
   },
 ]
+
+/**
+ * Maps uppercase API family name (e.g. "ARINDAS") → head member's avatarKey.
+ * Derived from FAMILY_TREE so adding a new family only requires one edit above.
+ */
+export const FAMILY_HEAD_AVATAR: Record<string, string> = Object.fromEntries(
+  FAMILY_TREE.map(f => {
+    const head = f.members.find(m => m.isHead) ?? f.members[0]
+    return [f.key.toUpperCase(), head?.avatarKey ?? '']
+  }).filter(([, v]) => v)
+)
+
+/**
+ * Per-family identity colour keyed by the first-name segment returned by the API.
+ * Kept here so every module reads from one place.
+ */
+export const FAMILY_COLORS: Record<string, string> = Object.fromEntries(
+  FAMILY_TREE
+    .filter(f => f.birthOrder > 0)
+    .map(f => {
+      const head = f.members.find(m => m.isHead) ?? f.members[0]
+      return [head?.name.split(' ')[0] ?? '', f.color]
+    })
+    .filter(([k]) => k)
+)
 
 // Map finance page family labels to tree keys
 export const LABEL_TO_KEY: Record<string, string> = {

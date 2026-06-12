@@ -3,8 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import ExpenditurePage from './ExpenditurePage'
-import { FamilyProfileModal } from '../components/FamilyProfileModal'
-import { LABEL_TO_KEY } from '../data/familyTree'
+import { FAMILY_HEAD_AVATAR } from '../data/familyTree'
 
 // Member → family name mapping (matches backend _MEMBER_FAMILY_NAME)
 const MEMBER_FAMILY: Record<string, string> = {
@@ -110,17 +109,6 @@ function ReconciliationBadge({ confirmed, computed }: { confirmed: number; compu
   )
 }
 
-// Family head avatar key map (for card avatar display)
-const FAMILY_HEAD_AVATAR: Record<string, string> = {
-  ARINDAS:    'hillaryarinda',
-  ARUNGAS:    'violaarunga',
-  KIKANGIS:   'israelkikangi',
-  TURAMYES:   'maxturamye',
-  ARIHOS:     'solomonariho',
-  KOFUNAS:    'hellenkofuna',
-  TUHIMBISES: 'alextuhimbise',
-}
-
 function FamilyAvatar({ familyName, size = 36 }: { familyName: string; size?: number }) {
   const [err, setErr] = useState(false)
   const key = FAMILY_HEAD_AVATAR[familyName.toUpperCase()]
@@ -165,10 +153,10 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
   const initBal = f.initial_balance || 0
   const outstanding = curBal <= 0 ? initBal : f.combined_balance
   const borderCol = outstanding === 0 ? '#166534' : outstanding <= rate * 3 ? '#d97706' : '#dc2626'
+  const glowCol   = outstanding === 0 ? '#22c55e' : outstanding <= rate * 3 ? '#f59e0b' : '#ef4444'
 
   const [showToast, setShowToast] = useState(false)
   const [toastDismissed, setToastDismissed] = useState(false)
-  const [profileOpen, setProfileOpen] = useState(false)
   const [showCalc, setShowCalc] = useState(false)
   const [calcMonths, setCalcMonths] = useState(0)
   const [showPayments, setShowPayments] = useState(false)
@@ -190,7 +178,6 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
   }, [showToast])
 
   const familyLabel = 'The ' + f.family_name.charAt(0) + f.family_name.slice(1).toLowerCase()
-  const hasProfileKey = !!LABEL_TO_KEY[familyLabel]
 
   const paidTo = paidToLabel(curBal, rate)
   const mStatus = paidTo
@@ -243,7 +230,7 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
       rejected:  ['#450a0a', '#fca5a5'],
       pending:   ['#2d1b69', '#c4b5fd'],
     }
-    const [bg, color] = map[status] ?? ['#1e293b', '#94a3b8']
+    const [background, color] = map[status] ?? ['#1e293b', '#94a3b8']
     return <span style={{ background, color, padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600 }}>{status}</span>
   }
 
@@ -252,8 +239,8 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
       {/* Animated border keyframe injected once */}
       <style>{`
         @keyframes familyCardGlow {
-          0%,100% { box-shadow: 0 0 0 0 ${borderCol}00; }
-          50%      { box-shadow: 0 0 14px 3px ${borderCol}88; }
+          0%,100% { box-shadow: 0 0 0 0 ${glowCol}00, 0 0 16px 2px ${glowCol}22; }
+          50%      { box-shadow: 0 0 0 4px ${glowCol}22, 0 0 28px 6px ${glowCol}55; }
         }
         @keyframes toastIn  { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         @keyframes toastOut { from { opacity:1; } to { opacity:0; } }
@@ -264,11 +251,10 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
         style={{
           background: '#1e293b',
           border: `1px solid ${borderCol}`,
-          cursor: hasProfileKey ? 'pointer' : 'default',
+          cursor: 'default',
           animation: isMyFamily ? `familyCardGlow 2.5s ease-in-out infinite` : undefined,
           position: 'relative',
         }}
-        onClick={hasProfileKey ? () => setProfileOpen(true) : undefined}
       >
         <div className="flex items-center gap-2 mb-2">
           <FamilyAvatar familyName={f.family_name} size={38} />
@@ -298,9 +284,6 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
             : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
           }
         </div>
-        {hasProfileKey && (
-          <div className="text-[10px] mt-1.5 text-right" style={{ color: '#334155' }}>Tap to view family profile →</div>
-        )}
 
         {/* Calculator toggle */}
         <button onClick={() => { setShowCalc(!showCalc); if (!showCalc) setCalcMonths(0) }}
@@ -446,10 +429,6 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
         </div>
       )}
 
-      {/* Family profile modal */}
-      {profileOpen && hasProfileKey && (
-        <FamilyProfileModal familyLabel={familyLabel} onClose={() => setProfileOpen(false)} />
-      )}
     </>
   )
 }

@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { FAMILY_TREE, parseAge } from '../data/familyTree'
+import { FamilyProfileModal } from '../components/FamilyProfileModal'
 
 // Compute upcoming birthdays across all family members (within next 30 days)
 function getUpcomingBirthdays(withinDays = 30) {
@@ -55,11 +56,12 @@ function fmt(n: number) {
 }
 
 function BirthdayStrip() {
+  const { t } = useTranslation()
   const upcoming = useMemo(() => getUpcomingBirthdays(30), [])
   if (upcoming.length === 0) return null
   return (
     <div className="rounded-xl p-3 mb-4" style={{ background: '#1e293b', border: '1px solid #334155' }}>
-      <div className="text-xs font-semibold mb-2" style={{ color: '#f59e0b' }}>🎂 Upcoming birthdays</div>
+      <div className="text-xs font-semibold mb-2" style={{ color: '#f59e0b' }}>🎂 {t('home.upcomingBirthdays')}</div>
       <div className="space-y-1.5">
         {upcoming.slice(0, 4).map(b => (
           <div key={b.name + b.birthday} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -67,11 +69,11 @@ function BirthdayStrip() {
               <span style={{ fontSize: 14 }}>{b.daysAway === 0 ? '🎉' : '🎂'}</span>
               <div>
                 <span style={{ fontSize: 12, color: '#f1f5f9', fontWeight: 600 }}>{b.name}</span>
-                {b.age !== null && <span style={{ fontSize: 11, color: '#64748b', marginLeft: 5 }}>turns {b.age + 1}</span>}
+                {b.age !== null && <span style={{ fontSize: 11, color: '#64748b', marginLeft: 5 }}>{t('home.turns')} {b.age + 1}</span>}
               </div>
             </div>
             <span style={{ fontSize: 11, fontWeight: 600, color: b.daysAway === 0 ? '#f59e0b' : b.daysAway <= 7 ? '#fbbf24' : '#64748b' }}>
-              {b.daysAway === 0 ? 'Today! 🎊' : b.daysAway === 1 ? 'Tomorrow' : `in ${b.daysAway}d`}
+              {b.daysAway === 0 ? t('home.todayCelebrate') : b.daysAway === 1 ? t('home.tomorrow') : t('home.inDays', { count: b.daysAway })}
             </span>
           </div>
         ))}
@@ -95,6 +97,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
 export default function HomePage() {
   const { t } = useTranslation()
   const [feedExpanded, setFeedExpanded] = useState(false)
+  const [openProfile, setOpenProfile] = useState<string | null>(null)
 
   const { data: summary } = useQuery<Summary>({
     queryKey: ['contributions-summary'],
@@ -168,9 +171,44 @@ export default function HomePage() {
       {/* Upcoming birthdays */}
       <BirthdayStrip />
 
+      {/* Family Tree — animated glow entry */}
+      <style>{`
+        @keyframes familyTreePulse {
+          0%, 100% { box-shadow: 0 0 0 0 #22c55e00, 0 0 18px 2px #22c55e22; }
+          50%       { box-shadow: 0 0 0 4px #22c55e18, 0 0 32px 8px #22c55e44; }
+        }
+        @keyframes familyTreeShimmer {
+          0%   { background-position: -200% center; }
+          100% { background-position: 200% center; }
+        }
+      `}</style>
+      <div
+        className="rounded-xl p-4 mb-4 flex items-center gap-4 cursor-pointer"
+        style={{
+          background: 'linear-gradient(135deg, #0f2a1a 0%, #1a3a28 60%, #0f2a1a 100%)',
+          border: '1px solid #22c55e55',
+          animation: 'familyTreePulse 3s ease-in-out infinite',
+        }}
+        onClick={() => setOpenProfile('The Kikangis')}
+      >
+        <div style={{
+          width: 48, height: 48, borderRadius: 12, flexShrink: 0,
+          background: 'linear-gradient(135deg, #166534, #22c55e)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 24, boxShadow: '0 0 16px #22c55e55',
+        }}>🌳</div>
+        <div style={{ flex: 1 }}>
+          <div className="font-semibold text-sm" style={{ color: '#86efac' }}>{t('home.familyTree')}</div>
+          <div className="text-xs mt-0.5" style={{ color: '#4ade80' }}>
+            {FAMILY_TREE.length} families · {FAMILY_TREE.reduce((a, f) => a + f.members.length + f.children.length, 0)} members
+          </div>
+          <div className="text-[10px] mt-1" style={{ color: '#16a34a' }}>{t('home.tapToExplore')} →</div>
+        </div>
+      </div>
+
       {/* Activity feed */}
       <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-muted)' }}>
-        RECENT UPDATES
+        {t('home.recentUpdates').toUpperCase()}
       </h2>
       {feedLoading && (
         <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
@@ -179,7 +217,7 @@ export default function HomePage() {
       )}
       {!feedLoading && allItems.length === 0 && (
         <p className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
-          No recent activity.
+          {t('home.noActivity')}
         </p>
       )}
       {visibleItems.map((item, i) => <ActivityCard key={i} item={item} />)}
@@ -204,11 +242,15 @@ export default function HomePage() {
             window.dispatchEvent(new CustomEvent('kimfam:startTour'))
           }}
           className="text-xs"
-          style={{ color: '#334155', background: 'none', border: 'none', cursor: 'pointer' }}
+          style={{ color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          ▶ Replay guided tour
+          ▶ {t('home.replayTour')}
         </button>
       </div>
+
+      {openProfile && (
+        <FamilyProfileModal familyLabel={openProfile} onClose={() => setOpenProfile(null)} />
+      )}
     </div>
   )
 }
