@@ -721,6 +721,67 @@ def search_docs(query: str = ""):
 
     return {"query": query, "count": len(results), "results": results}
 
+@app.get("/api/docs/search-semantic")
+def search_docs_semantic(query: str = ""):
+    query_lower = query.lower().strip()
+    if not query_lower:
+        return {"query": query, "results": []}
+
+    try:
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        embedding = model.encode(query_lower, normalize_embeddings=True)
+        embedding = [float(x) for x in embedding]
+
+        import chromadb
+        from pathlib import Path
+        base_dir = Path(__file__).parent
+        chroma_dir = base_dir / "data" / "chroma"
+        client = chromadb.PersistentClient(path=str(chroma_dir))
+        collection = client.get_or_create_collection("kimfam_docs")
+
+        chroma_results = collection.query(
+            query_embeddings=[embedding],
+            n_results=10,
+            include=["documents", "metadatas", "distances"]
+        )
+
+        all_docs = get_docs()
+        doc_urls = {}
+        for cat, cat_data in all_docs.items():
+            for doc in cat_data.get("files", []):
+                doc_urls[doc["file"]] = (doc["url"], doc["name"], cat_data["label"], cat)
+
+        results = []
+        if chroma_results["documents"]:
+            for i, doc_text in enumerate(chroma_results["documents"][0]):
+                metadata = chroma_results["metadatas"][0][i] if chroma_results["metadatas"] else {}
+                distance = chroma_results["distances"][0][i] if chroma_results["distances"] else 0
+                source = metadata.get("source", "")
+
+                # Map source to file
+                for fname, (url, name, label, cat) in doc_urls.items():
+                    if source and source in fname:
+                        results.append({
+                            "category": cat,
+                            "categoryLabel": label,
+                            "name": name,
+                            "file": fname,
+                            "url": url,
+                            "relevance": max(0, 1 - distance),
+                            "preview": doc_text[:200] + "..." if len(doc_text) > 200 else doc_text
+                        })
+                        break
+
+        return {
+            "query": query,
+            "count": len(results),
+            "results": results
+        }
+    except Exception as e:
+        log.warning(f"Semantic search error: {e}")
+        return {"query": query, "count": 0, "results": [], "error": str(e)}
+
 import time
 
 # In-memory doc cache: {"text": str, "ts": float}
