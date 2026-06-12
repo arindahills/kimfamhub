@@ -74,28 +74,34 @@ def get_actions(status: str = "open"):
 
 @app.get("/api/members")
 def get_members():
+    from db import query as dbq
+    from contributions import compute_family_balance
+    from datetime import date as _date
     try:
-        data = gc().open_by_key(SHEET_ID).worksheet("KIMFAM exco").get_all_values()
+        families = dbq("SELECT id, family_name FROM families ORDER BY family_name")
     except Exception as e:
-        import logging as _lg; _lg.getLogger("main").error(f"members sheet: {e}")
+        import logging as _lg; _lg.getLogger("main").error(f"members db: {e}")
         return {"as_of": "", "members": []}
-    header = data[0][1] if data and data[0] else ""
-    import re as _re
-    dm = _re.search(r"([0-9]{1,2})[-/]([0-9]{1,2})[-/]([0-9]{4})", header)
+    today = _date.today()
     months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    if dm:
-        d, mo, yr = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
-        as_of = f"{d} {months[mo-1]} {yr}"
-    else:
-        as_of = ""
+    as_of = f"{today.day} {months[today.month-1]} {today.year}"
     members = []
-    for row in data[2:9]:
-        if not row or not row[1].strip() or row[1].strip() == "GRAND TOTAL":
+    for fam in families:
+        try:
+            bal = compute_family_balance(fam["id"])
+        except Exception as e:
+            _lg = __import__("logging").getLogger("main")
+            _lg.error(f"members balance for family {fam['id']}: {e}")
             continue
         members.append({
-            "name": g(row,1), "initial_obligation": g(row,2), "paid_initial": g(row,3),
-            "balance_initial": g(row,4), "total_contributions": g(row,5),
-            "paid_current": g(row,6), "balance_current": g(row,7), "combined_balance": g(row,8)
+            "name": fam["family_name"],
+            "initial_obligation": str(bal["initial_obligation"]),
+            "paid_initial":       str(bal["initial_paid"]),
+            "balance_initial":    str(bal["initial_balance"]),
+            "total_contributions": str(bal["total_monthly_paid"]),
+            "paid_current":       "",
+            "balance_current":    str(bal["current_balance"]),
+            "combined_balance":   str(bal["combined_balance"]),
         })
     return {"as_of": as_of, "members": members}
 

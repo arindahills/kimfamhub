@@ -32,6 +32,7 @@ interface Summary {
 }
 
 interface FamilyBalance {
+  family_id: number
   family_name: string
   composition: string
   current_monthly_rate: number
@@ -49,6 +50,18 @@ interface PendingPayment {
   submitted_by_user_id: string
   submitted_at: string
   receipt_url?: string
+}
+
+interface FamilyPayment {
+  id: number
+  period_month: string
+  amount_ugx: number
+  payment_reference: string | null
+  receipt_photo_path: string | null
+  status: 'pending' | 'confirmed' | 'rejected'
+  confirmation_note: string | null
+  submitted_at: string
+  confirmed_at: string | null
 }
 
 const ugx = (v: number) => 'UGX ' + Math.abs(v || 0).toLocaleString()
@@ -146,7 +159,7 @@ function toastMessage(familyLabel: string, curBal: number, rate: number, outstan
   return `${name} have UGX ${outstanding.toLocaleString()} outstanding. The club's growth depends on everyone keeping up — please reach out to Hellen if you need a payment plan 💛`
 }
 
-function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; onOpen?: () => void }) {
+function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: boolean; onOpen?: () => void; onPay?: (familyId: number, amount: number) => void }) {
   const rate = f.current_monthly_rate || 0
   const curBal = f.current_balance || 0
   const initBal = f.initial_balance || 0
@@ -156,6 +169,11 @@ function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; 
   const [showToast, setShowToast] = useState(false)
   const [toastDismissed, setToastDismissed] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [showCalc, setShowCalc] = useState(false)
+  const [calcMonths, setCalcMonths] = useState(0)
+  const [showPayments, setShowPayments] = useState(false)
+  const [payments, setPayments] = useState<FamilyPayment[]>([])
+  const [loadingPayments, setLoadingPayments] = useState(false)
 
   // Show toaster shortly after mount for the logged-in user's card
   useEffect(() => {
@@ -186,6 +204,48 @@ function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; 
   const iStatus = initBal > 0
     ? <span style={{ color: '#fbbf24' }}>UGX {initBal.toLocaleString()} owed</span>
     : <span style={{ color: '#4ade80' }}>Cleared</span>
+
+  // ── Payment History loader ──
+  const loadPayments = async () => {
+    if (payments.length > 0 || loadingPayments) return
+    setLoadingPayments(true)
+    try {
+      const r = await fetch(`/api/contributions/family/${f.family_id}`, { credentials: 'include' })
+      if (r.ok) {
+        const data = await r.json()
+        setPayments(data.payments || [])
+      }
+    } catch {}
+    setLoadingPayments(false)
+  }
+
+  // ── Calculator ──
+  const calcArrears = Math.max(0, curBal)
+  const calcExistingCredit = Math.max(0, -curBal)
+  const calcOpening = Math.max(0, initBal)
+  const calcAdditionalAhead = Math.max(0, calcMonths * rate - calcExistingCredit)
+  const calcTotal = calcArrears + calcOpening + calcAdditionalAhead
+  const calcRows: [string, string, string][] = []
+  if (calcArrears > 0) calcRows.push(['Clear monthly arrears', `UGX ${calcArrears.toLocaleString()}`, '#f87171'])
+  if (calcOpening > 0) calcRows.push(['Clear opening balance', `UGX ${calcOpening.toLocaleString()}`, '#fbbf24'])
+  if (calcExistingCredit > 0) calcRows.push(['Existing credit (already paid ahead)', `− UGX ${calcExistingCredit.toLocaleString()}`, '#a5b4fc'])
+  if (calcMonths > 0 && calcAdditionalAhead > 0) calcRows.push([`${calcMonths} month${calcMonths > 1 ? 's' : ''} ahead`, `UGX ${calcAdditionalAhead.toLocaleString()}`, '#86efac'])
+  if (calcMonths > 0 && calcAdditionalAhead === 0) calcRows.push([`${calcMonths} month${calcMonths > 1 ? 's' : ''} ahead`, 'Already covered ✓', '#4ade80'])
+
+  const payLabel = (ym: string) => {
+    const [y, m] = ym.split('-').map(Number)
+    return new Date(y, m - 1, 1).toLocaleString('default', { month: 'short', year: 'numeric' })
+  }
+
+  const statusBadge = (status: string) => {
+    const map: Record<string, [string, string]> = {
+      confirmed: ['#14532d', '#4ade80'],
+      rejected:  ['#450a0a', '#fca5a5'],
+      pending:   ['#2d1b69', '#c4b5fd'],
+    }
+    const [bg, color] = map[status] ?? ['#1e293b', '#94a3b8']
+    return <span style={{ background, color, padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600 }}>{status}</span>
+  }
 
   return (
     <>
@@ -241,6 +301,128 @@ function FamilyCard({ f, isMyFamily }: { f: FamilyBalance; isMyFamily: boolean; 
         {hasProfileKey && (
           <div className="text-[10px] mt-1.5 text-right" style={{ color: '#334155' }}>Tap to view family profile →</div>
         )}
+
+        {/* Calculator toggle */}
+        <button onClick={() => { setShowCalc(!showCalc); if (!showCalc) setCalcMonths(0) }}
+          style={{
+            marginTop: 10, width: '100%', background: '#0f172a', color: showCalc ? '#f59e0b' : '#94a3b8',
+            border: `1px solid ${showCalc ? '#f59e0b' : '#334155'}`, borderRadius: 7, padding: 7,
+            fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+          }}>
+          🧮 Payment Calculator
+        </button>
+
+      {/* ── Calculator expanded ── */}
+      {showCalc && (
+        <div style={{ marginTop: 8, background: '#0f172a', borderRadius: 7, padding: 10 }}>
+          {/* Stepper */}
+          <div className="flex items-center justify-between mb-2">
+            <span style={{ color: '#94a3b8', fontSize: 12 }}>Months ahead:</span>
+            <div className="flex items-center gap-2">
+              <button onClick={(e) => { e.stopPropagation(); setCalcMonths(Math.max(0, calcMonths - 1)) }}
+                style={{ background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155', borderRadius: 6, width: 30, height: 30, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
+                −
+              </button>
+              <span style={{ color: '#f1f5f9', fontWeight: 700, fontSize: 18, minWidth: 28, textAlign: 'center' }}>{calcMonths}</span>
+              <button onClick={(e) => { e.stopPropagation(); setCalcMonths(calcMonths + 1) }}
+                style={{ background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155', borderRadius: 6, width: 30, height: 30, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
+                +
+              </button>
+            </div>
+          </div>
+
+          {/* Breakdown rows */}
+          {calcRows.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              {calcRows.map(([label, value, color]) => (
+                <div key={label} className="flex justify-between py-1.5 text-xs" style={{ borderBottom: '1px solid #1e293b' }}>
+                  <span style={{ color: '#94a3b8' }}>{label}</span>
+                  <span style={{ color, fontWeight: 600 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Total */}
+          {calcTotal > 0 && (
+            <div className="flex justify-between items-center pt-2 mt-1" style={{ borderTop: '1px solid #334155' }}>
+              <span style={{ color: '#f1f5f9', fontWeight: 700, fontSize: 13 }}>Total</span>
+              <span style={{ color: '#22c55e', fontWeight: 700, fontSize: 15 }}>UGX {calcTotal.toLocaleString()}</span>
+            </div>
+          )}
+
+          {/* Pay button (only if onPay callback provided) */}
+          {calcTotal > 0 && onPay && (
+            <button onClick={(e) => { e.stopPropagation(); onPay(f.family_id, calcTotal) }}
+              style={{
+                marginTop: 10, width: '100%', background: '#166534', color: '#fff',
+                border: 'none', borderRadius: 8, padding: '10px 0',
+                fontSize: 13, fontWeight: 700, cursor: 'pointer'
+              }}>
+              Pay UGX {calcTotal.toLocaleString()} →
+            </button>
+          )}
+        </div>
+      )}
+
+        {/* Payment History toggle */}
+        <button onClick={() => { setShowPayments(!showPayments); if (!showPayments) loadPayments() }}
+          style={{
+            marginTop: 6, width: '100%', background: '#0f172a', color: showPayments ? '#60a5fa' : '#94a3b8',
+            border: `1px solid ${showPayments ? '#60a5fa' : '#334155'}`, borderRadius: 7, padding: 7,
+            fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+          }}>
+          📋 Payment History
+        </button>
+
+      {/* ── Payment History expanded ── */}
+      {showPayments && (
+        <div style={{ marginTop: 8, background: '#0f172a', borderRadius: 7, padding: 10, maxHeight: 300, overflowY: 'auto' }}>
+          {loadingPayments ? (
+            <div style={{ textAlign: 'center', color: '#64748b', fontSize: 12, padding: 10 }}>
+              <span className="animate-pulse">Loading payments...</span>
+            </div>
+          ) : payments.length === 0 ? (
+            <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12, padding: 10 }}>
+              No payment history for this family.
+            </div>
+          ) : (
+            payments.map((p, i) => (
+              <div key={p.id} style={{
+                padding: '8px 0',
+                borderBottom: i < payments.length - 1 ? '1px solid #1e293b' : 'none',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600 }}>
+                    UGX {Math.abs(p.amount_ugx).toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                    {payLabel(p.period_month)} · {p.submitted_at?.slice(0, 10)}
+                    {p.payment_reference ? ` · ${p.payment_reference}` : ''}
+                  </div>
+                  {/* Rejection reason */}
+                  {p.confirmation_note && (
+                    <div style={{ marginTop: 4, fontSize: 11, color: '#fca5a5', background: '#450a0a33', padding: '4px 8px', borderRadius: 6, borderLeft: '2px solid #f87171' }}>
+                      {p.confirmation_note}
+                    </div>
+                  )}
+                  {/* Receipt link */}
+                  {p.receipt_photo_path && (
+                    <a href={p.receipt_photo_path} target="_blank" rel="noreferrer"
+                      style={{ fontSize: 11, color: '#22c55e', marginTop: 2, display: 'inline-block' }}
+                      onClick={e => e.stopPropagation()}>
+                      View receipt ↗
+                    </a>
+                  )}
+                </div>
+                {statusBadge(p.status)}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       </div>
 
       {/* AI-style toaster for logged-in user's card */}
@@ -318,7 +500,7 @@ function monthLabel(ym: string) {
   return new Date(y, m - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' })
 }
 
-function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
+function SubmitPaymentModal({ onClose, initFamilyId, initAmount }: { onClose: () => void; initFamilyId?: number; initAmount?: number }) {
   const qc = useQueryClient()
 
   // ── step state ──
@@ -350,6 +532,18 @@ function SubmitPaymentModal({ onClose }: { onClose: () => void }) {
     queryFn:  () => fetch('/api/contributions/ledger', { credentials: 'include' }).then(r => r.json()),
     staleTime: 30_000,
   })
+
+  // Pre-fill from calculator
+  useEffect(() => {
+    if (initFamilyId) setFamilyId(initFamilyId)
+    if (initAmount) setAmountRaw(initAmount.toLocaleString())
+    if (initFamilyId && initAmount) {
+      setPreviewLoading(true)
+      fetch(`/api/contributions/family/${initFamilyId}/preview?amount=${initAmount}`, { credentials: 'include' })
+        .then(r => r.json()).then(setPreview).catch(() => setPreview(null))
+        .finally(() => setPreviewLoading(false))
+    }
+  }, [])
 
   const amount = parseInt(amountRaw.replace(/[^0-9]/g, '')) || 0
 
@@ -1064,6 +1258,7 @@ export default function FinancesPage() {
   const myFamilyName = user?.name ? MEMBER_FAMILY[user.name] ?? null : null
   const [showPayment, setShowPayment]         = useState(false)
   const [showBankBalance, setShowBankBalance] = useState(false)
+  const [payTarget, setPayTarget] = useState<{ familyId: number; amount: number } | null>(null)
 
   const { data: summary, isLoading: summLoading } = useQuery<Summary>({
     queryKey: ['contributions-summary'],
@@ -1150,7 +1345,7 @@ export default function FinancesPage() {
         </div>
         <button
           data-tour="submit-payment"
-          onClick={() => setShowPayment(true)}
+          onClick={() => { setShowPayment(true); setPayTarget(null) }}
           className="w-full rounded-xl py-3 font-semibold text-sm"
           style={{ background: '#166534', color: '#fff' }}>
           {t('finances.submitPayment')}
@@ -1173,7 +1368,7 @@ export default function FinancesPage() {
                 f={f}
                 isMyFamily={myFamilyName !== null && f.family_name.toUpperCase() === myFamilyName}
                 onOpen={() => {}}
-              />
+                onPay={(fid, amt) => { setPayTarget({ familyId: fid, amount: amt }); setShowPayment(true) }} />
             ))}
           </div>
         </div>
@@ -1184,7 +1379,13 @@ export default function FinancesPage() {
         <ExpenditurePage />
       </div>
 
-      {showPayment && <SubmitPaymentModal onClose={() => setShowPayment(false)} />}
+      {showPayment && (
+        <SubmitPaymentModal
+          onClose={() => { setShowPayment(false); setPayTarget(null) }}
+          initFamilyId={payTarget?.familyId}
+          initAmount={payTarget?.amount}
+        />
+      )}
       {showBankBalance && (
         <UpdateBankBalanceModal
           onClose={() => setShowBankBalance(false)}

@@ -2,8 +2,8 @@ name: Deploy KimFam Hub
 
 # Every push deploys to staging and runs tests.
 # On main + green tests → promote to prod.
-# On failure → self-heal loop (Claude fixes code, commits, re-triggers pipeline).
-# Loop guard: stop self-healing after 3 consecutive [auto-fix] commits.
+# On failure → Claude diagnoses + fixes on Hetzner staging, notifies Hillary on WhatsApp.
+# No auto-commits or auto-pushes to GitHub. Hillary reviews the fix and pushes manually.
 
 on:
   push:
@@ -18,44 +18,10 @@ env:
   VENV:         /var/www/kimfamhub/venv/bin
 
 jobs:
-  # ── Loop guard ───────────────────────────────────────────────────────────────
-  # Count consecutive [auto-fix] commits at HEAD. If 3 or more, abort everything.
-  guard:
-    name: Loop Guard
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      fix_count:  ${{ steps.check.outputs.fix_count }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 5
-      - name: Count recent auto-fix commits
-        id: check
-        run: |
-          COUNT=0
-          for SHA in $(git log --format="%H" -5); do
-            MSG=$(git log --format="%s" -1 "$SHA")
-            if echo "$MSG" | grep -q "\[auto-fix"; then
-              COUNT=$((COUNT+1))
-            else
-              break
-            fi
-          done
-          echo "fix_count=$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -ge 10 ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Self-heal loop limit reached ($COUNT consecutive auto-fix commits). Manual intervention required."
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
-
   # ── Deploy to staging ────────────────────────────────────────────────────────
   deploy-staging:
     name: Deploy → Staging
     runs-on: ubuntu-latest
-    needs: guard
-    if: needs.guard.outputs.should_run == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -216,21 +182,17 @@ jobs:
         if: steps.playwright.outcome == 'failure'
         run: exit 1
 
-  # ── Self-heal: Claude fixes failing tests and re-pushes ──────────────────────
+  # ── Self-heal: Claude diagnoses + fixes on Hetzner, notifies Hillary ─────────
+  # NO auto-commit or auto-push. Claude fixes files on staging only.
+  # Hillary reviews, pulls locally, and pushes when satisfied.
   self-heal:
-    name: Self-Heal (Claude)
+    name: Self-Heal (Claude — no auto-push)
     runs-on: ubuntu-latest
-    needs: [guard, unit-tests, smoke-tests, frontend-tests]
+    needs: [unit-tests, smoke-tests, frontend-tests]
     if: |
       always() &&
-      needs.guard.outputs.should_run == 'true' &&
       (needs.unit-tests.result == 'failure' || needs.smoke-tests.result == 'failure' || needs.frontend-tests.result == 'failure')
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 5
-
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
@@ -255,12 +217,10 @@ jobs:
       - name: Copy failure logs to Hetzner and run self-heal (Claude CLI)
         id: heal
         run: |
-          # Upload logs to Hetzner where Claude Code CLI is authenticated
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             /tmp/unit_output.txt /tmp/smoke_output.txt \
             $HETZNER_USER@$HETZNER_HOST:/tmp/ 2>/dev/null || true
 
-          # Run self_heal.py on Hetzner staging dir (uses `claude -p` subprocess)
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             $HETZNER_USER@$HETZNER_HOST \
             "cd $STAGING_DIR && python3 scripts/self_heal.py \
@@ -268,39 +228,17 @@ jobs:
               --smoke-log /tmp/smoke_output.txt"
         continue-on-error: true
 
-      - name: Rsync fixed files back from Hetzner to runner checkout
-        if: steps.heal.outcome == 'success'
+      - name: Notify Hillary on WhatsApp
         run: |
-          rsync -az \
-            --exclude='.env' --exclude='venv/' --exclude='__pycache__/' \
-            --exclude='*.db' --exclude='.git/' --exclude='data/' \
-            --exclude='service-account.json' --exclude='.service-account.json' \
-            --exclude='static/avatars/' --exclude='static/receipts/' \
-            --exclude='static/expenditures/' --exclude='static/project-pics/' \
-            --exclude='docs/minutes/' --exclude='docs/financial/' \
-            --exclude='docs/receipts/' --exclude='docs/projects/' \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
-            $HETZNER_USER@$HETZNER_HOST:$STAGING_DIR/ ./
-
-      - name: Commit and push fixes
-        if: steps.heal.outcome == 'success'
-        run: |
-          FIX_NUM=$(( ${{ needs.guard.outputs.fix_count }} + 1 ))
-          git config user.name  "KimFam CI Bot"
-          git config user.email "ci@kimfamhub.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No file changes to commit."
+          BRANCH="${{ github.ref_name }}"
+          if [ "${{ steps.heal.outcome }}" = "success" ]; then
+            MSG="KimFam CI: tests failed on branch $BRANCH. Claude fixed them on staging. Pull from Hetzner and push when ready:\n\nrsync -az --exclude='.env' --exclude='venv/' --exclude='__pycache__/' --exclude='*.db' --exclude='.git/' root@89.167.121.193:$STAGING_DIR/ ./"
           else
-            git commit -m "[auto-fix attempt $FIX_NUM] Claude self-heal: fix failing CI tests"
-            git push origin HEAD:${{ github.ref_name }}
+            MSG="KimFam CI: tests failed on branch $BRANCH and self-heal could not fix them. Manual review needed. Check CI logs."
           fi
-
-      - name: Notify if heal failed
-        if: steps.heal.outcome != 'success'
-        run: |
-          echo "::error::Self-heal failed — Claude could not produce a fix. Manual intervention required."
-          exit 1
+          curl -s -X POST "http://localhost:8080/api/send" \
+            -H "Content-Type: application/json" \
+            -d "{\"recipient\": \"256775102684\", \"message\": \"$MSG\"}" || true
 
   # ── Promote to prod (only when tests pass, no self-heal in this run) ─────────
   promote-to-prod:

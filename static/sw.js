@@ -1,5 +1,5 @@
-// v200 — React migration. Wipes ALL old caches (v1-v117 Jinja2 era).
-const CACHE = "kimfamhub-v200";
+// v201 — force cache clear 2026-06-11.
+const CACHE = "kimfamhub-v201";
 const STATIC_ASSETS = ["/static/manifest.json", "/static/icon-192.png", "/static/icon-512.png"];
 
 self.addEventListener("install", e => {
