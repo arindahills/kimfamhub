@@ -624,9 +624,9 @@ from datetime import datetime
 MONTHS = {"jan":1,"feb":2,"mar":3,"april":4,"apr":4,"may":5,"june":6,"jun":6,
           "july":7,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
 
-def _extract_date(path: Path):
-    """Try to extract a sortable date from the filename. Returns datetime or epoch."""
-    s = path.stem.lower().replace("_", " ").replace("-", " ")
+def _date_from_name(stem: str):
+    """Parse a date from a filename stem (no filesystem access). Returns datetime or None."""
+    s = stem.lower().replace("_", " ").replace("-", " ")
     # Match patterns like "april 12 2026", "feb 11 2024", "june 9 2024"
     m = re.search(r'(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|april?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[^\d]*(\d{1,2})[^\d]*(\d{4})', s)
     if m:
@@ -640,7 +640,14 @@ def _extract_date(path: Path):
             return datetime(int(m.group(3)), mon, int(m.group(2)))
         except Exception:
             pass
-    # Fallback: file modification time
+    return None
+
+def _extract_date(path: Path):
+    """Try to extract a sortable date from the filename. Falls back to file mtime."""
+    dt = _date_from_name(path.stem)
+    if dt is not None:
+        return dt
+    # Fallback: file modification time (local disk only)
     return datetime.fromtimestamp(path.stat().st_mtime)
 
 def _friendly_name(path: Path) -> str:
@@ -673,7 +680,13 @@ def get_docs():
                 if ".bak." in fname:
                     continue
                 files.append({"fname": fname, "mtime": obj["last_modified"]})
-            files.sort(key=lambda x: x["mtime"], reverse=True)
+            # Sort by the date IN the filename (e.g. "June 7 2026"), newest first — not by
+            # R2 upload time, which has no relation to the meeting/document date. Files with
+            # no parseable date fall to the bottom (stable order preserved).
+            def _r2_sort_key(x):
+                dt = _date_from_name(Path(x["fname"]).stem)
+                return (0, -dt.timestamp()) if dt is not None else (1, 0.0)
+            files.sort(key=_r2_sort_key)
             result[cat] = {
                 "label": CATEGORY_LABELS[cat],
                 "files": [
