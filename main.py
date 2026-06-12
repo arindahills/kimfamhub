@@ -698,6 +698,29 @@ def get_docs():
             }
     return result
 
+@app.get("/api/docs/search")
+def search_docs(query: str = ""):
+    query_lower = query.lower().strip()
+    if not query_lower:
+        return {"query": query, "results": []}
+
+    results = []
+    all_docs = get_docs()
+
+    for cat, cat_data in all_docs.items():
+        for doc in cat_data.get("files", []):
+            # Search in both filename and friendly name
+            if query_lower in doc["file"].lower() or query_lower in doc["name"].lower():
+                results.append({
+                    "category": cat,
+                    "categoryLabel": cat_data["label"],
+                    "name": doc["name"],
+                    "file": doc["file"],
+                    "url": doc["url"]
+                })
+
+    return {"query": query, "count": len(results), "results": results}
+
 import time
 
 # In-memory doc cache: {"text": str, "ts": float}
