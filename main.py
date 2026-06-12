@@ -2171,6 +2171,7 @@ def _fetch_family_equity():
     cum_A = {fid: 0.0 for fid in fids}
     cum_B = {fid: 0.0 for fid in fids}
     cum_C = {fid: 0.0 for fid in fids}
+    shortfall_C = {fid: 0.0 for fid in fids}  # amount Model C wanted to charge but couldn't
     proj_A, proj_B, proj_C, proj_meta = {}, {}, {}, {}
     expense_detail = []
 
@@ -2237,6 +2238,8 @@ def _fetch_family_equity():
         for fid in fids:
             bal_A[fid] = max(0.0, bal_A[fid] - aA[fid])
             bal_B[fid] = max(0.0, bal_B[fid] - aB[fid])
+            actual_C   = min(bal_C[fid], aC[fid])   # what was actually deducted
+            shortfall_C[fid] += aC[fid] - actual_C  # track the gap
             bal_C[fid] = max(0.0, bal_C[fid] - aC[fid])
             cum_A[fid] += aA[fid]
             cum_B[fid] += aB[fid]
@@ -2310,11 +2313,14 @@ def _fetch_family_equity():
             "equity_A_pp":     round(eqA/m) if m else 0,
             "equity_B_pp":     round(eqB/m) if m else 0,
             "equity_C_pp":     round(eqC/m) if m else 0,
+            "shortfall_C":     round(shortfall_C[fid]),
         })
 
     tot_eqA = sum(f["equity_A"] for f in family_summary)
     tot_eqB = sum(f["equity_B"] for f in family_summary)
     tot_eqC = sum(f["equity_C"] for f in family_summary)
+    total_shortfall_C = sum(f["shortfall_C"] for f in family_summary)
+    shortfall_C_families = [f["family"] for f in family_summary if f["shortfall_C"] > 0]
     for f in family_summary:
         f["equity_A_pct"] = round(f["equity_A"]/tot_eqA*100, 1) if tot_eqA else 0
         f["equity_B_pct"] = round(f["equity_B"]/tot_eqB*100, 1) if tot_eqB else 0
@@ -2346,6 +2352,8 @@ def _fetch_family_equity():
         "total_eq_A":         tot_eqA,
         "total_eq_B":         tot_eqB,
         "total_eq_C":         tot_eqC,
+        "model_c_shortfall":  round(total_shortfall_C),
+        "model_c_shortfall_families": shortfall_C_families,
         "family_summary":     family_summary,
         "expense_detail":     expense_detail,
         "project_summaries":  project_summaries,
