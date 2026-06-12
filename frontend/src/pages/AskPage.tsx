@@ -243,7 +243,7 @@ export default function AskPage() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 space-y-3 mb-4" style={{ overflowY: 'auto' }}>
+        <div className="flex-1 space-y-3 mb-4" style={{ overflowY: 'auto', paddingBottom: '80px' }}>
           {allTurns.length === 0 && !busy && (
             <div className="space-y-2">
               {SUGGESTIONS.map(q => (
