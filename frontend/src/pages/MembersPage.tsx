@@ -220,7 +220,7 @@ export default function MembersPage() {
 
             {profile?.children && profile.children.length > 0 && (
               <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
-                <div className="text-[10px] mb-1" style={{ color: '#94a3b8' }}>{t('members.children')}</div>
+                <div className="text-[10px] mb-1" style={{ color: '#94a3b8' }}>{t('members.children', { count: profile.children.length })}</div>
                 <div className="flex flex-wrap gap-1">
                   {profile.children.map(c => (
                     <span key={c.name} className="text-[10px] px-2 py-0.5 rounded-full"

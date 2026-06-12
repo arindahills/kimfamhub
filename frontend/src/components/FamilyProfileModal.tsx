@@ -78,9 +78,9 @@ function FamilyStats({ node }: { node: FamilyNode }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
       {/* Members */}
-      <StatChip icon="👥" label={isNodeRoot ? t('family.coreMembers') : t('family.members')} value={String(totalMembers)} color={node.color} />
+      <StatChip icon="👥" label={isNodeRoot ? t('family.coreMembers') : t('family.members', { count: totalMembers })} value={String(totalMembers)} color={node.color} />
       {/* Children / grandkids */}
-      <StatChip icon="👶" label={isNodeRoot ? t('family.grandchildren') : t('family.children')} value={String(totalGrandkids)} color={node.color} />
+      <StatChip icon="👶" label={isNodeRoot ? t('family.grandchildren', { count: totalGrandkids }) : t('family.children', { count: totalGrandkids })} value={String(totalGrandkids)} color={node.color} />
       {/* Age range */}
       {oldest !== null && youngest !== null && oldest !== youngest && (
         <StatChip icon="🎂" label={t('family.ageRange')} value={`${youngest}–${oldest} ${t('family.yrs')}`} color={node.color} />
@@ -347,7 +347,7 @@ function MembersTab({ node, onMemberClick, onChildClick }: {
       {node.children.length > 0 && (
         <>
           <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginTop: 8, marginBottom: 2 }}>
-            {t('family.children')}
+            {t('family.children', { count: node.children.length })}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
             {node.children.map((k, ki) => {
@@ -688,7 +688,7 @@ export function FamilyProfileModal({ familyLabel, onClose }: { familyLabel: stri
     ? (member.profession ?? member.role)
     : child
     ? `${t('family.childOf')} ${node.label}`
-    : node.birthOrder === 0 ? t('family.foundingFamily') : `${node.members.length} ${t('family.members').toLowerCase()} · ${node.children.length} ${t('family.children').toLowerCase()}`
+    : node.birthOrder === 0 ? t('family.foundingFamily') : `${node.members.length} ${t('family.members', { count: node.members.length }).toLowerCase()} · ${node.children.length} ${t('family.children', { count: node.children.length }).toLowerCase()}`
   const headerAvatar = member
     ? <Avatar name={member.name} avatarKey={member.avatarKey} size={52} color={node.color} />
     : child
