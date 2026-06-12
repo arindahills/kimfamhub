@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 interface FamilyRow {
   family: string
@@ -93,6 +94,130 @@ function ModelDescCard({ title, color, desc, pros }: { title: string; color: str
 }
 
 type ModelKey = 'A' | 'B' | 'C'
+
+interface VoteState {
+  tally: Record<ModelKey, number>
+  total_families: number
+  families_voted: number
+  my_family_id: string | null
+  my_vote: ModelKey | null
+}
+
+const MODEL_META: { key: ModelKey; name: string; color: string }[] = [
+  { key: 'A', name: 'Equal Share', color: MODEL_A_COLOR },
+  { key: 'B', name: 'Proportional', color: MODEL_B_COLOR },
+  { key: 'C', name: "Solomon's", color: MODEL_C_COLOR },
+]
+
+function EquityVoteWidget() {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+
+  const { data: vote, isLoading } = useQuery<VoteState>({
+    queryKey: ['equity-vote'],
+    queryFn: () => fetch('/api/club/equity/vote', { credentials: 'include' }).then(r => r.json()),
+  })
+
+  const mutation = useMutation({
+    mutationFn: (model: ModelKey) =>
+      fetch('/api/club/equity/vote', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      }).then(r => { if (!r.ok) throw new Error('vote failed'); return r.json() }),
+    onSuccess: (fresh: VoteState) => qc.setQueryData(['equity-vote'], fresh),
+  })
+
+  const askAi = () => {
+    sessionStorage.setItem('ask:prefill', 'Explain the three equity models (A, B and C) and show how my family stands under each. Stay neutral — do not tell me how to vote.')
+    navigate('/ask')
+  }
+
+  if (isLoading || !vote) {
+    return (
+      <div style={{ background: '#451a03', border: '2px solid #f59e0b', borderRadius: 10, padding: 12 }}>
+        <div style={{ fontSize: 12, color: '#fbbf24', fontWeight: 700 }}>Family Vote — KIM 008/2026</div>
+        <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>Loading vote…</div>
+      </div>
+    )
+  }
+
+  const totalVotes = vote.tally.A + vote.tally.B + vote.tally.C
+  const leader = (['A', 'B', 'C'] as ModelKey[]).reduce((a, b) => vote.tally[b] > vote.tally[a] ? b : a, 'A')
+
+  return (
+    <div style={{ background: '#1e1408', border: '2px solid #f59e0b', borderRadius: 10, padding: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 18 }}>🗳️</span>
+          <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 700 }}>Family Vote — KIM 008/2026</span>
+        </div>
+        <span style={{ fontSize: 10, color: '#a16207' }}>{vote.families_voted}/{vote.total_families} families voted</span>
+      </div>
+      <div style={{ fontSize: 11, color: '#a16207', marginBottom: 12 }}>
+        Each family casts ONE vote for the allocation model. You can change your vote until KIM 009/2026.
+      </div>
+
+      {/* Model buttons */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        {MODEL_META.map(m => {
+          const mine = vote.my_vote === m.key
+          const count = vote.tally[m.key]
+          const pct = totalVotes ? Math.round((count / totalVotes) * 100) : 0
+          return (
+            <button
+              key={m.key}
+              onClick={() => mutation.mutate(m.key)}
+              disabled={mutation.isPending}
+              style={{
+                flex: 1,
+                background: mine ? m.color + '26' : '#0f172a',
+                border: mine ? `2px solid ${m.color}` : '1px solid #334155',
+                borderRadius: 10,
+                padding: '10px 6px',
+                cursor: mutation.isPending ? 'wait' : 'pointer',
+                textAlign: 'center',
+                transition: 'all 0.15s',
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: m.color }}>Model {m.key}</div>
+              <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 6 }}>{m.name}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: mine ? m.color : '#cbd5e1' }}>{count}</div>
+              {/* mini bar */}
+              <div style={{ height: 4, borderRadius: 2, background: '#1e293b', marginTop: 6, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: m.color, transition: 'width 0.3s' }} />
+              </div>
+              {mine && <div style={{ fontSize: 8, color: m.color, fontWeight: 700, marginTop: 4 }}>✓ YOUR VOTE</div>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Status line */}
+      <div style={{ fontSize: 11, color: '#cbd5e1', marginBottom: 10 }}>
+        {vote.my_family_id
+          ? (vote.my_vote
+              ? <>Your family voted <b style={{ color: MODEL_META.find(m => m.key === vote.my_vote)!.color }}>Model {vote.my_vote}</b>. Tap another to change.</>
+              : <>Your family ({vote.my_family_id}) hasn't voted yet — tap a model above.</>)
+          : <span style={{ color: '#a16207' }}>Your account isn't linked to a family, so you can view but not vote.</span>}
+        {totalVotes > 0 && <span style={{ color: '#64748b' }}>{'  '}Leading: Model {leader}.</span>}
+      </div>
+
+      {/* Ask AI — neutral guidance */}
+      <button
+        onClick={askAi}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '9px 12px',
+          color: '#93c5fd', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+        }}
+      >
+        🤖 Ask KimFam to explain the models for my family
+      </button>
+    </div>
+  )
+}
 
 export default function EquityPage() {
   const [activeModel, setActiveModel] = useState<ModelKey>('B')
@@ -354,14 +479,8 @@ export default function EquityPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
-      {/* Vote pending banner */}
-      <div style={{ background: '#451a03', border: '2px solid #f59e0b', borderRadius: 10, padding: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ fontSize: 20 }}>🎤</div>
-        <div>
-          <div style={{ fontSize: 12, color: '#fbbf24', fontWeight: 700 }}>Family Vote Pending — KIM 008/2026</div>
-          <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>All three models shown (A, B, and Solomon's Model C). Covers ALL club expenses. Vote at KIM 009/2026.</div>
-        </div>
-      </div>
+      {/* Live family vote widget (replaces the old static banner) */}
+      <EquityVoteWidget />
 
       {/* Explainer download */}
       <div style={{ textAlign: 'right' }}>

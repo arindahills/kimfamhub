@@ -469,6 +469,56 @@ def tool_portfolio_overview() -> str:
         lines.append(f"  {name}: {', '.join(parts) if parts else '-'}")
     return "\n".join(lines)
 
+def tool_equity_models(member_name: str | None = None) -> str:
+    """Neutral per-family comparison of the three equity allocation models (A/B/C).
+    Used so the AI can answer 'which model is best for my family' with REAL numbers,
+    while staying neutral and NOT telling anyone how to vote."""
+    # Call the equity computation directly (lazy import avoids a circular import at
+    # module load, and dodges the internal-key / port fragility of an HTTP round-trip
+    # to ourselves — works identically on staging :8001 and prod :8000).
+    try:
+        import main as _main
+        data = _main._fetch_family_equity()
+    except Exception as e:
+        log.warning(f"tool_equity_models: {e}")
+        return "EQUITY MODELS: live data unavailable."
+
+    fams = data.get("family_summary", [])
+    if not fams:
+        return "EQUITY MODELS: no family data."
+
+    my_family = None
+    if member_name:
+        from family_db import member_family as _mf
+        try:
+            my_family = (_mf(member_name) or "").title() or None
+        except Exception:
+            my_family = None
+
+    lines = [
+        "EQUITY MODELS — neutral per-family comparison (live). The three models are three ways to "
+        "split ALL club expenses; a family's stake % = its claim on future profits.",
+        "  Model A = Equal Share (protects low-balance families).",
+        "  Model B = Proportional (tracks who actually funded what).",
+        "  Model C = Solomon's (fixed weight by family size/obligation).",
+        f"  Totals — A: {_ugx(data.get('total_eq_A',0))}, B: {_ugx(data.get('total_eq_B',0))}, C: {_ugx(data.get('total_eq_C',0))}.",
+        "  PER FAMILY (equity UGX and % stake under each model):",
+    ]
+    for f in fams:
+        tag = "  >> YOUR FAMILY << " if my_family and f.get("family") == my_family else "  "
+        lines.append(
+            f"{tag}{f.get('family')}: "
+            f"A={_ugx(f.get('equity_A',0))} ({f.get('equity_A_pct',0)}%), "
+            f"B={_ugx(f.get('equity_B',0))} ({f.get('equity_B_pct',0)}%), "
+            f"C={_ugx(f.get('equity_C',0))} ({f.get('equity_C_pct',0)}%)"
+        )
+    lines.append(
+        "  GUIDANCE RULE: explain the tradeoffs and show the family's own numbers, but DO NOT tell them "
+        "which model to vote for — the choice is theirs. Note that if every family just picks whatever "
+        "maximizes its own stake the vote can deadlock; the decision is meant to be a family consensus."
+    )
+    return "\n".join(lines)
+
 def tool_project_audit_summary(project_id: str) -> str:
     """Assumptions and formula derivations for auditability questions."""
     data = _fetch_project_json(project_id, "audit")
@@ -497,6 +547,7 @@ _DATA_TOOLS = {
     "project_analysis": tool_project_analysis,
     "portfolio_overview": tool_portfolio_overview,
     "project_audit": tool_project_audit_summary,
+    "equity_models": tool_equity_models,
 }
 
 def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, project_id: str | None = None) -> str:
@@ -522,6 +573,8 @@ def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, p
                 out.append(tool_portfolio_overview())
             elif t == "project_audit":
                 out.append(tool_project_audit_summary(project_id or "trees"))
+            elif t == "equity_models":
+                out.append(tool_equity_models(member_name))
         except Exception as e:
             log.warning(f"Data tool '{t}' failed: {e}")
     return "\n\n".join(x for x in out if x)
@@ -550,6 +603,9 @@ DATA TOOLS available (pick any that help answer; live PostgreSQL data):
                           Also set "project_id" to: trees, sheep, washing_bay, irrigation, dairy, bees, chicken
 - "portfolio_overview" → LIVE snapshot of ALL projects key metrics side by side for comparison
 - "project_audit"      → how numbers were calculated: assumptions, formulas, data gaps. Also set "project_id"
+- "equity_models"      → the EQUITY VOTE: per-family stake under Models A/B/C (the KIM 008/2026 vote). Use for
+                         "which equity model", "how does my family stand under A/B/C", "equity vote", "model A vs B".
+                         Stay NEUTRAL: explain tradeoffs + show their numbers, never tell them how to vote.
 
 RAG (document store) — set use_rag=true for:
 - meetings (when/what decided/actions/latest) → doc_type_filter="minutes"
@@ -568,6 +624,7 @@ Guidance:
 - "what is [project] payback/ROI/revenue/profit" → tools=["project_analysis"], project_id="<pid>"
 - "how was [metric] calculated" / "show assumptions" / "is [project] profitable" → tools=["project_audit"], project_id="<pid>"
 - "rank projects" / "best investment" / "compare projects" / "portfolio" → tools=["portfolio_overview"]
+- "equity model" / "model A vs B vs C" / "the vote" / "how does my family stand under each model" / "which model" → tools=["equity_models"], use_rag=true, doc_type_filter="constitution" (combine live numbers with the explainer doc; stay neutral)
 - How to use the app / navigation / login / password / "how do I" / "where do I" / "show me how" → tools=[], use_rag=false (full app guide is in synthesizer, it covers every feature including washing bay income recording, equity analysis, admin panel, each tab)
 - Greetings / off-topic → tools=[], use_rag=false
 

@@ -108,6 +108,15 @@ export default function AskPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [allTurns.length, stages.length, busy])
 
+  // Prefill a question handed off from another page (e.g. the Equity vote widget).
+  useEffect(() => {
+    const pre = sessionStorage.getItem('ask:prefill')
+    if (pre) {
+      sessionStorage.removeItem('ask:prefill')
+      setInput(pre)
+    }
+  }, [])
+
   const send = async () => {
     const q = input.trim()
     if (!q || busy) return

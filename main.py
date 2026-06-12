@@ -4132,6 +4132,85 @@ async def chicken_allocation(request: Request):
     return await club_equity(request)
 
 
+# ── Equity model vote (KIM 008/2026 → decided at KIM 009) ─────────────────────────
+# One vote per FAMILY (not per member). A family may change its vote until the
+# decision is recorded. Models: A (equal share), B (proportional), C (Solomon's).
+from family_profiles import FAMILY_MEMBER_MAP as _FAMILY_MEMBER_MAP
+
+# member first-name → family_id (invert the family→members map)
+_MEMBER_TO_FAMILY = {
+    member: fam_id
+    for fam_id, members in _FAMILY_MEMBER_MAP.items()
+    for member in members
+}
+_TOTAL_FAMILIES = len(_FAMILY_MEMBER_MAP)
+_VALID_MODELS = {"A", "B", "C"}
+
+def _ensure_equity_votes_table():
+    from db import execute as _ex
+    _ex("""CREATE TABLE IF NOT EXISTS equity_votes (
+        family_id  TEXT PRIMARY KEY,
+        model      TEXT NOT NULL CHECK (model IN ('A','B','C')),
+        voter      TEXT NOT NULL,
+        voted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""")
+
+def _equity_vote_state(member_name: str | None):
+    from db import query as _q
+    rows = _q("SELECT family_id, model, voter, voted_at FROM equity_votes")
+    tally = {"A": 0, "B": 0, "C": 0}
+    voted = []
+    for r in rows:
+        if r["model"] in tally:
+            tally[r["model"]] += 1
+        voted.append({"family_id": r["family_id"], "model": r["model"]})
+    my_family = _MEMBER_TO_FAMILY.get(member_name) if member_name else None
+    my_vote = next((r["model"] for r in rows if r["family_id"] == my_family), None)
+    return {
+        "tally": tally,
+        "total_families": _TOTAL_FAMILIES,
+        "families_voted": len(rows),
+        "my_family_id": my_family,
+        "my_vote": my_vote,
+        "voted": voted,
+    }
+
+@app.get("/api/club/equity/vote")
+async def get_equity_vote(request: Request):
+    from fastapi import HTTPException as _HE
+    tok = _get_tok(request)
+    payload = _auth_verify(tok)
+    if not payload:
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_equity_votes_table()
+    return _equity_vote_state(payload.get("sub"))
+
+@app.post("/api/club/equity/vote")
+async def cast_equity_vote(request: Request):
+    from fastapi import HTTPException as _HE
+    from db import execute as _ex
+    tok = _get_tok(request)
+    payload = _auth_verify(tok)
+    if not payload:
+        raise _HE(status_code=401, detail="Login required")
+    member_name = payload.get("sub")
+    family_id = _MEMBER_TO_FAMILY.get(member_name)
+    if not family_id:
+        raise _HE(status_code=403, detail="Your account is not linked to a family, so you cannot vote.")
+    body = await request.json()
+    model = str(body.get("model", "")).strip().upper()
+    if model not in _VALID_MODELS:
+        raise _HE(status_code=400, detail="Model must be A, B or C.")
+    _ensure_equity_votes_table()
+    # Upsert: one row per family; re-voting updates the family's choice.
+    _ex("""INSERT INTO equity_votes (family_id, model, voter, voted_at)
+           VALUES (%s, %s, %s, now())
+           ON CONFLICT (family_id)
+           DO UPDATE SET model = EXCLUDED.model, voter = EXCLUDED.voter, voted_at = now()""",
+        (family_id, model, member_name))
+    return _equity_vote_state(member_name)
+
+
 # ── Club Office Bearers ──────────────────────────────────────────────────────────────────────────────
 
 _VALID_OFFICER_ROLES = {
