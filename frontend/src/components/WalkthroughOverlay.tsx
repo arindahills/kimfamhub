@@ -38,31 +38,45 @@ const STEPS: Step[] = [
     optional: true,
   },
   {
+    tourId: 'nav-members',
+    icon: '👨‍👩‍👧‍👦',
+    title: 'Members',
+    body: 'Browse all club members and their families. Tap any family card to see the full family tree, birthdays, and investment profile.',
+    route: '/members',
+  },
+  {
+    tourId: 'nav-projects',
+    icon: '🌾',
+    title: 'Projects',
+    body: 'Track all club investments — sheep, chicken, washing bay, and more. See progress updates, budgets, and team assignments.',
+    route: '/projects',
+  },
+  {
     tourId: 'nav-expenditure',
     icon: '💸',
     title: 'Expenditure',
-    body: 'All club expenses — by year, category, and project. Admins can add expenses with receipts here. Find it under More → Expenditure.',
+    body: 'All club expenses by year, category, and project. Admins can add expenses with receipts here. Tap More to find it.',
     route: '/expenditure',
   },
   {
     tourId: 'nav-actions',
     icon: '✅',
     title: 'Action Points',
-    body: 'Every club decision and who owns it. You get a WhatsApp reminder as your deadline approaches.',
+    body: 'Every club decision and who owns it. You get a WhatsApp reminder as your deadline approaches. Tap More to find it.',
     route: '/actions',
   },
   {
     tourId: 'nav-updates',
     icon: '📰',
     title: 'Updates',
-    body: 'Latest news from all projects — sheep, chicken, washing bay, and more. Project managers post here so everyone stays informed.',
+    body: 'Latest news from all projects — sheep, chicken, washing bay, and more. Project managers post here. Tap More to find it.',
     route: '/updates',
   },
   {
     tourId: 'nav-equity',
     icon: '⚖️',
     title: 'Family Equity',
-    body: 'See how club expenses are shared across all seven families under Models A, B, and C. Download the Equity Explainer before the vote.',
+    body: "See how club expenses are shared across all seven families under Models A, B, and C. Cast your family's vote here. Tap More to find it.",
     route: '/equity',
   },
   {
@@ -156,7 +170,8 @@ export function WalkthroughOverlay() {
         await new Promise(r => setTimeout(r, 500))
       } else {
         // Open drawer if this is a drawer-only item
-        const isDirect = ['nav-finances', 'nav-updates', 'nav-ask'].includes(s.tourId)
+        // Bottom-tab items don't need the drawer open; drawer items do
+      const isDirect = ['nav-finances', 'nav-members', 'nav-projects', 'nav-ask'].includes(s.tourId)
         if (!isDirect) window.dispatchEvent(new CustomEvent('kimfam:openDrawer'))
         await new Promise(r => setTimeout(r, 250))
       }

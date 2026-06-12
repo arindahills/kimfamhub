@@ -79,6 +79,17 @@ export default function AppShell({ children }: { children: ReactNode }) {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            {!isDesktop && (
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('kimfam:openDrawer'))}
+                aria-label="Open menu"
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--muted)', fontSize: 22, lineHeight: 1,
+                  padding: '4px 6px 4px 0', flexShrink: 0,
+                }}
+              >☰</button>
+            )}
             <img src="/static/logo.png" alt="KimFam"
               style={{ width: 32, height: 32, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />
             <div style={{ minWidth: 0, lineHeight: 1.15 }}>
