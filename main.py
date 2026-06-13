@@ -1058,7 +1058,7 @@ def get_meetings():
     from db import query as _dbq
     rows = _dbq("""
         SELECT m.id, m.ref, m.date, m.start_time_eat, m.venue,
-               m.key_topics, m.key_decisions, m.next_actions,
+               m.key_topics, m.key_decisions, m.next_actions, m.summary,
                m.minutes_url,
                m.conductor_item, m.conductor_started_at, m.conductor_ended_at,
                COUNT(a.id)                                          AS action_count,
