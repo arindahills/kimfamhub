@@ -64,7 +64,8 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Audio recorder ───────────────────────────────────────────────────────
+  // ── Audio recorder — only the admin who clicks Start Meeting records ────────
+  const [wantRecord, setWantRecord]   = useState(false)   // pre-start toggle
   const [recording, setRecording]     = useState(false)
   const [audioBlob, setAudioBlob]     = useState<Blob | null>(null)
   const [uploading, setUploading]     = useState(false)
@@ -166,6 +167,11 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       })
       await fetchState()
     } finally { setActing(false) }
+  }
+
+  const startMeeting = async () => {
+    if (wantRecord) await startRecording()
+    await act('start')
   }
 
   const endMeeting = async () => {
@@ -293,28 +299,27 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             <p className="text-sm" style={{ color: '#475569' }}>
               {flat.length} agenda items · tap to begin
             </p>
-            {/* Recording option */}
-            <div className="rounded-xl p-4" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
-              <p className="text-[11px] mb-3" style={{ color: '#64748b' }}>
-                Record audio alongside Google Meet? (optional)
-              </p>
-              <button
-                onClick={recording ? stopRecording : startRecording}
-                className="w-full py-2 rounded-lg text-sm font-medium"
-                style={{
-                  background: recording ? '#7f1d1d33' : '#1e293b',
-                  color:      recording ? '#fca5a5'   : '#64748b',
-                  border:     recording ? '1px solid #ef444444' : '1px solid #334155',
-                }}>
-                {recording ? '⏹ Stop recording' : '🎙 Start recording'}
-              </button>
-            </div>
             {isAdmin && (
-              <button onClick={() => act('start')} disabled={acting}
-                className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
-                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
-                Start Meeting →
-              </button>
+              <>
+                {/* Record toggle — only for the person starting the meeting */}
+                <button
+                  onClick={() => setWantRecord(r => !r)}
+                  className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-all"
+                  style={{
+                    background: wantRecord ? '#7f1d1d33' : '#0d1829',
+                    color:      wantRecord ? '#fca5a5'   : '#334155',
+                    border:     wantRecord ? '1px solid #ef444444' : '1px solid #1e293b',
+                  }}>
+                  <span>{wantRecord ? '🎙' : '○'}</span>
+                  {wantRecord ? 'Will record when meeting starts' : 'Record this meeting (optional)'}
+                </button>
+
+                <button onClick={startMeeting} disabled={acting}
+                  className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
+                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                  {acting ? 'Starting…' : 'Start Meeting →'}
+                </button>
+              </>
             )}
           </div>
         )}
