@@ -63,8 +63,9 @@ function effortLabel(hours: number | null): string | null {
   return `${Math.round(hours / 8)}d`
 }
 
-function ActionCard({ item, isAdmin, userName, onMarkDone, onAddUpdate, onJumpTo }: {
+function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onJumpTo }: {
   item: ActionItem
+  carriedIntoRef: string | null
   isAdmin: boolean
   userName: string
   onMarkDone: (id: string, comment: string) => Promise<void>
@@ -140,8 +141,18 @@ function ActionCard({ item, isAdmin, userName, onMarkDone, onAddUpdate, onJumpTo
           <button
             onClick={() => onJumpTo(item.parent_ref!)}
             className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition-opacity"
-            style={{ color: '#a78bfa', background: '#4c1d9522', border: '1px solid #4c1d9544' }}>
+            style={{ color: '#a78bfa', background: '#4c1d9522', border: '1px solid #4c1d9544' }}
+            title={`Carried over from ${item.parent_ref}`}>
             ↑ {item.parent_ref}
+          </button>
+        )}
+        {carriedIntoRef && (
+          <button
+            onClick={() => onJumpTo(carriedIntoRef)}
+            className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-80 transition-opacity"
+            style={{ color: '#5eead4', background: '#0f766e22', border: '1px solid #0f766e55' }}
+            title={`Carried over into ${carriedIntoRef}`}>
+            → carried into {carriedIntoRef}
           </button>
         )}
         {item.project_id && (
@@ -307,6 +318,13 @@ export default function ActionsPage() {
     { key: 'all',     label: `All (${counts.all})`,         color: '#94a3b8' },
   ]
 
+  // Reverse the parent_ref links so a carried-over action can point DOWN to the
+  // action it was carried/restated into (child.parent_ref === parent.id).
+  const carriedIntoByRef: Record<string, string> = {}
+  for (const a of items) {
+    if (a.parent_ref) carriedIntoByRef[a.parent_ref] = a.id
+  }
+
   const byPerson: Record<string, ActionItem[]> = {}
   for (const a of visible) {
     if (!byPerson[a.responsible]) byPerson[a.responsible] = []
@@ -360,6 +378,7 @@ export default function ActionsPage() {
               <ActionCard
                 key={a.id}
                 item={a}
+                carriedIntoRef={carriedIntoByRef[a.id] || null}
                 isAdmin={isAdmin}
                 userName={user?.name || ''}
                 onMarkDone={markDone}
