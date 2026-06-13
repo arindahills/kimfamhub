@@ -26,6 +26,8 @@ interface ConductorState {
   notes?: string
   recording_present?: boolean
   timings?: Record<string, { label: string; planned_min: number; actual_s: number }>
+  attendance?: Record<string, { status: 'present' | 'apology' | 'absent' | ''; comment: string }>
+  members?: string[]
 }
 
 interface Props {
