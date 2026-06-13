@@ -328,6 +328,14 @@ async def process_meeting(meeting_id: int, request: Request,
             for label, text in transcript_parts
         )
 
+    # Persist the transcript so the meeting retrospective can analyse it later
+    if transcript_parts:
+        try:
+            from db import execute as _exec_tx
+            _exec_tx("UPDATE meetings SET transcript=%s WHERE id=%s", (transcript, meeting_id))
+        except Exception:
+            pass
+
     # ── 3. Pull context from DB ───────────────────────────────────────────────
     meeting_rows = _dbq("""
         SELECT ref, date, key_decisions FROM meetings
@@ -661,6 +669,14 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         import logging as _lg
         _lg.getLogger("main").error(f"docx generation failed: {_e}")
         draft_path = None
+
+    # Auto-generate the time-analytics retrospective so it's ready for the next
+    # meeting's "Review of Last Meeting" item. Best-effort; never blocks confirm.
+    try:
+        _generate_retrospective(meeting_id)
+    except Exception as _re:
+        import logging as _lg
+        _lg.getLogger("main").error(f"retrospective generation failed: {_re}")
 
     return {
         "ok":         True,
@@ -1305,6 +1321,7 @@ def _build_default_agenda(key_topics: str | None = None) -> list:
     return [
         {"label": "Opening Prayer",          "presenter": "Dad",    "duration_min": 3,  "type": "fixed"},
         {"label": "Apologies & Attendance",  "presenter": "Hellen", "duration_min": 3,  "type": "fixed"},
+        {"label": "Review of Last Meeting",  "presenter": "Hillary","duration_min": 5,  "type": "fixed"},
         {"label": "Treasurer's Brief",       "presenter": "Hellen", "duration_min": 10, "type": "fixed"},
         {"label": "Action Review",           "presenter": "Hillary","duration_min": 15, "type": "fixed"},
         *([{"label": "Project Updates", "presenter": "", "duration_min": 0, "type": "section",
@@ -1370,6 +1387,133 @@ async def conductor_state(meeting_id: int, request: Request):
         "attendance": (_json_c.loads(r["attendance"]) if isinstance(r["attendance"], (str, bytes, bytearray)) else (r["attendance"] or {})),
         "members": list(_notif.MEMBER_PHONES.keys()),
     }
+
+
+# ── Meeting retrospective / time analytics ────────────────────────────────────
+
+def _generate_retrospective(meeting_id: int) -> dict:
+    """Build an AI retrospective for a conducted meeting: per-item time verdict,
+    what consumed the time, whether it produced output, mission link, and
+    forward recommendations. Stores it in conductor_retrospective."""
+    from db import query as _dbq_r, execute as _exec_r
+    import json as _json_r
+    rows = _dbq_r("""SELECT ref, date, conductor_timings, conductor_notes,
+                            transcript, key_decisions
+                     FROM meetings WHERE id=%s""", (meeting_id,))
+    if not rows:
+        return {}
+    r = rows[0]
+    raw_tm = r["conductor_timings"]
+    timings = (_json_r.loads(raw_tm) if isinstance(raw_tm, (str, bytes, bytearray)) else (raw_tm or {}))
+    if not timings:
+        return {}  # nothing to analyse without per-item timing
+
+    # Actions this meeting produced (output check per item is approximate at meeting level)
+    acts = _dbq_r("""SELECT ref, description, assignee FROM actions
+                     WHERE meeting_id=%s ORDER BY ref""", (meeting_id,))
+    actions_txt = "\n".join(f"- {a['ref']} ({a['assignee']}): {a['description'][:90]}" for a in acts) or "None recorded"
+
+    timing_lines = []
+    planned_total = actual_total = 0
+    for k in sorted(timings, key=lambda x: int(x) if str(x).isdigit() else 0):
+        t = timings[k]
+        pm = int(t.get("planned_min", 0)); a_s = int(t.get("actual_s", 0))
+        planned_total += pm * 60; actual_total += a_s
+        timing_lines.append(f"- {t.get('label','')}: planned {pm}m, actual {a_s//60}m{a_s%60:02d}s")
+
+    notes = r["conductor_notes"] or "(no live notes)"
+    transcript = (r["transcript"] or "")[:8000] or "(no transcript captured)"
+
+    prompt = f"""You are the meeting-improvement analyst for KimFam Investment Club, a Ugandan
+family investment club building diversified ventures (chicken, washing bay, sheep, dairy,
+mango, fortune credit, land, etc.) toward long-term family wealth. Tone: warm, collective,
+improvement-focused. NEVER single out an individual for running long; focus on the topic and
+process. No em-dashes anywhere.
+
+Analyse meeting {r['ref']} ({r['date']}).
+
+TIME PER AGENDA ITEM (planned vs actual):
+{chr(10).join(timing_lines)}
+
+SECRETARY NOTES (segmented by item where headers exist):
+{notes[:4000]}
+
+ACTIONS THIS MEETING PRODUCED:
+{actions_txt}
+
+TRANSCRIPT (may be partial):
+{transcript}
+
+Return ONLY valid JSON (no markdown) in this exact shape:
+{{
+  "efficiency_score": 0-100 integer (how well time was used vs planned and output produced),
+  "headline": "one warm sentence summarising how the meeting ran",
+  "overall": "2-3 sentences: overall time discipline + biggest observation",
+  "items": [
+    {{
+      "label": "agenda item",
+      "verdict": "on_time|over|under",
+      "what_consumed_time": "why it took the time it did (or 'efficient')",
+      "produced_output": true|false,
+      "mission_link": "how this ties to a club goal/project, or 'general governance'",
+      "do_better": "one concrete improvement for next time"
+    }}
+  ],
+  "time_sinks": ["topics that ran longest / consumed disproportionate time"],
+  "decision_density_note": "did the long items actually produce decisions/actions, or mostly discussion?",
+  "recommendations": ["2-4 concrete, actionable suggestions for the next meeting"]
+}}"""
+
+    raw = _ask_claude(prompt, timeout=90)
+    import re as _re_r
+    data = None
+    try:
+        data = _json_r.loads(raw)
+    except Exception:
+        m = _re_r.search(r"\{.*\}", raw or "", _re_r.DOTALL)
+        if m:
+            try: data = _json_r.loads(m.group())
+            except Exception: data = None
+    if not isinstance(data, dict):
+        return {}
+    import datetime as _dt_r
+    data["generated_at"] = _dt_r.datetime.utcnow().isoformat()
+    data["planned_total_min"] = planned_total // 60
+    data["actual_total_min"]  = actual_total // 60
+    _exec_r("UPDATE meetings SET conductor_retrospective=%s WHERE id=%s",
+            (_json_r.dumps(data), meeting_id))
+    return data
+
+
+@app.post("/api/meetings/{meeting_id}/retrospective")
+async def make_retrospective(meeting_id: int, request: Request):
+    """Generate (or regenerate) the meeting retrospective. Admin only."""
+    from fastapi import HTTPException as _HE
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    data = _generate_retrospective(meeting_id)
+    if not data:
+        raise _HE(status_code=422, detail="No time data to analyse — conduct the meeting with the in-app conductor first.")
+    return {"ok": True, "retrospective": data}
+
+
+@app.get("/api/meetings/{meeting_id}/retrospective")
+async def get_retrospective(meeting_id: int, request: Request):
+    """Read a meeting's retrospective. Visible to all authenticated members."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    import json as _json_g
+    token = _get_tok(request)
+    if not _auth_verify(token):
+        raise _HE(status_code=401, detail="Login required")
+    rows = _dbq("SELECT conductor_retrospective FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    raw = rows[0]["conductor_retrospective"]
+    data = (_json_g.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else (raw or None))
+    return {"retrospective": data}
 
 
 @app.post("/api/meetings/{meeting_id}/conductor/notes")
