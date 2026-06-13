@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import MeetingProcessModal from '../components/MeetingProcessModal'
 import MeetingConductor from '../components/MeetingConductor'
+import RetrospectiveView from '../components/RetrospectiveView'
+import type { Retrospective } from '../components/RetrospectiveView'
 
 const ADMIN_USERS = ['Hillary', 'Hellen']
 
@@ -44,6 +46,69 @@ function MinutesModal({ url, title, onClose }: { url: string; title: string; onC
         </div>
       </div>
       <iframe src={viewUrl} style={{ flex: 1, border: 'none', background: '#fff' }} title={title} />
+    </div>
+  )
+}
+
+// ── Review (retrospective) modal — visible to all members ─────────────────────
+function ReviewModal({ meetingId, title, isAdmin, onClose }: {
+  meetingId: number; title: string; isAdmin: boolean; onClose: () => void
+}) {
+  const [retro, setRetro] = useState<Retrospective | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [generating, setGenerating] = useState(false)
+
+  const load = () => {
+    setLoading(true)
+    fetch(`/api/meetings/${meetingId}/retrospective`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setRetro(d?.retrospective ?? null))
+      .catch(() => setRetro(null))
+      .finally(() => setLoading(false))
+  }
+  useState(() => { load() })
+
+  const generate = async () => {
+    setGenerating(true)
+    try {
+      const r = await fetch(`/api/meetings/${meetingId}/retrospective`, { method: 'POST', credentials: 'include' })
+      const d = await r.json()
+      if (r.ok) setRetro(d.retrospective)
+    } catch {/* ignore */} finally { setGenerating(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="w-full max-w-md rounded-2xl p-5 space-y-3 max-h-[85vh] overflow-y-auto"
+        style={{ background: '#121824', border: '1px solid #1e293b' }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: '#e2e8f0' }}>Meeting Review</h2>
+            <p className="text-[11px]" style={{ color: '#64748b' }}>{title}</p>
+          </div>
+          <button onClick={onClose} style={{ color: '#475569' }}>✕</button>
+        </div>
+        {loading ? (
+          <p className="text-xs text-center py-6" style={{ color: '#475569' }}>Loading…</p>
+        ) : retro ? (
+          <RetrospectiveView retro={retro} />
+        ) : (
+          <div className="text-center py-6 space-y-3">
+            <p className="text-xs" style={{ color: '#64748b' }}>
+              No review yet. It is generated automatically when a meeting's minutes are processed
+              {isAdmin ? ', or you can generate it now.' : '.'}
+            </p>
+            {isAdmin && (
+              <button onClick={generate} disabled={generating}
+                className="text-xs px-4 py-2 rounded-lg disabled:opacity-40"
+                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                {generating ? 'Generating…' : 'Generate review'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -204,6 +269,7 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
 }) {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
   const [viewMinutes, setViewMinutes] = useState(false)
+  const [viewReview, setViewReview]   = useState(false)
 
   // Conduct is only relevant for meetings that haven't happened yet (today or future),
   // or ones currently live. Past meetings get no Conduct button.
@@ -240,6 +306,13 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
                 className="text-[11px] px-2 py-1 rounded-lg"
                 style={{ background: '#4c1d9533', color: '#a78bfa', border: '1px solid #4c1d9555' }}>
                 Process
+              </button>
+            )}
+            {m.conductor_ended && (
+              <button onClick={() => setViewReview(true)}
+                className="text-[11px] px-2 py-1 rounded-lg"
+                style={{ background: '#0f766e33', color: '#5eead4', border: '1px solid #0f766e55' }}>
+                📊 Review
               </button>
             )}
             {m.minutes_url && (
@@ -290,6 +363,15 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
           url={m.minutes_url}
           title={`KIM ${m.meeting_number} — ${m.meeting_date}`}
           onClose={() => setViewMinutes(false)}
+        />
+      )}
+
+      {viewReview && (
+        <ReviewModal
+          meetingId={m.db_id}
+          title={`KIM ${m.meeting_number} — ${m.meeting_date}`}
+          isAdmin={isAdmin}
+          onClose={() => setViewReview(false)}
         />
       )}
     </>

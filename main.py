@@ -1408,6 +1408,21 @@ async def conductor_state(meeting_id: int, request: Request):
     if r["conductor_started_at"]:
         total_elapsed = int((now_utc - r["conductor_started_at"]).total_seconds())
 
+    # Previous meeting's retrospective — for the "Review of Last Meeting" item.
+    import re as _re_pc
+    _cur_m = _re_pc.match(r"KIM\s+(\d+)/(\d{4})", (r["ref"] or "").strip())
+    prev_retro, prev_ref = None, None
+    if _cur_m:
+        _cur_num = int(_cur_m.group(1))
+        _prev_rows = _dbq("SELECT ref, conductor_retrospective FROM meetings")
+        _best = -1
+        for _pr in _prev_rows:
+            _pm = _re_pc.match(r"KIM\s+(\d+)/(\d{4})", (_pr["ref"] or "").strip())
+            if _pm and int(_pm.group(1)) < _cur_num and int(_pm.group(1)) > _best and _pr["conductor_retrospective"]:
+                _best = int(_pm.group(1)); prev_ref = _pr["ref"]
+                _raw = _pr["conductor_retrospective"]
+                prev_retro = (_json_c.loads(_raw) if isinstance(_raw, (str, bytes, bytearray)) else _raw)
+
     return {
         "meeting_ref":   r["ref"],
         "date":          str(r["date"]),
@@ -1424,6 +1439,8 @@ async def conductor_state(meeting_id: int, request: Request):
         "timings": (_json_c.loads(r["conductor_timings"]) if isinstance(r["conductor_timings"], (str, bytes, bytearray)) else (r["conductor_timings"] or {})),
         "attendance": (_json_c.loads(r["attendance"]) if isinstance(r["attendance"], (str, bytes, bytearray)) else (r["attendance"] or {})),
         "members": list(_notif.MEMBER_PHONES.keys()),
+        "prev_retrospective": prev_retro,
+        "prev_ref": prev_ref,
     }
 
 

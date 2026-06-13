@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import MeetingProcessModal from './MeetingProcessModal'
+import RetrospectiveView from './RetrospectiveView'
+import type { Retrospective } from './RetrospectiveView'
 
 interface AgendaItem {
   label: string
@@ -28,6 +30,8 @@ interface ConductorState {
   timings?: Record<string, { label: string; planned_min: number; actual_s: number }>
   attendance?: Record<string, { status: 'present' | 'apology' | 'absent' | ''; comment: string }>
   members?: string[]
+  prev_retrospective?: Retrospective | null
+  prev_ref?: string | null
 }
 
 interface Props {
@@ -682,6 +686,24 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             {isAdmin && /attendance/i.test(currentItem.label) && state.members && (
               <RollCall members={state.members} attendance={attendance}
                 onStatus={setMemberStatus} onComment={setMemberComment} />
+            )}
+
+            {/* Review of last meeting — shows the previous meeting's retrospective */}
+            {/review of last meeting|last meeting review/i.test(currentItem.label) && (
+              <div className="w-full overflow-y-auto" style={{ maxHeight: '52vh' }}>
+                {state.prev_retrospective ? (
+                  <>
+                    <p className="text-[11px] uppercase tracking-wider mb-2 font-semibold text-center" style={{ color: '#94a3b8' }}>
+                      How {state.prev_ref} went
+                    </p>
+                    <RetrospectiveView retro={state.prev_retrospective} />
+                  </>
+                ) : (
+                  <p className="text-sm text-center" style={{ color: '#475569' }}>
+                    No retrospective for the previous meeting yet. It is generated automatically once a meeting's minutes are processed.
+                  </p>
+                )}
+              </div>
             )}
 
             {/* Admin controls */}
