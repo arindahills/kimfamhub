@@ -187,7 +187,19 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     </div>
   )
 
-  if (!state) return null
+  if (!state) return (
+    <div className="fixed inset-0 z-60 flex flex-col items-center justify-center gap-3 p-6"
+      style={{ background: '#050d1a' }}>
+      <p className="text-sm text-center" style={{ color: '#f87171' }}>
+        Couldn't load the meeting conductor. Please try again.
+      </p>
+      <button onClick={onClose}
+        className="text-xs px-4 py-2 rounded-lg"
+        style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+        Close
+      </button>
+    </div>
+  )
 
   const flat       = flatten(state.agenda)
   const current    = state.current_item ?? -1

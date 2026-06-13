@@ -1309,7 +1309,8 @@ async def conductor_state(meeting_id: int, request: Request):
         raise _HE(status_code=404, detail="Meeting not found")
     r = rows[0]
 
-    agenda = _json_c.loads(r["agenda"]) if r["agenda"] else []
+    _raw_ag = r["agenda"]
+    agenda = (_json_c.loads(_raw_ag) if isinstance(_raw_ag, (str, bytes, bytearray)) else (_raw_ag or []))
     now_utc = _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)
 
     item_elapsed = None
@@ -1388,7 +1389,8 @@ async def conductor_next(meeting_id: int, request: Request):
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
     r = rows[0]
-    agenda = _json_n.loads(r["agenda"]) if r["agenda"] else []
+    _raw_ag = r["agenda"]
+    agenda = (_json_n.loads(_raw_ag) if isinstance(_raw_ag, (str, bytes, bytearray)) else (_raw_ag or []))
     # Flatten sections into a linear list for conductor
     flat = _flatten_agenda(agenda)
     current = r["conductor_item"] or 0
