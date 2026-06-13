@@ -55,6 +55,8 @@ interface ConfirmResult {
 interface Props {
   meetingId: number
   meetingRef: string
+  initialNotes?: string
+  recordingCaptured?: boolean
   onClose: () => void
   onConfirmed: () => void
 }
@@ -77,11 +79,11 @@ const PROJECTS = [
   { id: 'kakoba',        name: 'Kakoba Land' },
 ]
 
-export default function MeetingProcessModal({ meetingId, meetingRef, onClose, onConfirmed }: Props) {
+export default function MeetingProcessModal({ meetingId, meetingRef, initialNotes = '', recordingCaptured = false, onClose, onConfirmed }: Props) {
   // ── Input stage ─────────────────────────────────────────────────────────────
   const [textMode, setTextMode]     = useState<TextMode>('paste')
   const [pasteText, setPasteText]   = useState('')
-  const [notes, setNotes]           = useState('')
+  const [notes, setNotes]           = useState(initialNotes)
   const [audioFile, setAudioFile]   = useState<File | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const audioRef = useRef<HTMLInputElement>(null)
@@ -106,7 +108,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
   const [applying, setApplying]           = useState(false)
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  const hasAudio = !!audioFile
+  const hasAudio = !!audioFile || recordingCaptured
   const hasText  = textMode === 'paste' ? pasteText.trim().length > 0
                                         : !!uploadFile
   const hasNotes = notes.trim().length > 0
@@ -306,19 +308,26 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                   <p className="text-xs font-semibold" style={{ color: '#93c5fd' }}>Audio recording</p>
                   <SourceChip active={hasAudio} label="audio" />
                 </div>
-                <p className="text-[10px]" style={{ color: '#475569' }}>
-                  Voice Memo, Tactiq export, phone recording — .mp3 .m4a .wav .ogg .webm (max 25 MB)
-                </p>
+                {recordingCaptured && !audioFile ? (
+                  <p className="text-xs py-3 px-3 rounded-lg"
+                    style={{ background: '#14532d33', color: '#86efac', border: '1px solid #22c55e44' }}>
+                    ✓ Meeting recording captured during the session — it'll be transcribed and used automatically. You can still add another file below to override it.
+                  </p>
+                ) : (
+                  <p className="text-[10px]" style={{ color: '#475569' }}>
+                    Voice Memo, Tactiq export, phone recording — .mp3 .m4a .wav .ogg .webm (max 25 MB)
+                  </p>
+                )}
                 <input ref={audioRef} type="file"
                   accept=".mp3,.m4a,.wav,.ogg,.webm,audio/*"
                   onChange={e => setAudioFile(e.target.files?.[0] ?? null)}
                   className="hidden" />
                 <button onClick={() => audioRef.current?.click()}
                   className="w-full py-4 rounded-xl text-sm border-dashed border-2 transition-colors"
-                  style={{ borderColor: hasAudio ? '#3b82f6' : '#334155', color: hasAudio ? '#93c5fd' : '#475569' }}>
-                  {hasAudio ? `✓ ${audioFile!.name}` : 'Tap to select audio file'}
+                  style={{ borderColor: audioFile ? '#3b82f6' : '#334155', color: audioFile ? '#93c5fd' : '#475569' }}>
+                  {audioFile ? `✓ ${audioFile.name}` : (recordingCaptured ? 'Tap to add a different audio file' : 'Tap to select audio file')}
                 </button>
-                {hasAudio && (
+                {audioFile && (
                   <button onClick={() => setAudioFile(null)}
                     className="text-[10px]" style={{ color: '#475569' }}>
                     Remove
@@ -410,7 +419,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
               {(hasAudio || hasText || hasNotes) && (
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[10px]" style={{ color: '#475569' }}>Will use:</span>
-                  {hasAudio && <SourceChip active label={audioFile!.name} />}
+                  {hasAudio && <SourceChip active label={audioFile ? audioFile.name : 'meeting recording'} />}
                   {hasText && textMode === 'paste' && <SourceChip active label="pasted text" />}
                   {hasText && textMode === 'file' && <SourceChip active label={uploadFile!.name} />}
                   {hasNotes && <SourceChip active label="your notes" />}

@@ -67,11 +67,49 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
 
   // ── Audio recorder — starts automatically when admin clicks Start Meeting ───
   const [recording, setRecording]     = useState(false)
-  const [audioBlob, setAudioBlob]     = useState<Blob | null>(null)
   const [uploading, setUploading]     = useState(false)
   const [uploadedAudio, setUploadedAudio] = useState(false)
   const mediaRef   = useRef<MediaRecorder | null>(null)
   const chunksRef  = useRef<Blob[]>([])
+
+  // ── Live secretary notes — typed throughout the meeting ─────────────────────
+  const [notes, setNotes]           = useState('')
+  const notesLoadedRef = useRef(false)
+  const [notesSaved, setNotesSaved] = useState(true)
+  const notesSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastItemRef  = useRef<number | null>(null)
+
+  const saveNotes = useCallback(async (text: string) => {
+    try {
+      await fetch(`/api/meetings/${meetingId}/conductor/notes`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: text }),
+      })
+      setNotesSaved(true)
+    } catch { /* will retry on next edit */ }
+  }, [meetingId])
+
+  const onNotesChange = (text: string) => {
+    setNotes(text)
+    setNotesSaved(false)
+    if (notesSaveRef.current) clearTimeout(notesSaveRef.current)
+    notesSaveRef.current = setTimeout(() => saveNotes(text), 1200)
+  }
+
+  // Upload a recording blob directly (called automatically when recording stops)
+  const uploadBlob = async (blob: Blob) => {
+    setUploading(true)
+    try {
+      const fd = new FormData()
+      fd.append('audio_file', blob, 'meeting_recording.webm')
+      const res = await fetch(`/api/meetings/${meetingId}/recording`, {
+        method: 'POST', credentials: 'include', body: fd,
+      })
+      if (res.ok) setUploadedAudio(true)
+    } catch { /* non-blocking */ }
+    finally { setUploading(false) }
+  }
 
   const startRecording = async () => {
     try {
@@ -81,8 +119,9 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-        setAudioBlob(blob)
         stream.getTracks().forEach(t => t.stop())
+        // Auto-upload immediately so the Process modal already has the recording
+        uploadBlob(blob)
       }
       mr.start()
       mediaRef.current = mr
@@ -97,21 +136,6 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     setRecording(false)
   }
 
-  const uploadAudio = async () => {
-    if (!audioBlob) return
-    setUploading(true)
-    try {
-      const fd = new FormData()
-      fd.append('audio_file', audioBlob, 'meeting_recording.webm')
-      // Store it server-side so Process modal can pick it up
-      const res = await fetch(`/api/meetings/${meetingId}/recording`, {
-        method: 'POST', credentials: 'include', body: fd,
-      })
-      if (res.ok) setUploadedAudio(true)
-    } catch { /* non-blocking */ }
-    finally { setUploading(false) }
-  }
-
   // ── Polling ──────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
     try {
@@ -121,6 +145,12 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
         setState(data)
         setLocalElapsed(data.total_elapsed_s ?? 0)
         setLocalItemElapsed(data.item_elapsed_s ?? 0)
+        // Load saved notes once (don't clobber what the secretary is typing)
+        if (!notesLoadedRef.current) {
+          setNotes(data.notes ?? '')
+          notesLoadedRef.current = true
+        }
+        if (data.recording_present) setUploadedAudio(true)
       }
     } finally {
       setLoading(false)
@@ -143,6 +173,26 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     }, 1000)
     return () => { if (tickRef.current) clearInterval(tickRef.current) }
   }, [state?.started, state?.ended])
+
+  // When the secretary advances to a new agenda item, drop a section header into
+  // the notes so what's typed stays organised by item. Only fires on an actual
+  // advance during this session (not on initial load), so notes are never clobbered.
+  useEffect(() => {
+    const ci = state?.current_item ?? null
+    if (ci == null || ci < 0 || !state?.started || state.ended) return
+    if (lastItemRef.current === null) { lastItemRef.current = ci; return }
+    if (lastItemRef.current === ci) return
+    lastItemRef.current = ci
+    const label = flatten(state.agenda)[ci]?.label
+    if (!label) return
+    setNotes(prev => {
+      const next = (prev.replace(/\s+$/, '') + (prev.trim() ? '\n\n' : '')) + `— ${label} —\n`
+      setNotesSaved(false)
+      if (notesSaveRef.current) clearTimeout(notesSaveRef.current)
+      notesSaveRef.current = setTimeout(() => saveNotes(next), 1200)
+      return next
+    })
+  }, [state?.current_item, state?.started, state?.ended])
 
   // ── Admin actions ────────────────────────────────────────────────────────
   const act = async (path: string, body?: object) => {
@@ -220,16 +270,12 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
           )}
         </div>
 
-        {/* Upload recording if captured */}
-        {audioBlob && !uploadedAudio && (
-          <button onClick={uploadAudio} disabled={uploading}
-            className="w-full py-2.5 rounded-xl text-sm font-medium disabled:opacity-40"
-            style={{ background: '#1e293b', color: '#64748b', border: '1px solid #334155' }}>
-            {uploading ? 'Uploading recording…' : '↑ Upload recording first'}
-          </button>
+        {/* Recording is uploaded automatically when the meeting ends */}
+        {uploading && (
+          <p className="text-xs text-center" style={{ color: '#64748b' }}>Uploading recording…</p>
         )}
         {uploadedAudio && (
-          <p className="text-xs text-center" style={{ color: '#4ade80' }}>✓ Recording uploaded</p>
+          <p className="text-xs text-center" style={{ color: '#4ade80' }}>✓ Meeting recording captured — it'll be used automatically</p>
         )}
 
         <div className="rounded-xl p-4 space-y-3" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
@@ -265,6 +311,8 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     <MeetingProcessModal
       meetingId={meetingId}
       meetingRef={meetingRef}
+      initialNotes={notes}
+      recordingCaptured={uploadedAudio}
       onClose={() => { setShowProcess(false); onClose() }}
       onConfirmed={() => { setShowProcess(false); onMeetingProcessed() }}
     />
@@ -390,6 +438,28 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
                 </button>
               </div>
             )}
+
+            {/* Live secretary notes — typed throughout the meeting */}
+            {isAdmin && (
+              <div className="rounded-xl p-3 space-y-2" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] uppercase tracking-wider font-semibold" style={{ color: '#c4b5fd' }}>
+                    Meeting notes
+                  </p>
+                  <span className="text-[10px]" style={{ color: notesSaved ? '#4ade80' : '#64748b' }}>
+                    {notesSaved ? '✓ saved' : 'saving…'}
+                  </span>
+                </div>
+                <textarea
+                  value={notes}
+                  onChange={e => onNotesChange(e.target.value)}
+                  placeholder="Type minutes as the meeting goes — decisions, who said what, amounts. Headers are added automatically as you advance items."
+                  rows={5}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-y"
+                  style={{ background: '#121824', color: '#e2e8f0', border: '1px solid #334155' }}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -399,15 +469,11 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             <p className="text-sm" style={{ color: '#475569' }}>
               Duration: {fmtTime(localElapsed)}
             </p>
-            {audioBlob && !uploadedAudio && (
-              <button onClick={uploadAudio} disabled={uploading}
-                className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
-                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
-                {uploading ? 'Uploading recording…' : '↑ Upload recording'}
-              </button>
+            {uploading && (
+              <p className="text-sm" style={{ color: '#64748b' }}>Uploading recording…</p>
             )}
             {uploadedAudio && (
-              <p className="text-sm" style={{ color: '#4ade80' }}>✓ Recording uploaded</p>
+              <p className="text-sm" style={{ color: '#4ade80' }}>✓ Recording captured</p>
             )}
             {isAdmin && (
               <button onClick={() => setShowTranscriptPrompt(true)}

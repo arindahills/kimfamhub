@@ -1299,11 +1299,12 @@ async def conductor_state(meeting_id: int, request: Request):
     token = _get_tok(request)
     if not _auth_verify(token):
         raise _HE(status_code=401, detail="Auth required")
+    import os as _os_c
 
     rows = _dbq("""SELECT ref, date, venue, start_time_eat, agenda,
                           conductor_item, conductor_started_at,
                           conductor_item_started_at, conductor_ended_at,
-                          conductor_recording
+                          conductor_recording, conductor_notes
                    FROM meetings WHERE id=%s""", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
@@ -1331,7 +1332,27 @@ async def conductor_state(meeting_id: int, request: Request):
         "recording":     bool(r["conductor_recording"]) and r["conductor_ended_at"] is None,
         "item_elapsed_s":  item_elapsed,
         "total_elapsed_s": total_elapsed,
+        "notes":           r["conductor_notes"] or "",
+        "recording_present": _os_c.path.exists(f"/tmp/kimfam_recording_{meeting_id}.webm"),
     }
+
+
+@app.post("/api/meetings/{meeting_id}/conductor/notes")
+async def conductor_save_notes(meeting_id: int, request: Request):
+    """Save the secretary's running notes typed during the meeting. Admin only."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    body = await request.json()
+    notes = str(body.get("notes", ""))
+    _exec("UPDATE meetings SET conductor_notes=%s WHERE id=%s", (notes, meeting_id))
+    return {"ok": True}
 
 
 @app.post("/api/meetings/{meeting_id}/recording")
