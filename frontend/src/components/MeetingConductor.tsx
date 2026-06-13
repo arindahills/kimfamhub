@@ -431,6 +431,8 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const nextItem   = flat[current + 1] ?? null
   const budgetSecs = (currentItem?.duration_min ?? 0) * 60
   const overTime   = budgetSecs > 0 && localItemElapsed > budgetSecs
+  const plannedMin = flat.reduce((s, i) => s + (i.duration_min || 0), 0)
+  const fmtMins    = (mins: number) => mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
 
   // ── Transcript prompt (shown immediately after meeting ends) ────────────────
   if (showTranscriptPrompt) return (
@@ -532,7 +534,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
           <div className="text-center space-y-6 max-w-sm">
             <p className="text-2xl font-bold" style={{ color: '#e2e8f0' }}>Ready to start</p>
             <p className="text-sm" style={{ color: '#475569' }}>
-              {flat.length} agenda items · tap to begin
+              {flat.length} agenda items · est. {fmtMins(plannedMin)} · tap to begin
             </p>
             {isAdmin && (
               <>
@@ -559,6 +561,9 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
         {!state.started && editingTimes && draftAgenda && (
           <div className="w-full max-w-md space-y-3 overflow-y-auto" style={{ maxHeight: '70vh' }}>
             <p className="text-base font-bold text-center" style={{ color: '#e2e8f0' }}>Set time per item</p>
+            <p className="text-sm text-center font-semibold" style={{ color: '#93c5fd' }}>
+              Total meeting budget: {fmtMins(flatten(draftAgenda).reduce((s, i) => s + (i.duration_min || 0), 0))}
+            </p>
             <p className="text-[11px] text-center" style={{ color: '#64748b' }}>
               These are just budgets — nothing auto-advances. The clock turns red when an item runs over.
             </p>
@@ -716,9 +721,20 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             {/* Time audit — which items ran over their budget */}
             {state.timings && Object.keys(state.timings).length > 0 && (
               <div className="rounded-xl p-3 text-left" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
-                <p className="text-[11px] uppercase tracking-wider mb-2 font-semibold" style={{ color: '#94a3b8' }}>
-                  Time per item (planned → actual)
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[11px] uppercase tracking-wider font-semibold" style={{ color: '#94a3b8' }}>
+                    Time per item (planned → actual)
+                  </p>
+                  {(() => {
+                    const actualTot = Object.values(state.timings).reduce((s, t) => s + (t.actual_s || 0), 0)
+                    const over = actualTot > plannedMin * 60
+                    return (
+                      <span className="text-[11px] font-semibold" style={{ color: over ? '#f87171' : '#4ade80' }}>
+                        {fmtMins(plannedMin)} → {fmtTime(actualTot)}
+                      </span>
+                    )
+                  })()}
+                </div>
                 <div className="space-y-1">
                   {Object.entries(state.timings)
                     .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
