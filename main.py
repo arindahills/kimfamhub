@@ -3366,7 +3366,7 @@ def _fetch_family_equity():
             _, fid, amt = all_pmts[pmt_idx]
             bal_A[fid] += amt
             bal_B[fid] += amt
-            bal_C[fid] += amt
+            # Model C has no running balance (equity = total pool × fixed weight at the end)
             pmt_idx += 1
 
         # Credit loan repayments made on or before this expense date
