@@ -334,11 +334,30 @@ async def process_meeting(meeting_id: int, request: Request,
         ORDER BY date DESC LIMIT 8
     """)
     open_actions = _dbq("""
-        SELECT ref, description, assignee, deadline, status
+        SELECT id, ref, description, assignee, deadline, status
         FROM actions
         WHERE status NOT IN ('done','cancelled','carried_over')
         ORDER BY ref DESC
     """)
+    # Pull the latest few updates members have posted on each open action so the
+    # minutes generator sees the real progress, not just the static action state.
+    updates_by_action = {}
+    if open_actions:
+        ids = tuple(r["id"] for r in open_actions)
+        upd_rows = _dbq("""
+            SELECT action_id, author, text, created_at
+            FROM (
+                SELECT action_id, author, text, created_at,
+                       ROW_NUMBER() OVER (PARTITION BY action_id ORDER BY created_at DESC) AS rn
+                FROM action_updates
+                WHERE action_id IN %s AND text IS NOT NULL AND text <> ''
+            ) t
+            WHERE rn <= 3
+            ORDER BY action_id, created_at ASC
+        """, (ids,))
+        for u in upd_rows:
+            updates_by_action.setdefault(u["action_id"], []).append(u)
+
     current_meeting = _dbq("SELECT ref, date, venue FROM meetings WHERE id=%s", (meeting_id,))
     if not current_meeting:
         raise _HE(status_code=404, detail="Meeting not found")
@@ -348,11 +367,20 @@ async def process_meeting(meeting_id: int, request: Request,
         f"- {r['ref']} ({r['date']}): {(r['key_decisions'] or 'no decisions recorded')[:120]}"
         for r in meeting_rows if r['ref'] != mtg['ref']
     )
-    open_summary = "\n".join(
-        f"- {r['ref']} [{r['status']}] {r['assignee']}: {r['description'][:80]}"
-        + (f" (due {r['deadline']})" if r['deadline'] else "")
-        for r in open_actions
-    )
+
+    def _action_block(r):
+        head = (f"- {r['ref']} [{r['status']}] {r['assignee']}: {r['description'][:80]}"
+                + (f" (due {r['deadline']})" if r['deadline'] else ""))
+        ups = updates_by_action.get(r["id"], [])
+        if ups:
+            lines = [
+                f"    · update from {u['author']} ({str(u['created_at'])[:10]}): {u['text'][:160]}"
+                for u in ups
+            ]
+            return head + "\n" + "\n".join(lines)
+        return head
+
+    open_summary = "\n".join(_action_block(r) for r in open_actions)
 
     multi_source_note = (
         "NOTE: Multiple transcript sources are provided below. "
@@ -373,7 +401,10 @@ async def process_meeting(meeting_id: int, request: Request,
 RECENT MEETINGS (for context):
 {prev_summary or 'None yet'}
 
-CURRENTLY OPEN ACTIONS (do NOT recreate these unless the transcript explicitly assigns a new deadline or owner):
+CURRENTLY OPEN ACTIONS — with the progress updates members have already posted in the app
+(do NOT recreate these unless the transcript explicitly assigns a new deadline or owner;
+treat the posted updates as factual progress and reflect them in updates_to_existing even if
+the transcript is silent on them):
 {open_summary or 'None'}
 
 {multi_source_note}MEETING TRANSCRIPT:
