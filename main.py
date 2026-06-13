@@ -238,6 +238,46 @@ async def add_action_update(request: Request):
         raise _HE(status_code=500, detail="DB update failed")
 
 
+@app.patch("/api/actions/status")
+async def set_action_status(request: Request):
+    """Admin: move an action to any state (in_progress, blocked, carried_over,
+    cancelled, done, open). Logs the change as an action_update."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body = await request.json()
+    action_ref = str(body.get("action_id", "")).strip()
+    new_status = str(body.get("status", "")).strip().lower()
+    comment    = str(body.get("comment", "")).strip()
+    VALID = {"open", "in_progress", "blocked", "carried_over", "cancelled", "done"}
+    if not action_ref or new_status not in VALID:
+        raise _HE(status_code=400, detail=f"action_id and a valid status ({', '.join(sorted(VALID))}) required")
+    rows = _dbq("SELECT id, status FROM actions WHERE ref=%s", (action_ref,))
+    if not rows:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    action_db_id = rows[0]["id"]
+    old_status   = rows[0]["status"]
+    author       = payload.get("sub", "admin")
+    closes = new_status in ("done", "cancelled", "carried_over")
+    try:
+        if closes:
+            _exec("UPDATE actions SET status=%s, closed_at=NOW() WHERE ref=%s", (new_status, action_ref))
+        else:
+            _exec("UPDATE actions SET status=%s, closed_at=NULL WHERE ref=%s", (new_status, action_ref))
+        _exec("""INSERT INTO action_updates (action_id, author, text, type, old_value, new_value)
+                 VALUES (%s,%s,%s,'status_change',%s,%s)""",
+              (action_db_id, author,
+               comment or f"Status changed to {new_status.replace('_',' ')}",
+               old_status, new_status))
+        return {"ok": True, "action_id": action_ref, "status": new_status}
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"set_action_status: {e}")
+        raise _HE(status_code=500, detail="DB update failed")
+
+
 @app.post("/api/meetings/{meeting_id}/process")
 async def process_meeting(meeting_id: int, request: Request,
     audio_file: "UploadFile | None" = None,

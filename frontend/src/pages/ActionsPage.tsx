@@ -63,19 +63,21 @@ function effortLabel(hours: number | null): string | null {
   return `${Math.round(hours / 8)}d`
 }
 
-function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onJumpTo }: {
+function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onSetStatus, onJumpTo }: {
   item: ActionItem
   carriedIntoRef: string | null
   isAdmin: boolean
   userName: string
   onMarkDone: (id: string, comment: string) => Promise<void>
   onAddUpdate: (id: string, text: string) => Promise<void>
+  onSetStatus: (id: string, status: DbStatus) => Promise<void>
   onJumpTo: (ref: string) => void
 }) {
   const s = STATUS_STYLE[item.status] ?? STATUS_STYLE.open
   const [mode, setMode] = useState<null | 'update' | 'done'>(null)
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showStatus, setShowStatus] = useState(false)
 
   const isTerminal = item.status === 'done' || item.status === 'cancelled'
 
@@ -215,6 +217,33 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
               Mark done
             </button>
           )}
+          {isAdmin && (
+            <button onClick={() => setShowStatus(s => !s)}
+              className="text-[11px] px-2.5 py-1 rounded-lg"
+              style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+              Status ▾
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Status menu */}
+      {isAdmin && showStatus && !mode && (
+        <div className="flex gap-1.5 mt-2 flex-wrap">
+          {([
+            ['in_progress', 'In Progress', '#1e3a5f', '#93c5fd'],
+            ['blocked',     'Blocked',     '#7c2d12', '#fdba74'],
+            ['carried_over','Carried Over','#4c1d95', '#c4b5fd'],
+            ['cancelled',   'Cancelled',   '#3f1d1d', '#fca5a5'],
+            ['open',        'Reopen',      '#1e293b', '#94a3b8'],
+          ] as [DbStatus, string, string, string][]).filter(([s]) => s !== item.status).map(([s, label, bg, color]) => (
+            <button key={s}
+              onClick={async () => { setShowStatus(false); await onSetStatus(item.id, s) }}
+              className="text-[11px] px-2.5 py-1 rounded-lg"
+              style={{ background: bg + '55', color, border: `1px solid ${color}44` }}>
+              {label}
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -272,6 +301,15 @@ export default function ActionsPage() {
       method: 'PATCH', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action_id: id, update_text: updateText }),
+    })
+    qc.invalidateQueries({ queryKey: ['actions'] })
+  }
+
+  const setStatus = async (id: string, status: DbStatus) => {
+    await fetch('/api/actions/status', {
+      method: 'PATCH', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action_id: id, status }),
     })
     qc.invalidateQueries({ queryKey: ['actions'] })
   }
@@ -383,6 +421,7 @@ export default function ActionsPage() {
                 userName={user?.name || ''}
                 onMarkDone={markDone}
                 onAddUpdate={addUpdate}
+                onSetStatus={setStatus}
                 onJumpTo={jumpTo}
               />
             ))}
