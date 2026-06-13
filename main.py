@@ -481,15 +481,24 @@ Rules:
     raw_json = _re.sub(r"^```(?:json)?\s*", "", raw_json)
     raw_json = _re.sub(r"\s*```$", "", raw_json.strip())
 
+    extracted = None
     try:
         extracted = _json.loads(raw_json)
     except _json.JSONDecodeError:
-        # Last resort: find the JSON block
+        # Last resort: find the outermost JSON block and try that
         m = _re.search(r"\{.*\}", raw_json, _re.DOTALL)
         if m:
-            extracted = _json.loads(m.group())
-        else:
-            raise _HE(status_code=502, detail="AI returned unparseable response")
+            try:
+                extracted = _json.loads(m.group())
+            except _json.JSONDecodeError:
+                extracted = None
+    if not isinstance(extracted, dict):
+        raise _HE(
+            status_code=422,
+            detail="Couldn't extract minutes from the content provided. Add the actual "
+                   "meeting transcript, recording, or substantive notes (a single word "
+                   "like 'none' isn't enough to work from), then try again.",
+        )
 
     return {
         "ok": True,
@@ -1396,6 +1405,40 @@ async def conductor_start(meeting_id: int, request: Request):
     return {"ok": True, "current_item": 0}
 
 
+def _record_item_timing(meeting_id: int):
+    """Record how long the currently-active agenda item actually took, before we
+    leave it. Stores {label, planned_min, actual_s} keyed by item index in
+    conductor_timings. Used for post-meeting auditing (which items run long)."""
+    from db import execute as _exec, query as _dbq
+    import json as _json_t, datetime as _dt
+    rows = _dbq("""SELECT conductor_item, conductor_item_started_at, agenda, conductor_timings
+                   FROM meetings WHERE id=%s""", (meeting_id,))
+    if not rows:
+        return
+    r = rows[0]
+    idx = r["conductor_item"]
+    started = r["conductor_item_started_at"]
+    if idx is None or idx < 0 or started is None:
+        return
+    now_utc = _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)
+    actual_s = int((now_utc - started).total_seconds())
+    raw_ag = r["agenda"]
+    agenda = (_json_t.loads(raw_ag) if isinstance(raw_ag, (str, bytes, bytearray)) else (raw_ag or []))
+    flat = _flatten_agenda(agenda)
+    item = flat[idx] if 0 <= idx < len(flat) else None
+    if not item:
+        return
+    raw_tm = r["conductor_timings"]
+    timings = (_json_t.loads(raw_tm) if isinstance(raw_tm, (str, bytes, bytearray)) else (raw_tm or {}))
+    timings[str(idx)] = {
+        "label": item.get("label", ""),
+        "planned_min": item.get("duration_min", 0),
+        "actual_s": actual_s,
+    }
+    _exec("UPDATE meetings SET conductor_timings=%s WHERE id=%s",
+          (_json_t.dumps(timings), meeting_id))
+
+
 @app.post("/api/meetings/{meeting_id}/conductor/next")
 async def conductor_next(meeting_id: int, request: Request):
     """Advance to next agenda item."""
@@ -1416,6 +1459,7 @@ async def conductor_next(meeting_id: int, request: Request):
     flat = _flatten_agenda(agenda)
     current = r["conductor_item"] or 0
     next_item = current + 1
+    _record_item_timing(meeting_id)  # capture how long the item we're leaving took
     _exec("""UPDATE meetings SET conductor_item=%s, conductor_item_started_at=NOW()
              WHERE id=%s""", (next_item, meeting_id))
     return {"ok": True, "current_item": next_item, "total_items": len(flat)}
@@ -1435,6 +1479,7 @@ async def conductor_goto(meeting_id: int, request: Request):
     rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
+    _record_item_timing(meeting_id)  # capture the item we're leaving
     _exec("""UPDATE meetings SET conductor_item=%s, conductor_item_started_at=NOW()
              WHERE id=%s""", (idx, meeting_id))
     return {"ok": True, "current_item": idx}
@@ -1453,6 +1498,7 @@ async def conductor_end(meeting_id: int, request: Request):
     rows = _dbq("SELECT id, conductor_started_at FROM meetings WHERE id=%s", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
+    _record_item_timing(meeting_id)  # capture the final item's duration
     _exec("""UPDATE meetings SET conductor_item=-1, conductor_ended_at=NOW(),
                                 conductor_recording=FALSE
              WHERE id=%s""", (meeting_id,))
