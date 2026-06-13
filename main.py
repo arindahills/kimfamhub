@@ -43,105 +43,114 @@ def g(row, i):
 
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
-    try:
-        sh = gc().open_by_key(SHEET_ID)
-        rows = sh.worksheet("Action Tracker").get_all_records()
-    except Exception as e:
-        import logging as _lg; _lg.getLogger("main").error(f"actions sheet: {e}")
-        return {}
-    DONE = {"Done", "Closed"}
+    from db import query as _dbq
+    from datetime import date as _date
     filt = status.lower().strip()
     if filt == "done":
-        actions = [r for r in rows if r.get("Status","").strip() in DONE]
+        where = "a.status IN ('done','cancelled','carried_over')"
     elif filt == "all":
-        actions = [r for r in rows if r.get("Action ID","").strip()]
-    else:  # default "open"
-        actions = [r for r in rows if r.get("Status","").strip() not in DONE and r.get("Action ID","").strip()]
-    def _action_sort_key(a):
-        m = re.search(r"KIM/(\d+)/\d+-(\d+)", a.get("Action ID",""))
-        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-    actions.sort(key=_action_sort_key, reverse=True)
+        where = "TRUE"
+    else:
+        where = "a.status NOT IN ('done','cancelled','carried_over')"
+    rows = _dbq(f"""
+        SELECT a.id, a.ref, a.description, a.assignee, a.deadline,
+               a.status, a.related_meeting, a.priority, a.effort_hours,
+               a.project_id, a.parent_ref, a.blocked_reason,
+               m.ref AS meeting_ref,
+               (SELECT text FROM action_updates
+                WHERE action_id = a.id ORDER BY created_at DESC LIMIT 1) AS latest_update
+        FROM actions a
+        LEFT JOIN meetings m ON m.id = a.meeting_id
+        WHERE {where}
+        ORDER BY a.ref DESC
+    """)
+    today = _date.today()
     by_person = {}
-    for a in actions:
-        p = a.get("Responsible","Unknown").strip()
-        by_person.setdefault(p,[]).append({
-            "id": a.get("Action ID",""), "action": a.get("Action Description",""),
-            "deadline": a.get("Deadline",""), "status": a.get("Status",""),
-            "meeting": a.get("Related Meeting",""), "note": a.get("Latest Update","")
+    for r in rows:
+        # Compute health badge from deadline + status
+        health = None
+        if r["status"] not in ("done", "cancelled", "carried_over") and r["deadline"]:
+            days = (r["deadline"] - today).days
+            if days < 0:      health = "overdue"
+            elif days <= 3:   health = "at_risk"
+            else:             health = "on_track"
+        p = (r["assignee"] or "Unknown").strip()
+        by_person.setdefault(p, []).append({
+            "id":              r["ref"],
+            "action":          r["description"],
+            "deadline":        str(r["deadline"]) if r["deadline"] else "",
+            "status":          r["status"],
+            "meeting":         r["meeting_ref"] or r["related_meeting"] or "",
+            "note":            r["latest_update"] or "",
+            "priority":        r["priority"],
+            "effort_hours":    float(r["effort_hours"]) if r["effort_hours"] else None,
+            "project_id":      r["project_id"],
+            "parent_ref":      r["parent_ref"],
+            "health":          health,
         })
     return by_person
 
 
-def _action_tracker_ws_and_row(action_id: str):
-    """Open Action Tracker sheet and return (ws, headers, row_idx). Raises HTTPException on failure."""
-    from fastapi import HTTPException as _HE
-    try:
-        ws = gc().open_by_key(SHEET_ID).worksheet("Action Tracker")
-        headers = ws.row_values(1)
-        id_col = headers.index("Action ID") + 1
-        all_ids = ws.col_values(id_col)
-        row_idx = all_ids.index(action_id) + 1
-        return ws, headers, row_idx
-    except ValueError as ve:
-        raise _HE(status_code=404, detail=f"Action ID or column not found: {ve}")
-    except Exception as e:
-        raise _HE(status_code=500, detail=f"Sheet access failed: {e}")
-
-
 @app.patch("/api/actions/done")
 async def mark_action_done(request: Request):
-    """Admin: mark an action point as Done in the Action Tracker sheet."""
+    """Admin: mark an action point as Done in the DB."""
     from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
     token = _get_tok(request)
     payload = _auth_verify(token)
     if not payload or payload.get("sub") not in _ADMINS_PP:
         raise _HE(status_code=403, detail="Admin only")
     body = await request.json()
-    action_id = str(body.get("action_id", "")).strip()
-    comment   = str(body.get("comment", "")).strip()
-    if not action_id:
+    action_ref = str(body.get("action_id", "")).strip()
+    comment    = str(body.get("comment", "")).strip()
+    if not action_ref:
         raise _HE(status_code=400, detail="action_id required")
-    ws, headers, row_idx = _action_tracker_ws_and_row(action_id)
+    rows = _dbq("SELECT id FROM actions WHERE ref=%s", (action_ref,))
+    if not rows:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    action_db_id = rows[0]["id"]
+    author = payload.get("sub", "admin")
     try:
-        status_col = headers.index("Status") + 1
-        ws.update_cell(row_idx, status_col, "Done")
-        if comment:
-            try:
-                upd_col = headers.index("Latest Update") + 1
-                ws.update_cell(row_idx, upd_col, comment)
-            except ValueError:
-                pass  # column name mismatch — skip silently
-        return {"ok": True, "action_id": action_id}
-    except _HE:
-        raise
+        _exec("UPDATE actions SET status='done', closed_at=NOW() WHERE ref=%s", (action_ref,))
+        _exec("""INSERT INTO action_updates (action_id, author, text, type, old_value, new_value)
+                 VALUES (%s,%s,%s,'status_change','open','done')""",
+              (action_db_id, author, comment or "Marked done"))
+        return {"ok": True, "action_id": action_ref}
     except Exception as e:
         import logging as _lg; _lg.getLogger("main").error(f"mark_action_done: {e}")
-        raise _HE(status_code=500, detail="Sheet update failed")
+        raise _HE(status_code=500, detail="DB update failed")
 
 
 @app.patch("/api/actions/update")
 async def add_action_update(request: Request):
-    """Any authenticated user: log a progress update on an action point."""
+    """Any authenticated user: log a progress update on an action."""
     from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
     token = _get_tok(request)
     payload = _auth_verify(token)
     if not payload:
         raise _HE(status_code=401, detail="Not authenticated")
     body = await request.json()
-    action_id   = str(body.get("action_id", "")).strip()
+    action_ref  = str(body.get("action_id", "")).strip()
     update_text = str(body.get("update_text", "")).strip()
-    if not action_id or not update_text:
+    if not action_ref or not update_text:
         raise _HE(status_code=400, detail="action_id and update_text required")
-    ws, headers, row_idx = _action_tracker_ws_and_row(action_id)
+    rows = _dbq("SELECT id, status FROM actions WHERE ref=%s", (action_ref,))
+    if not rows:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    action_db_id = rows[0]["id"]
+    author = payload.get("sub", "unknown")
     try:
-        upd_col = headers.index("Latest Update") + 1
-        ws.update_cell(row_idx, upd_col, update_text)
-        return {"ok": True, "action_id": action_id}
-    except ValueError as ve:
-        raise _HE(status_code=500, detail=f"Column not found: {ve}")
+        _exec("""INSERT INTO action_updates (action_id, author, text, type)
+                 VALUES (%s,%s,%s,'comment')""",
+              (action_db_id, author, update_text))
+        # Auto-advance status open → in_progress on first update
+        if rows[0]["status"] == "open":
+            _exec("UPDATE actions SET status='in_progress' WHERE ref=%s", (action_ref,))
+        return {"ok": True, "action_id": action_ref}
     except Exception as e:
         import logging as _lg; _lg.getLogger("main").error(f"add_action_update: {e}")
-        raise _HE(status_code=500, detail="Sheet update failed")
+        raise _HE(status_code=500, detail="DB update failed")
 
 
 @app.get("/api/members")

@@ -97,114 +97,106 @@ def _parse_date(s: str):
             continue
     return None
 
-# ── Google Sheet access ──────────────────────────────────────────────────
+# ── PostgreSQL access (replaces Google Sheet reads) ───────────────────────────
+def _pg():
+    import psycopg2, psycopg2.extras
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""))
+    conn.autocommit = True
+    return conn
+
 def _get_action_rows():
-    """Fetch all rows from Action Tracker sheet."""
+    """Fetch open/in-progress actions from PostgreSQL."""
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        SA_PATH = os.environ.get("GOOGLE_SA_PATH", "/var/www/kimfamhub/service-account.json")
-        creds = Credentials.from_service_account_file(SA_PATH, scopes=SCOPES)
-        gc = gspread.authorize(creds)
-        SHEET_ID = os.environ.get("SHEET_ID", "1R3_j2ArvMZsfiLDvFwEQURJBXEPaW3mmWU-FyUwrqPg")
-        rows = gc.open_by_key(SHEET_ID).worksheet("Action Tracker").get_all_records()
+        pg = _pg()
+        cur = pg.cursor(cursor_factory=__import__("psycopg2.extras", fromlist=["RealDictCursor"]).RealDictCursor)
+        cur.execute("""
+            SELECT a.ref AS "Action ID", a.description AS "Action Description",
+                   a.assignee AS "Responsible", a.deadline AS "Deadline",
+                   a.status AS "Status", a.related_meeting AS "Related Meeting",
+                   (SELECT text FROM action_updates
+                    WHERE action_id = a.id ORDER BY created_at DESC LIMIT 1) AS "Latest Update"
+            FROM actions a
+            WHERE a.status NOT IN ('done','cancelled','carried_over')
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        # Normalise deadline to string for callers that do str()
+        for r in rows:
+            if r["Deadline"]:
+                r["Deadline"] = str(r["Deadline"])
+        pg.close()
         return rows
     except Exception as e:
-        log.warning("Action Tracker fetch failed: %s", e)
+        log.warning("Actions DB fetch failed: %s", e)
         return []
 
 def _get_meeting_rows():
+    """Fetch meetings from PostgreSQL."""
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-        SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        SA_PATH = os.environ.get("GOOGLE_SA_PATH", "/var/www/kimfamhub/service-account.json")
-        creds = Credentials.from_service_account_file(SA_PATH, scopes=SCOPES)
-        gc = gspread.authorize(creds)
-        SHEET_ID = os.environ.get("SHEET_ID", "1R3_j2ArvMZsfiLDvFwEQURJBXEPaW3mmWU-FyUwrqPg")
-        rows = gc.open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
+        pg = _pg()
+        cur = pg.cursor(cursor_factory=__import__("psycopg2.extras", fromlist=["RealDictCursor"]).RealDictCursor)
+        cur.execute("""
+            SELECT ref AS "Meeting Ref", date AS "Date",
+                   start_time_eat AS "Start Time (EAT)", venue AS "Venue"
+            FROM meetings ORDER BY date DESC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            if r["Date"]: r["Date"] = str(r["Date"])
+        pg.close()
         return rows
     except Exception as e:
-        log.warning("Meeting Register fetch failed: %s", e)
+        log.warning("Meetings DB fetch failed: %s", e)
         return []
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 1: Poll Action Tracker for changes (every 30 min)
+# JOB 1: Notify on recent action updates (every 30 min)
+# Now that writes go directly to DB, we watch action_updates for new rows
 # ─────────────────────────────────────────────────────────────────────────────
 def poll_action_tracker():
-    log.info("Scheduler: polling Action Tracker sheet")
-    rows = _get_action_rows()
-    if not rows:
+    log.info("Scheduler: checking recent action updates in DB")
+    try:
+        pg = _pg()
+        import psycopg2.extras
+        cur = pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Find action_updates created in the last 31 minutes that haven't been notified
+        cur.execute("""
+            SELECT u.id, u.text, u.type, u.author, u.old_value, u.new_value,
+                   a.ref, a.description, a.assignee, a.deadline, a.status
+            FROM action_updates u
+            JOIN actions a ON a.id = u.action_id
+            WHERE u.created_at > NOW() - INTERVAL '31 minutes'
+              AND a.status NOT IN ('done','cancelled','carried_over')
+              AND u.type IN ('comment','status_change')
+        """)
+        updates = cur.fetchall()
+        pg.close()
+    except Exception as e:
+        log.warning("poll_action_tracker DB error: %s", e)
         return
-    with _db() as conn:
-        for r in rows:
-            action_id   = str(r.get("Action ID", "")).strip()
-            if not action_id:
-                continue
-            status      = str(r.get("Status", "")).strip()
-            latest_upd  = str(r.get("Latest Update", "")).strip()
-            responsible = str(r.get("Responsible", "")).strip()
-            description = str(r.get("Action Description", "")).strip()
-            deadline    = str(r.get("Deadline", "")).strip()
 
-            row_hash = hashlib.md5(f"{status}|{latest_upd}".encode()).hexdigest()
+    for u in updates:
+        action_ref  = u["ref"]
+        description = u["description"]
+        assignee    = u["assignee"]
+        deadline    = str(u["deadline"]) if u["deadline"] else ""
+        env = " [STAGING]" if IS_STAGING else ""
 
-            cached = conn.execute(
-                "SELECT row_hash, last_status, last_update FROM action_tracker_cache WHERE action_id=?",
-                (action_id,)
-            ).fetchone()
+        if u["type"] == "status_change":
+            change_line = f"Status: {u['old_value']} → {u['new_value']}"
+        else:
+            change_line = f"Update: {u['text']}"
 
-            now_str = datetime.now(KAMPALA).isoformat()
-
-            if cached is None:
-                # First time seeing this row — store, no notification
-                conn.execute("""
-                    INSERT INTO action_tracker_cache
-                      (action_id, row_hash, last_status, last_update, updated_at)
-                    VALUES (?,?,?,?,?)
-                """, (action_id, row_hash, status, latest_upd, now_str))
-                conn.commit()
-                continue
-
-            if cached["row_hash"] == row_hash:
-                continue  # no change
-
-            # Something changed — determine what
-            old_status = cached["last_status"] or ""
-            old_update = cached["last_update"] or ""
-            changes = []
-            if status != old_status:
-                changes.append(f"Status: {old_status} → {status}")
-            if latest_upd != old_update and latest_upd:
-                changes.append(f"Update: {latest_upd}")
-
-            conn.execute("""
-                UPDATE action_tracker_cache
-                SET row_hash=?, last_status=?, last_update=?, updated_at=?
-                WHERE action_id=?
-            """, (row_hash, status, latest_upd, now_str, action_id))
-            conn.commit()
-
-            if not changes:
-                continue
-
-            # Only notify for open actions — skip Done/Closed/Carried Over
-            if status in ("Done", "Closed", "Carried Over"):
-                continue
-
-            env = " [STAGING]" if IS_STAGING else ""
-            msg = (
-                f"*KimFam Action Update{env}*\n"
-                f"*Ref:* {action_id}\n"
-                f"*Action:* {description}\n"
-                + "\n".join(changes) +
-                (f"\n*Deadline:* {deadline}" if deadline else "")
-            )
-            _send_action_notification(responsible, msg)
-            log.info("Action update notified: %s", action_id)
+        msg = (
+            f"*KimFam Action Update{env}*\n"
+            f"*Ref:* {action_ref}\n"
+            f"*Action:* {description}\n"
+            f"{change_line}"
+            + (f"\n*Deadline:* {deadline}" if deadline else "")
+            + f"\n_(logged by {u['author']})_"
+            + _SIG
+        )
+        _send_action_notification(assignee, msg)
+        log.info("Action update notified: %s by %s", action_ref, u["author"])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JOB 2: Deadline warnings — 3 days and 1 day before (daily 08:00)
@@ -221,7 +213,7 @@ def check_action_deadlines():
             if not action_id:
                 continue
             status = str(r.get("Status", "")).strip()
-            if status in ("Done", "Closed", "Carried Over"):
+            if status in ("Done", "Closed", "Carried Over", "done", "cancelled", "carried_over"):
                 continue
             deadline_str  = str(r.get("Deadline", "")).strip()
             responsible   = str(r.get("Responsible", "")).strip()
@@ -235,7 +227,7 @@ def check_action_deadlines():
             if days_left < 0:
                 latest_update = str(r.get("Latest Update", "")).strip()
                 if latest_update:
-                    continue  # someone has logged progress — don't spam
+                    continue  # someone logged progress — don't spam
                 cached = conn.execute(
                     "SELECT notified_overdue_at FROM action_tracker_cache WHERE action_id=?",
                     (action_id,)
