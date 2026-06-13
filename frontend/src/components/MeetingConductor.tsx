@@ -405,7 +405,8 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const endMeeting = async () => {
     if (recording) stopRecording()
     await act('end')
-    setTimeout(() => setShowTranscriptPrompt(true), 600)
+    // Land on the End screen first (roll-call finalize + time audit). The user
+    // proceeds to the transcript prompt from there via "Process minutes →".
   }
 
   if (loading) return (
