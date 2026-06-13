@@ -178,6 +178,12 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
   const [viewMinutes, setViewMinutes] = useState(false)
 
+  // Conduct is only relevant for the current month's meetings (or currently live ones)
+  const today = new Date()
+  const mDate = new Date(m.meeting_date)
+  const isConductable = m.conductor_active ||
+    (mDate.getFullYear() === today.getFullYear() && mDate.getMonth() === today.getMonth())
+
   return (
     <>
       <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
@@ -192,7 +198,7 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
             </div>
           </div>
           <div className="flex gap-1.5 flex-wrap justify-end">
-            {isAdmin && (
+            {isAdmin && isConductable && (
               <button onClick={() => onConduct(m)}
                 className="text-[11px] px-2 py-1 rounded-lg font-semibold"
                 style={{
