@@ -427,7 +427,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
 
       {/* Agenda list — scrollable bottom panel */}
       <div className="flex-shrink-0 overflow-x-auto"
-        style={{ borderTop: '1px solid #0f172a', maxHeight: '28vh' }}>
+        style={{ borderTop: '1px solid #334155', background: '#0b1220', maxHeight: '28vh' }}>
         <div className="flex gap-2 px-4 py-3 min-w-max">
           {flat.map((item, i) => {
             const isDone    = state.started && i < current
@@ -442,19 +442,19 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
                 style={{
                   minWidth: isHeader ? 100 : 120,
                   background: isCurrent ? '#1e3a5f'
-                            : isDone    ? '#14532d33'
-                            : '#0d1829',
+                            : isDone    ? '#14532d55'
+                            : '#1e293b',
                   border: isCurrent ? '1px solid #3b82f6'
-                        : isDone    ? '1px solid #16683444'
-                        : '1px solid #1e293b',
-                  opacity: isHeader ? 0.7 : 1,
+                        : isDone    ? '1px solid #22c55e88'
+                        : '1px solid #475569',
+                  opacity: isHeader ? 0.85 : 1,
                 }}>
                 <p className="text-[10px] font-semibold truncate max-w-[110px]"
-                  style={{ color: isCurrent ? '#93c5fd' : isDone ? '#4ade80' : '#475569' }}>
+                  style={{ color: isCurrent ? '#bfdbfe' : isDone ? '#86efac' : '#e2e8f0' }}>
                   {item.is_section_child ? '  └ ' : ''}{item.label}
                 </p>
                 {item.presenter && (
-                  <p className="text-[9px] truncate max-w-[110px]" style={{ color: '#334155' }}>{item.presenter}</p>
+                  <p className="text-[9px] truncate max-w-[110px]" style={{ color: isCurrent ? '#93c5fd' : '#94a3b8' }}>{item.presenter}</p>
                 )}
               </button>
             )
