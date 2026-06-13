@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 type TextMode = 'paste' | 'file'
 type Stage    = 'input' | 'review' | 'doc'
@@ -84,6 +84,24 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
   const [textMode, setTextMode]     = useState<TextMode>('paste')
   const [pasteText, setPasteText]   = useState('')
   const [notes, setNotes]           = useState(initialNotes)
+  const [serverRecording, setServerRecording] = useState(false)
+
+  // Ask the server directly whether a conductor recording exists for this meeting,
+  // and pull the saved meeting notes — works whether opened from the conductor or
+  // the card, and regardless of whether the in-conductor upload had finished.
+  useEffect(() => {
+    fetch(`/api/meetings/${meetingId}/conductor`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        if (d.recording_present) setServerRecording(true)
+        if (d.notes && !initialNotes) setNotes(d.notes)
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId])
+
+  const recordingReady = recordingCaptured || serverRecording
   const [audioFile, setAudioFile]   = useState<File | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const audioRef = useRef<HTMLInputElement>(null)
@@ -108,7 +126,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
   const [applying, setApplying]           = useState(false)
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
-  const hasAudio = !!audioFile || recordingCaptured
+  const hasAudio = !!audioFile || recordingReady
   const hasText  = textMode === 'paste' ? pasteText.trim().length > 0
                                         : !!uploadFile
   const hasNotes = notes.trim().length > 0
@@ -132,6 +150,14 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       const res  = await fetch(`/api/meetings/${meetingId}/process`, {
         method: 'POST', credentials: 'include', body: fd,
       })
+      // The AI step can be slow; if the gateway times out or the app is mid-deploy
+      // the body is an HTML error page, not JSON. Handle that without a cryptic crash.
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('application/json')) {
+        throw new Error(res.status === 504 || res.status === 502
+          ? 'The AI took too long or the server is busy. Please try Extract again in a moment.'
+          : `Server returned an unexpected response (${res.status}). Please try again.`)
+      }
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Processing failed')
 
@@ -308,7 +334,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
                   <p className="text-xs font-semibold" style={{ color: '#93c5fd' }}>Audio recording</p>
                   <SourceChip active={hasAudio} label="audio" />
                 </div>
-                {recordingCaptured && !audioFile ? (
+                {recordingReady && !audioFile ? (
                   <p className="text-xs py-3 px-3 rounded-lg"
                     style={{ background: '#14532d33', color: '#86efac', border: '1px solid #22c55e44' }}>
                     ✓ Meeting recording captured during the session — it'll be transcribed and used automatically. You can still add another file below to override it.
@@ -325,7 +351,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
                 <button onClick={() => audioRef.current?.click()}
                   className="w-full py-4 rounded-xl text-sm border-dashed border-2 transition-colors"
                   style={{ borderColor: audioFile ? '#3b82f6' : '#334155', color: audioFile ? '#93c5fd' : '#475569' }}>
-                  {audioFile ? `✓ ${audioFile.name}` : (recordingCaptured ? 'Tap to add a different audio file' : 'Tap to select audio file')}
+                  {audioFile ? `✓ ${audioFile.name}` : (recordingReady ? 'Tap to add a different audio file' : 'Tap to select audio file')}
                 </button>
                 {audioFile && (
                   <button onClick={() => setAudioFile(null)}
