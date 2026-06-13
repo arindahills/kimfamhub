@@ -1507,13 +1507,18 @@ def _generate_retrospective(meeting_id: int) -> dict:
     r = rows[0]
     raw_tm = r["conductor_timings"]
     timings = (_json_r.loads(raw_tm) if isinstance(raw_tm, (str, bytes, bytearray)) else (raw_tm or {}))
-    if not timings:
-        return {}  # nothing to analyse without per-item timing
 
     # Actions this meeting produced (output check per item is approximate at meeting level)
     acts = _dbq_r("""SELECT ref, description, assignee FROM actions
                      WHERE meeting_id=%s ORDER BY ref""", (meeting_id,))
     actions_txt = "\n".join(f"- {a['ref']} ({a['assignee']}): {a['description'][:90]}" for a in acts) or "None recorded"
+
+    notes = r["conductor_notes"] or ""
+    transcript = (r["transcript"] or "")[:8000]
+
+    # Need SOME substance to analyse — timing, transcript, notes, or actions.
+    if not timings and not transcript.strip() and not notes.strip() and not acts:
+        return {}
 
     timing_lines = []
     planned_total = actual_total = 0
@@ -1522,9 +1527,9 @@ def _generate_retrospective(meeting_id: int) -> dict:
         pm = int(t.get("planned_min", 0)); a_s = int(t.get("actual_s", 0))
         planned_total += pm * 60; actual_total += a_s
         timing_lines.append(f"- {t.get('label','')}: planned {pm}m, actual {a_s//60}m{a_s%60:02d}s")
-
-    notes = r["conductor_notes"] or "(no live notes)"
-    transcript = (r["transcript"] or "")[:8000] or "(no transcript captured)"
+    timing_block = ("\n".join(timing_lines) if timing_lines else
+                    "(Per-item timing was not captured for this meeting. Skip the time-discipline "
+                    "scoring and base efficiency on whether discussions produced clear decisions/actions.)")
 
     prompt = f"""You are the meeting-improvement analyst for KimFam Investment Club, a Ugandan
 family investment club building diversified ventures (chicken, washing bay, sheep, dairy,
@@ -1535,16 +1540,16 @@ process. No em-dashes anywhere.
 Analyse meeting {r['ref']} ({r['date']}).
 
 TIME PER AGENDA ITEM (planned vs actual):
-{chr(10).join(timing_lines)}
+{timing_block}
 
 SECRETARY NOTES (segmented by item where headers exist):
-{notes[:4000]}
+{(notes or '(no live notes)')[:4000]}
 
 ACTIONS THIS MEETING PRODUCED:
 {actions_txt}
 
 TRANSCRIPT (may be partial):
-{transcript}
+{transcript or '(no transcript captured)'}
 
 Return ONLY valid JSON (no markdown) in this exact shape:
 {{
