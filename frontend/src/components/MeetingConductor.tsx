@@ -42,6 +42,71 @@ function fmtTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+type RollEntry = { status: 'present' | 'apology' | 'absent' | ''; comment: string }
+
+function RollCall({ members, attendance, onStatus, onComment }: {
+  members: string[]
+  attendance: Record<string, RollEntry>
+  onStatus: (m: string, s: RollEntry['status']) => void
+  onComment: (m: string, c: string) => void
+}) {
+  const STATUSES: { key: RollEntry['status']; label: string; color: string; bg: string }[] = [
+    { key: 'present', label: 'Present', color: '#86efac', bg: '#14532d55' },
+    { key: 'apology', label: 'Apology', color: '#fcd34d', bg: '#78350f55' },
+    { key: 'absent',  label: 'Absent',  color: '#fca5a5', bg: '#7f1d1d55' },
+  ]
+  const present = members.filter(m => attendance[m]?.status === 'present').length
+  const apology = members.filter(m => attendance[m]?.status === 'apology').length
+  const absent  = members.filter(m => attendance[m]?.status === 'absent').length
+  return (
+    <div className="rounded-xl p-3 text-left space-y-2" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] uppercase tracking-wider font-semibold" style={{ color: '#c4b5fd' }}>Roll call</p>
+        <p className="text-[10px]" style={{ color: '#64748b' }}>
+          {present} present · {apology} apology · {absent} absent
+        </p>
+      </div>
+      <div className="space-y-1.5 overflow-y-auto" style={{ maxHeight: '44vh' }}>
+        {members.map(m => {
+          const e = attendance[m] ?? { status: '', comment: '' }
+          return (
+            <div key={m} className="rounded-lg px-2.5 py-2" style={{ background: '#121824', border: '1px solid #1e293b' }}>
+              <div className="flex items-center gap-2">
+                <span className="flex-1 text-sm truncate" style={{ color: '#e2e8f0' }}>{m}</span>
+                <div className="flex gap-1">
+                  {STATUSES.map(s => {
+                    const active = e.status === s.key
+                    return (
+                      <button key={s.key} onClick={() => onStatus(m, s.key)}
+                        className="text-[10px] px-2 py-1 rounded-md font-semibold transition-all"
+                        style={{
+                          background: active ? s.bg : '#1e293b',
+                          color:      active ? s.color : '#64748b',
+                          border:     active ? `1px solid ${s.color}66` : '1px solid #334155',
+                        }}>
+                        {s.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              {(e.status === 'apology' || e.status === 'absent' || e.comment) && (
+                <input
+                  value={e.comment}
+                  onChange={ev => onComment(m, ev.target.value)}
+                  placeholder={e.status === 'present' ? 'Note (e.g. joined late at 5:15)' : 'Reason / note'}
+                  className="w-full mt-1.5 rounded-md px-2 py-1 text-xs outline-none"
+                  style={{ background: '#0d1829', color: '#cbd5e1', border: '1px solid #334155' }}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function DurationRow({ label, value, onChange, indent }: {
   label: string; value: number; onChange: (v: number) => void; indent?: boolean
 }) {
@@ -150,6 +215,42 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     } finally { setSavingAgenda(false) }
   }
 
+  // ── Roll call attendance ────────────────────────────────────────────────────
+  type AttEntry = { status: 'present' | 'apology' | 'absent' | ''; comment: string }
+  const [attendance, setAttendance] = useState<Record<string, AttEntry>>({})
+  const attLoadedRef = useRef(false)
+  const attSaveRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const queueAttSave = (att: Record<string, AttEntry>) => {
+    if (attSaveRef.current) clearTimeout(attSaveRef.current)
+    attSaveRef.current = setTimeout(() => {
+      fetch(`/api/meetings/${meetingId}/attendance`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attendance: att }),
+      }).catch(() => {})
+    }, 800)
+  }
+
+  const setMemberStatus = (member: string, status: AttEntry['status']) => {
+    setAttendance(prev => {
+      const cur = prev[member] ?? { status: '', comment: '' }
+      // tapping the active status again clears it
+      const next = { ...prev, [member]: { ...cur, status: cur.status === status ? '' : status } }
+      queueAttSave(next)
+      return next
+    })
+  }
+
+  const setMemberComment = (member: string, comment: string) => {
+    setAttendance(prev => {
+      const cur = prev[member] ?? { status: '', comment: '' }
+      const next = { ...prev, [member]: { ...cur, comment } }
+      queueAttSave(next)
+      return next
+    })
+  }
+
   // Upload a recording blob directly (called automatically when recording stops)
   const uploadBlob = async (blob: Blob) => {
     setUploading(true)
@@ -202,6 +303,10 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
         if (!notesLoadedRef.current) {
           setNotes(data.notes ?? '')
           notesLoadedRef.current = true
+        }
+        if (!attLoadedRef.current) {
+          setAttendance(data.attendance ?? {})
+          attLoadedRef.current = true
         }
         if (data.recording_present) setUploadedAudio(true)
       }
@@ -516,6 +621,12 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               </div>
             )}
 
+            {/* Roll call — shown when the current item is the attendance item */}
+            {isAdmin && /attendance/i.test(currentItem.label) && state.members && (
+              <RollCall members={state.members} attendance={attendance}
+                onStatus={setMemberStatus} onComment={setMemberComment} />
+            )}
+
             {/* Admin controls */}
             {isAdmin && (
               <div className="flex gap-3">
@@ -571,6 +682,12 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             )}
             {uploadedAudio && (
               <p className="text-sm" style={{ color: '#4ade80' }}>✓ Recording captured</p>
+            )}
+
+            {/* Finalize attendance — late arrivals can be corrected here */}
+            {isAdmin && state.members && (
+              <RollCall members={state.members} attendance={attendance}
+                onStatus={setMemberStatus} onComment={setMemberComment} />
             )}
 
             {/* Time audit — which items ran over their budget */}

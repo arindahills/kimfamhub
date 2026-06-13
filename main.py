@@ -359,10 +359,31 @@ async def process_meeting(meeting_id: int, request: Request,
         for u in upd_rows:
             updates_by_action.setdefault(u["action_id"], []).append(u)
 
-    current_meeting = _dbq("SELECT ref, date, venue FROM meetings WHERE id=%s", (meeting_id,))
+    current_meeting = _dbq("SELECT ref, date, venue, attendance FROM meetings WHERE id=%s", (meeting_id,))
     if not current_meeting:
         raise _HE(status_code=404, detail="Meeting not found")
     mtg = current_meeting[0]
+
+    # Roll-call attendance captured in the conductor (present / apology / absent + notes)
+    _raw_att = mtg.get("attendance")
+    _att = (_json.loads(_raw_att) if isinstance(_raw_att, (str, bytes, bytearray)) else (_raw_att or {}))
+    attendance_block = ""
+    if _att:
+        _lines = []
+        for _m, _e in _att.items():
+            if not isinstance(_e, dict):
+                continue
+            _st = (_e.get("status") or "").strip()
+            if not _st:
+                continue
+            _cm = (_e.get("comment") or "").strip()
+            _lines.append(f"- {_m}: {_st}" + (f" ({_cm})" if _cm else ""))
+        if _lines:
+            attendance_block = (
+                "\n\nATTENDANCE (roll call taken in the meeting — record this in the minutes "
+                "under attendance/apologies; do NOT invent names beyond this list):\n"
+                + "\n".join(_lines) + "\n"
+            )
 
     prev_summary = "\n".join(
         f"- {r['ref']} ({r['date']}): {(r['key_decisions'] or 'no decisions recorded')[:120]}"
@@ -411,7 +432,7 @@ the transcript is silent on them):
 {open_summary or 'None'}
 
 {multi_source_note}MEETING TRANSCRIPT:
-{transcript}{secretary_block}
+{transcript}{secretary_block}{attendance_block}
 
 Extract and return ONLY valid JSON (no markdown, no explanation) in this exact shape:
 {{
@@ -1309,11 +1330,13 @@ async def conductor_state(meeting_id: int, request: Request):
     if not _auth_verify(token):
         raise _HE(status_code=401, detail="Auth required")
     import os as _os_c
+    import notifications as _notif
 
     rows = _dbq("""SELECT ref, date, venue, start_time_eat, agenda,
                           conductor_item, conductor_started_at,
                           conductor_item_started_at, conductor_ended_at,
-                          conductor_recording, conductor_notes, conductor_timings
+                          conductor_recording, conductor_notes, conductor_timings,
+                          attendance
                    FROM meetings WHERE id=%s""", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
@@ -1344,6 +1367,8 @@ async def conductor_state(meeting_id: int, request: Request):
         "notes":           r["conductor_notes"] or "",
         "recording_present": _os_c.path.exists(f"/tmp/kimfam_recording_{meeting_id}.webm"),
         "timings": (_json_c.loads(r["conductor_timings"]) if isinstance(r["conductor_timings"], (str, bytes, bytearray)) else (r["conductor_timings"] or {})),
+        "attendance": (_json_c.loads(r["attendance"]) if isinstance(r["attendance"], (str, bytes, bytearray)) else (r["attendance"] or {})),
+        "members": list(_notif.MEMBER_PHONES.keys()),
     }
 
 
@@ -1362,6 +1387,28 @@ async def conductor_save_notes(meeting_id: int, request: Request):
     body = await request.json()
     notes = str(body.get("notes", ""))
     _exec("UPDATE meetings SET conductor_notes=%s WHERE id=%s", (notes, meeting_id))
+    return {"ok": True}
+
+
+@app.post("/api/meetings/{meeting_id}/attendance")
+async def save_attendance(meeting_id: int, request: Request):
+    """Save roll call: {member: {status: present|apology|absent, comment}}. Admin only."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import json as _json_at
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    body = await request.json()
+    attendance = body.get("attendance", {})
+    if not isinstance(attendance, dict):
+        raise _HE(status_code=400, detail="attendance must be an object")
+    _exec("UPDATE meetings SET attendance=%s WHERE id=%s",
+          (_json_at.dumps(attendance), meeting_id))
     return {"ok": True}
 
 
