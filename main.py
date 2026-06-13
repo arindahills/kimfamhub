@@ -72,6 +72,22 @@ def get_actions(status: str = "open"):
     return by_person
 
 
+def _action_tracker_ws_and_row(action_id: str):
+    """Open Action Tracker sheet and return (ws, headers, row_idx). Raises HTTPException on failure."""
+    from fastapi import HTTPException as _HE
+    try:
+        ws = gc().open_by_key(SHEET_ID).worksheet("Action Tracker")
+        headers = ws.row_values(1)
+        id_col = headers.index("Action ID") + 1
+        all_ids = ws.col_values(id_col)
+        row_idx = all_ids.index(action_id) + 1
+        return ws, headers, row_idx
+    except ValueError as ve:
+        raise _HE(status_code=404, detail=f"Action ID or column not found: {ve}")
+    except Exception as e:
+        raise _HE(status_code=500, detail=f"Sheet access failed: {e}")
+
+
 @app.patch("/api/actions/done")
 async def mark_action_done(request: Request):
     """Admin: mark an action point as Done in the Action Tracker sheet."""
@@ -82,27 +98,49 @@ async def mark_action_done(request: Request):
         raise _HE(status_code=403, detail="Admin only")
     body = await request.json()
     action_id = str(body.get("action_id", "")).strip()
+    comment   = str(body.get("comment", "")).strip()
     if not action_id:
         raise _HE(status_code=400, detail="action_id required")
+    ws, headers, row_idx = _action_tracker_ws_and_row(action_id)
     try:
-        ws = gc().open_by_key(SHEET_ID).worksheet("Action Tracker")
-        headers = ws.row_values(1)
-        try:
-            id_col = headers.index("Action ID") + 1
-            status_col = headers.index("Status") + 1
-        except ValueError as ve:
-            raise _HE(status_code=500, detail=f"Sheet column not found: {ve}")
-        all_ids = ws.col_values(id_col)
-        try:
-            row_idx = all_ids.index(action_id) + 1  # 1-based
-        except ValueError:
-            raise _HE(status_code=404, detail=f"Action ID not found: {action_id}")
+        status_col = headers.index("Status") + 1
         ws.update_cell(row_idx, status_col, "Done")
+        if comment:
+            try:
+                upd_col = headers.index("Latest Update") + 1
+                ws.update_cell(row_idx, upd_col, comment)
+            except ValueError:
+                pass  # column name mismatch — skip silently
         return {"ok": True, "action_id": action_id}
     except _HE:
         raise
     except Exception as e:
         import logging as _lg; _lg.getLogger("main").error(f"mark_action_done: {e}")
+        raise _HE(status_code=500, detail="Sheet update failed")
+
+
+@app.patch("/api/actions/update")
+async def add_action_update(request: Request):
+    """Any authenticated user: log a progress update on an action point."""
+    from fastapi import HTTPException as _HE
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload:
+        raise _HE(status_code=401, detail="Not authenticated")
+    body = await request.json()
+    action_id   = str(body.get("action_id", "")).strip()
+    update_text = str(body.get("update_text", "")).strip()
+    if not action_id or not update_text:
+        raise _HE(status_code=400, detail="action_id and update_text required")
+    ws, headers, row_idx = _action_tracker_ws_and_row(action_id)
+    try:
+        upd_col = headers.index("Latest Update") + 1
+        ws.update_cell(row_idx, upd_col, update_text)
+        return {"ok": True, "action_id": action_id}
+    except ValueError as ve:
+        raise _HE(status_code=500, detail=f"Column not found: {ve}")
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"add_action_update: {e}")
         raise _HE(status_code=500, detail="Sheet update failed")
 
 

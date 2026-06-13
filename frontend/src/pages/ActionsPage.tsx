@@ -28,7 +28,7 @@ const STATUS_STYLE: Record<ActionItem['status'], { label: string; color: string;
 function daysLeft(deadline: string | null): number | null {
   if (!deadline) return null
   const t = new Date(deadline).getTime()
-  if (Number.isNaN(t)) return null // unparseable date → no chip (was showing "NaNd left")
+  if (Number.isNaN(t)) return null
   return Math.round((t - Date.now()) / 86_400_000)
 }
 
@@ -41,15 +41,40 @@ function DeadlineChip({ deadline, status }: { deadline: string | null; status: A
   return <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ color, background: color + '22' }}>{label}</span>
 }
 
-function ActionCard({ item, isAdmin, onUpdate }: {
+function ActionCard({ item, isAdmin, userName, onMarkDone, onAddUpdate }: {
   item: ActionItem
   isAdmin: boolean
-  onUpdate: (id: string, status: ActionItem['status']) => void
+  userName: string
+  onMarkDone: (id: string, comment: string) => Promise<void>
+  onAddUpdate: (id: string, text: string) => Promise<void>
 }) {
   const s = STATUS_STYLE[item.status]
+  const [mode, setMode] = useState<null | 'update' | 'done'>(null)
+  const [text, setText] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // Can add update: admin, or responsible person (name match or "All Members" action)
+  const isResponsible =
+    isAdmin ||
+    item.responsible === 'All Members' ||
+    item.responsible.toLowerCase() === userName.toLowerCase()
+
+  const submit = async () => {
+    const val = text.trim()
+    setSaving(true)
+    try {
+      if (mode === 'done') await onMarkDone(item.id, val)
+      else if (mode === 'update' && val) await onAddUpdate(item.id, val)
+    } finally {
+      setSaving(false)
+      setText('')
+      setMode(null)
+    }
+  }
 
   return (
     <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${s.color}33` }}>
+      {/* Title row */}
       <div className="flex items-start justify-between gap-2 mb-1">
         <p className="text-sm leading-snug flex-1" style={{ color: '#e2e8f0' }}>{item.description}</p>
         <span className="text-[10px] shrink-0 px-1.5 py-0.5 rounded-full font-semibold"
@@ -57,29 +82,72 @@ function ActionCard({ item, isAdmin, onUpdate }: {
           {s.label}
         </span>
       </div>
+
+      {/* Meta row */}
       <div className="flex flex-wrap items-center gap-2 mt-1.5">
-        <span className="text-[11px]" style={{ color: '#64748b' }}>
-          {item.responsible}
-        </span>
+        <span className="text-[11px]" style={{ color: '#64748b' }}>{item.responsible}</span>
         {item.meeting_number && (
-          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>
-            KIM {item.meeting_number}
-          </span>
+          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>KIM {item.meeting_number}</span>
         )}
         {item.deadline && (
-          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>
-            {item.deadline}
-          </span>
+          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>{item.deadline}</span>
         )}
         <DeadlineChip deadline={item.deadline} status={item.status} />
       </div>
-      {isAdmin && item.status !== 'done' && (
-        <button
-          onClick={() => onUpdate(item.id, 'done')}
-          className="mt-2 text-[11px] px-2.5 py-1 rounded-lg"
-          style={{ background: '#14532d', color: '#4ade80', border: '1px solid #166834' }}>
-          Mark done
-        </button>
+
+      {/* Latest update */}
+      {item.updated_at && (
+        <div className="mt-2 flex items-start gap-1.5">
+          <span style={{ fontSize: 10, color: '#475569', flexShrink: 0, paddingTop: 1 }}>Update:</span>
+          <span style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>{item.updated_at}</span>
+        </div>
+      )}
+
+      {/* Inline form (update or mark done) */}
+      {mode && (
+        <div className="mt-2">
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder={mode === 'done' ? 'Optional closing comment…' : 'What progress have you made?'}
+            rows={2}
+            autoFocus
+            className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
+            style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }}
+          />
+          <div className="flex gap-2 mt-1.5">
+            <button onClick={submit} disabled={saving || (mode === 'update' && !text.trim())}
+              className="text-[11px] px-3 py-1 rounded-lg font-semibold disabled:opacity-40"
+              style={{ background: mode === 'done' ? '#14532d' : '#1e3a5f', color: mode === 'done' ? '#4ade80' : '#93c5fd' }}>
+              {saving ? 'Saving…' : mode === 'done' ? 'Confirm done' : 'Save update'}
+            </button>
+            <button onClick={() => { setMode(null); setText('') }}
+              className="text-[11px] px-3 py-1 rounded-lg"
+              style={{ background: '#1e293b', color: '#64748b', border: '1px solid #334155' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      {item.status !== 'done' && !mode && (
+        <div className="flex gap-2 mt-2 flex-wrap">
+          {isResponsible && (
+            <button onClick={() => setMode('update')}
+              className="text-[11px] px-2.5 py-1 rounded-lg"
+              style={{ background: '#1e293b', color: '#93c5fd', border: '1px solid #1e3a5f' }}>
+              Add update
+            </button>
+          )}
+          {isAdmin && (
+            <button onClick={() => setMode('done')}
+              className="text-[11px] px-2.5 py-1 rounded-lg"
+              style={{ background: '#14532d', color: '#4ade80', border: '1px solid #166834' }}>
+              Mark done
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
@@ -97,8 +165,6 @@ export default function ActionsPage() {
     queryKey: ['actions'],
     queryFn: async () => {
       const raw = await fetch('/api/actions', { credentials: 'include' }).then(r => r.json())
-      // Backend returns { personName: [{ id, action, deadline, status, meeting, note }] }
-      // Flatten into the ActionItem[] shape this component expects
       if (Array.isArray(raw)) return raw
       if (!raw || typeof raw !== 'object') return []
       const flat: ActionItem[] = []
@@ -117,8 +183,7 @@ export default function ActionsPage() {
             status,
             meeting_id: null,
             meeting_date: null,
-            // value may already include "KIM" (e.g. "KIM 008/2026"); strip it so the
-            // card's "KIM {number}" prefix doesn't produce "KIM KIM 008/2026"
+            // strip leading "KIM " to avoid "KIM KIM 008/2026"
             meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
             updated_at: a.note || null,
           })
@@ -128,11 +193,20 @@ export default function ActionsPage() {
     },
   })
 
-  const update = async (id: string, status: ActionItem['status']) => {
+  const markDone = async (id: string, comment: string) => {
     await fetch('/api/actions/done', {
       method: 'PATCH', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action_id: id, status }),
+      body: JSON.stringify({ action_id: id, comment }),
+    })
+    qc.invalidateQueries({ queryKey: ['actions'] })
+  }
+
+  const addUpdate = async (id: string, updateText: string) => {
+    await fetch('/api/actions/update', {
+      method: 'PATCH', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action_id: id, update_text: updateText }),
     })
     qc.invalidateQueries({ queryKey: ['actions'] })
   }
@@ -158,7 +232,6 @@ export default function ActionsPage() {
     { key: 'all',     label: `All (${counts.all})`,      color: '#94a3b8' },
   ]
 
-  // Group by responsible person
   const byPerson: Record<string, ActionItem[]> = {}
   for (const a of visible) {
     if (!byPerson[a.responsible]) byPerson[a.responsible] = []
@@ -201,7 +274,6 @@ export default function ActionsPage() {
         </p>
       )}
 
-      {/* Group by person */}
       {Object.entries(byPerson).map(([person, personItems]) => (
         <div key={person}>
           <h3 className="text-[11px] font-semibold mb-2 uppercase tracking-wider"
@@ -210,7 +282,14 @@ export default function ActionsPage() {
           </h3>
           <div className="space-y-2">
             {personItems.map(a => (
-              <ActionCard key={a.id} item={a} isAdmin={isAdmin} onUpdate={update} />
+              <ActionCard
+                key={a.id}
+                item={a}
+                isAdmin={isAdmin}
+                userName={user?.name || ''}
+                onMarkDone={markDone}
+                onAddUpdate={addUpdate}
+              />
             ))}
           </div>
         </div>
