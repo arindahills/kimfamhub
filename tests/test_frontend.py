@@ -235,12 +235,22 @@ class TestForgotPassword:
         page.wait_for_selector("button:has-text('Send Code')", timeout=3000)
 
         api_calls = []
-        page.on("request", lambda r: api_calls.append(r.url) if "forgot" in r.url else None)
+
+        # Intercept the forgot-password request so NO real OTP is sent on staging
+        # (this test only verifies the frontend hits the correct URL). Without this,
+        # every CI run texts Hillary a live password-reset code.
+        def _capture(route):
+            api_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+        page.route("**/forgot-password", _capture)
 
         page.fill("input[type='text']", TEST_USER)
         page.click("button:has-text('Send Code')")
         page.wait_for_timeout(2000)
 
+        assert any("/api/auth/forgot-password" in u for u in api_calls), (
+            "React did not call /api/auth/forgot-password as expected."
+        )
         assert not any("/api/forgot-password" in u for u in api_calls), (
             "React called /api/forgot-password (wrong). Expected /api/auth/forgot-password."
         )
