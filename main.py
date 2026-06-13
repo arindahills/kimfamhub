@@ -100,22 +100,30 @@ Currently open actions:
     return {"suggestion": suggestion}
 
 
-@app.get("/api/meetings/next-ref")
-def meetings_next_ref():
-    """Return the next meeting ref based on the latest meeting in the DB."""
+def _compute_next_ref():
+    """Next meeting ref based on the HIGHEST meeting NUMBER (not the latest date —
+    multiple meetings can share a date, which made date-ordering collide)."""
     from db import query as _dbq
     from datetime import date as _date
     import re as _re
-    rows = _dbq("SELECT ref, date FROM meetings ORDER BY date DESC LIMIT 1")
+    rows = _dbq("SELECT ref FROM meetings")
     today = _date.today()
-    if rows:
-        m = _re.match(r"KIM\s+(\d+)/(\d{4})", rows[0]["ref"] or "")
-        if m:
-            num  = int(m.group(1)) + 1
-            # Roll year if the latest meeting was in a previous year
-            year = today.year if today.year >= int(m.group(2)) else int(m.group(2))
-            return {"next_ref": f"KIM {num:03d}/{year}", "prev_ref": rows[0]["ref"]}
-    return {"next_ref": f"KIM 001/{today.year}", "prev_ref": None}
+    best_num, best_year, best_ref = 0, today.year, None
+    for r in rows:
+        m = _re.match(r"KIM\s+(\d+)/(\d{4})", (r["ref"] or "").strip())
+        if m and int(m.group(1)) > best_num:
+            best_num = int(m.group(1)); best_year = int(m.group(2)); best_ref = r["ref"]
+    if best_num == 0:
+        return f"KIM 001/{today.year}", None
+    year = today.year if today.year >= best_year else best_year
+    return f"KIM {best_num + 1:03d}/{year}", best_ref
+
+
+@app.get("/api/meetings/next-ref")
+def meetings_next_ref():
+    """Return the next meeting ref based on the highest meeting number in the DB."""
+    next_ref, prev_ref = _compute_next_ref()
+    return {"next_ref": next_ref, "prev_ref": prev_ref}
 
 
 @app.get("/api/actions")
@@ -1300,23 +1308,13 @@ async def create_meeting(request: Request):
     key_topics = str(body.get("key_topics", "")).strip() or None
     if not date_str:
         raise _HE(status_code=400, detail="date required")
-    # Auto-generate ref from latest meeting in DB
-    import re as _re; from datetime import date as _date
-    latest = _dbq("SELECT ref FROM meetings ORDER BY date DESC LIMIT 1")
-    today = _date.today()
-    if latest:
-        m2 = _re.match(r"KIM\s+(\d+)/(\d{4})", latest[0]["ref"] or "")
-        if m2:
-            num = int(m2.group(1)) + 1
-            year = today.year if today.year >= int(m2.group(2)) else int(m2.group(2))
-            ref = f"KIM {num:03d}/{year}"
-        else:
-            ref = f"KIM 001/{today.year}"
-    else:
-        ref = f"KIM 001/{today.year}"
-    existing = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
-    if existing:
-        raise _HE(status_code=409, detail=f"Meeting {ref} already exists")
+    # Auto-generate ref from the highest meeting number (date-tie safe). Bump past
+    # any collision so creating a meeting can never get stuck on a duplicate ref.
+    import re as _re
+    ref, _prev = _compute_next_ref()
+    while _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,)):
+        m2 = _re.match(r"KIM\s+(\d+)/(\d{4})", ref)
+        ref = f"KIM {int(m2.group(1)) + 1:03d}/{m2.group(2)}" if m2 else ref + "-x"
     # Build default agenda from template + active projects
     agenda = _build_default_agenda(key_topics)
     import json as _json_ag
