@@ -50,22 +50,35 @@ function MinutesModal({ url, title, onClose }: { url: string; title: string; onC
 
 // ── New Meeting modal ─────────────────────────────────────────────────────────
 function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [ref, setRef]           = useState('')
-  const [date, setDate]         = useState('')
-  const [venue, setVenue]       = useState('')
-  const [startTime, setStart]   = useState('16:30')
-  const [topics, setTopics]     = useState('')
-  const [saving, setSaving]     = useState(false)
-  const [error, setError]       = useState('')
-  const [loading, setLoading]   = useState(true)
+  const today = new Date().toISOString().slice(0, 10)
+  const [nextRef, setNextRef]     = useState('')
+  const [date, setDate]           = useState(today)
+  const [venue, setVenue]         = useState('Google Meet')
+  const [startTime, setStart]     = useState('16:30')
+  const [topics, setTopics]       = useState('')
+  const [saving, setSaving]       = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
+  const [error, setError]         = useState('')
+  const [loading, setLoading]     = useState(true)
 
   // Fetch next-ref on open
   useState(() => {
     fetch('/api/meetings/next-ref', { credentials: 'include' })
       .then(r => r.json())
-      .then(d => { setRef(d.next_ref || ''); setLoading(false) })
+      .then(d => { setNextRef(d.next_ref || ''); setLoading(false) })
       .catch(() => setLoading(false))
   })
+
+  const suggestAgenda = async () => {
+    setSuggesting(true)
+    try {
+      const res = await fetch('/api/meetings/suggest-agenda', { credentials: 'include' })
+      const d = await res.json()
+      if (d.suggestion) setTopics(d.suggestion)
+    } catch {/* ignore */} finally {
+      setSuggesting(false)
+    }
+  }
 
   const save = async () => {
     setError(''); setSaving(true)
@@ -73,7 +86,7 @@ function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreate
       const res = await fetch('/api/meetings', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ref, date, venue, start_time: startTime, key_topics: topics }),
+        body: JSON.stringify({ date, venue, start_time: startTime, key_topics: topics }),
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.detail || 'Failed to create meeting')
@@ -93,7 +106,12 @@ function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreate
         style={{ background: '#121824', border: '1px solid #1e293b' }}>
 
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold" style={{ color: '#e2e8f0' }}>New Meeting</h2>
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: '#e2e8f0' }}>New Meeting</h2>
+            {nextRef && (
+              <div className="text-[11px] font-mono mt-0.5" style={{ color: '#3b82f6' }}>{nextRef}</div>
+            )}
+          </div>
           <button onClick={onClose} style={{ color: '#475569' }}>✕</button>
         </div>
 
@@ -103,13 +121,7 @@ function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreate
           <>
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Meeting Ref</label>
-                <input value={ref} onChange={e => setRef(e.target.value)}
-                  className="w-full rounded-lg px-3 py-2 text-sm outline-none font-mono"
-                  style={{ background: '#0d1829', color: '#93c5fd', border: '1px solid #1e3a5f' }} />
-              </div>
-              <div>
-                <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Date</label>
+                <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Meeting date</label>
                 <input type="date" value={date} onChange={e => setDate(e.target.value)}
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none"
                   style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
@@ -130,17 +142,27 @@ function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 </div>
               </div>
               <div>
-                <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Agenda / Key topics (optional)</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Main agenda topics</label>
+                  <button onClick={suggestAgenda} disabled={suggesting}
+                    className="text-[10px] px-2 py-0.5 rounded-md disabled:opacity-40"
+                    style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                    {suggesting ? 'Thinking…' : '✦ AI suggest'}
+                  </button>
+                </div>
                 <textarea value={topics} onChange={e => setTopics(e.target.value)}
-                  rows={3} placeholder="What will be covered…"
+                  rows={3} placeholder="e.g. Equity model vote; Washing bay Phase 2; Solar update"
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
                   style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
+                <p className="text-[10px] mt-1" style={{ color: '#334155' }}>
+                  Separate items with semicolons. Fixed items (prayer, attendance, etc.) are added automatically.
+                </p>
               </div>
             </div>
 
             {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
 
-            <button onClick={save} disabled={saving || !ref || !date}
+            <button onClick={save} disabled={saving || !date}
               className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
               style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
               {saving ? 'Creating…' : 'Create meeting'}

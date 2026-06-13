@@ -41,6 +41,65 @@ def gc():
 def g(row, i):
     return row[i].strip() if i < len(row) else ""
 
+@app.get("/api/meetings/suggest-agenda")
+def meetings_suggest_agenda(request: Request):
+    """Ask Claude to suggest main agenda topics for the next meeting based on history."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    token = _get_tok(request)
+    if not _auth_verify(token):
+        raise _HE(status_code=401, detail="Auth required")
+
+    # Pull last 4 meetings' context
+    meetings = _dbq("""
+        SELECT ref, date, key_topics, key_decisions, next_actions, summary
+        FROM meetings ORDER BY date DESC LIMIT 4
+    """)
+    # Pull open actions (unresolved items)
+    open_actions = _dbq("""
+        SELECT description, assignees, deadline FROM actions
+        WHERE status NOT IN ('done','cancelled','carried_over')
+        ORDER BY deadline ASC NULLS LAST LIMIT 20
+    """)
+
+    history_lines = []
+    for m in reversed(meetings):
+        history_lines.append(f"## {m['ref']} ({m['date']})")
+        if m["key_topics"]:    history_lines.append(f"Topics: {m['key_topics']}")
+        if m["key_decisions"]: history_lines.append(f"Decisions: {m['key_decisions']}")
+        if m["next_actions"]:  history_lines.append(f"Actions set: {m['next_actions']}")
+        if m["summary"]:       history_lines.append(f"Summary: {m['summary']}")
+
+    open_lines = []
+    for a in open_actions:
+        dl = f" (due {a['deadline']})" if a["deadline"] else ""
+        open_lines.append(f"- {a['description']}{dl}")
+
+    prompt = f"""You are the secretary for KimFam Investment Club, a Ugandan family investment club.
+Based on the meeting history and open actions below, suggest 3-5 main agenda items for the NEXT meeting.
+
+Focus on:
+- Recurring themes that keep coming back (deferred votes, ongoing projects needing decisions)
+- Open actions that are overdue or approaching deadline
+- Natural next steps from the most recent meeting's decisions
+- Any new initiatives that were flagged but not yet actioned
+
+Return ONLY a semicolon-separated list of agenda item titles, no explanations.
+Example format: Project performance review; Equity model vote; Washing bay Phase 2 update; Constitution ratification
+
+Meeting history (oldest to newest):
+{chr(10).join(history_lines)}
+
+Currently open actions:
+{chr(10).join(open_lines) if open_lines else 'None'}
+"""
+    result = _ask_claude(prompt, timeout=45)
+    # Keep only the last non-empty line (the semicolon list)
+    lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
+    suggestion = lines[-1] if lines else ""
+    return {"suggestion": suggestion}
+
+
 @app.get("/api/meetings/next-ref")
 def meetings_next_ref():
     """Return the next meeting ref based on the latest meeting in the DB."""
@@ -1104,13 +1163,26 @@ async def create_meeting(request: Request):
     if not payload or payload.get("sub") not in _ADMINS_PP:
         raise _HE(status_code=403, detail="Admin only")
     body = await request.json()
-    ref        = str(body.get("ref", "")).strip()
     date_str   = str(body.get("date", "")).strip()
     venue      = str(body.get("venue", "")).strip() or None
     start_time = str(body.get("start_time", "")).strip() or None
     key_topics = str(body.get("key_topics", "")).strip() or None
-    if not ref or not date_str:
-        raise _HE(status_code=400, detail="ref and date required")
+    if not date_str:
+        raise _HE(status_code=400, detail="date required")
+    # Auto-generate ref from latest meeting in DB
+    import re as _re; from datetime import date as _date
+    latest = _dbq("SELECT ref FROM meetings ORDER BY date DESC LIMIT 1")
+    today = _date.today()
+    if latest:
+        m2 = _re.match(r"KIM\s+(\d+)/(\d{4})", latest[0]["ref"] or "")
+        if m2:
+            num = int(m2.group(1)) + 1
+            year = today.year if today.year >= int(m2.group(2)) else int(m2.group(2))
+            ref = f"KIM {num:03d}/{year}"
+        else:
+            ref = f"KIM 001/{today.year}"
+    else:
+        ref = f"KIM 001/{today.year}"
     existing = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
     if existing:
         raise _HE(status_code=409, detail=f"Meeting {ref} already exists")
