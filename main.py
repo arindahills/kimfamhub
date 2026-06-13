@@ -1571,16 +1571,34 @@ Return ONLY valid JSON (no markdown) in this exact shape:
   "recommendations": ["2-4 concrete, actionable suggestions for the next meeting"]
 }}"""
 
+    import re as _re_r, os as _os_r
+    def _parse(raw):
+        if not raw: return None
+        try: return _json_r.loads(raw)
+        except Exception:
+            m = _re_r.search(r"\{.*\}", raw, _re_r.DOTALL)
+            if m:
+                try: return _json_r.loads(m.group())
+                except Exception: return None
+        return None
+
     raw = _ask_claude(prompt, timeout=90)
-    import re as _re_r
-    data = None
-    try:
-        data = _json_r.loads(raw)
-    except Exception:
-        m = _re_r.search(r"\{.*\}", raw or "", _re_r.DOTALL)
-        if m:
-            try: data = _json_r.loads(m.group())
-            except Exception: data = None
+    data = _parse(raw)
+    # Fallback to Groq if the Claude CLI returned nothing usable (mirrors /process)
+    if not isinstance(data, dict):
+        groq_key = _os_r.getenv("GROQ_API_KEY", "")
+        if groq_key:
+            try:
+                from groq import Groq as _Groq
+                resp = _Groq(api_key=groq_key).chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000, temperature=0.2,
+                )
+                data = _parse(resp.choices[0].message.content.strip())
+            except Exception as _ge:
+                import logging as _lg
+                _lg.getLogger("main").error(f"retrospective groq fallback failed: {_ge}")
     if not isinstance(data, dict):
         return {}
     import datetime as _dt_r
@@ -1602,7 +1620,7 @@ async def make_retrospective(meeting_id: int, request: Request):
         raise _HE(status_code=403, detail="Admin only")
     data = _generate_retrospective(meeting_id)
     if not data:
-        raise _HE(status_code=422, detail="No time data to analyse — conduct the meeting with the in-app conductor first.")
+        raise _HE(status_code=422, detail="Couldn't generate a review — this meeting has no transcript, notes, timing, or actions to analyse yet. Process its minutes first.")
     return {"ok": True, "retrospective": data}
 
 
