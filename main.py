@@ -833,6 +833,7 @@ async def meetings_minutes_file(meeting_id: int, request: Request):
     Used when minutes are served locally (e.g. staging, or no R2)."""
     from fastapi import HTTPException as _HE
     from fastapi.responses import FileResponse as _FR
+    from db import query as _dbq
     import os as _os
     if not _auth_verify(_get_tok(request)):
         raise _HE(status_code=401, detail="Login required")
