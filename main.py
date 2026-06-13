@@ -1023,18 +1023,21 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     _exec2("UPDATE meetings SET minutes_url=%s WHERE id=%s",
            (minutes_url or draft_path, meeting_id))
 
-    # WhatsApp group notification
-    is_stg   = _os.getenv("APP_ENV", "production") == "staging"
-    group_jid = "120363429341325971@g.us" if is_stg else "254716595631-1631997730@g.us"
+    # WhatsApp notification. Use the SAME env flag as the rest of the app
+    # (KIMFAM_ENV). On staging this must NEVER reach the real family group —
+    # send to Hillary only so testing can't leak to the club.
+    is_stg = _os.getenv("KIMFAM_ENV", "prod") == "staging"
+    recipient = "256775102684" if is_stg else "254716595631-1631997730@g.us"  # Hillary vs KIM FAM PROJECTS
+    env_tag = " [STAGING TEST]" if is_stg else ""
     msg = (
-        f"*KimFam Hub* — Meeting minutes ready\n\n"
+        f"*KimFam Hub{env_tag}* — Meeting minutes ready\n\n"
         f"*{mtg['ref']}* ({mtg['date']})\n\n"
         f"Minutes have been published. Open KimFam Hub to read and download."
     )
     try:
         import requests as _req
         _req.post("http://localhost:8080/api/send",
-                  json={"recipient": group_jid, "message": msg}, timeout=10)
+                  json={"recipient": recipient, "message": msg}, timeout=10)
     except Exception:
         pass
 
