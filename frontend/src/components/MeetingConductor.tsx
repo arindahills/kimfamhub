@@ -284,8 +284,18 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mr = new MediaRecorder(stream)
+      // Mono + low bitrate: speech transcription doesn't need more, and it keeps
+      // even multi-hour meetings small enough to upload and to transcribe (Groq
+      // Whisper caps at 25MB). ~24kbps mono ≈ 11MB/hour.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      })
+      let mr: MediaRecorder
+      try {
+        mr = new MediaRecorder(stream, { mimeType: 'audio/webm', audioBitsPerSecond: 24000 })
+      } catch {
+        mr = new MediaRecorder(stream)  // fall back if options unsupported
+      }
       chunksRef.current = []
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mr.onstop = () => {
