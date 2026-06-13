@@ -169,6 +169,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const [recording, setRecording]     = useState(false)
   const [uploading, setUploading]     = useState(false)
   const [uploadedAudio, setUploadedAudio] = useState(false)
+  const [recError, setRecError]       = useState('')
   const mediaRef   = useRef<MediaRecorder | null>(null)
   const chunksRef  = useRef<Blob[]>([])
 
@@ -296,8 +297,11 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       mr.start()
       mediaRef.current = mr
       setRecording(true)
+      setRecError('')
     } catch {
-      alert('Microphone access denied. Please allow microphone to record.')
+      // Mic blocked/unavailable — the meeting still runs but NO audio is captured.
+      // Make this loud so nobody assumes a recording exists.
+      setRecError('Microphone is blocked, so this meeting is NOT being recorded. Allow microphone access in your browser and reopen the conductor, or rely on a Tactiq transcript / your typed notes for the minutes.')
     }
   }
 
@@ -514,8 +518,9 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               <p className="text-[9px]" style={{ color: '#334155' }}>total</p>
             </div>
           )}
-          {/* REC badge — shown to ALL participants when meeting is being recorded */}
-          {state?.recording && (
+          {/* REC badge — shown to ALL participants when recording. On the admin's own
+              device, suppress it if the mic was blocked (recError) to avoid a false REC. */}
+          {state?.recording && !(isAdmin && recError) && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
               style={{ background: '#7f1d1d55', border: '1px solid #ef444466' }}>
               <div className="w-2 h-2 rounded-full flex-shrink-0"
@@ -523,9 +528,22 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               <span className="text-[11px] font-semibold" style={{ color: '#fca5a5' }}>REC</span>
             </div>
           )}
+          {isAdmin && recError && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
+              style={{ background: '#78350f55', border: '1px solid #f59e0b66' }}>
+              <span className="text-[11px] font-semibold" style={{ color: '#fcd34d' }}>⚠ NOT recording</span>
+            </div>
+          )}
           <button onClick={onClose} style={{ color: '#475569', fontSize: 18 }}>✕</button>
         </div>
       </div>
+
+      {/* Recording-failure banner — loud so nobody assumes audio exists */}
+      {isAdmin && recError && (
+        <div className="px-4 py-2 text-xs text-center" style={{ background: '#78350f', color: '#fde68a' }}>
+          {recError}
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 overflow-hidden">
