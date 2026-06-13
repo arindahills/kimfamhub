@@ -41,6 +41,24 @@ def gc():
 def g(row, i):
     return row[i].strip() if i < len(row) else ""
 
+@app.get("/api/meetings/next-ref")
+def meetings_next_ref():
+    """Return the next meeting ref based on the latest meeting in the DB."""
+    from db import query as _dbq
+    from datetime import date as _date
+    import re as _re
+    rows = _dbq("SELECT ref, date FROM meetings ORDER BY date DESC LIMIT 1")
+    today = _date.today()
+    if rows:
+        m = _re.match(r"KIM\s+(\d+)/(\d{4})", rows[0]["ref"] or "")
+        if m:
+            num  = int(m.group(1)) + 1
+            # Roll year if the latest meeting was in a previous year
+            year = today.year if today.year >= int(m.group(2)) else int(m.group(2))
+            return {"next_ref": f"KIM {num:03d}/{year}", "prev_ref": rows[0]["ref"]}
+    return {"next_ref": f"KIM 001/{today.year}", "prev_ref": None}
+
+
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
     from db import query as _dbq
@@ -53,7 +71,7 @@ def get_actions(status: str = "open"):
     else:
         where = "a.status NOT IN ('done','cancelled','carried_over')"
     rows = _dbq(f"""
-        SELECT a.id, a.ref, a.description, a.assignee, a.deadline,
+        SELECT a.id, a.ref, a.description, a.assignee, a.assignees, a.deadline,
                a.status, a.related_meeting, a.priority, a.effort_hours,
                a.project_id, a.parent_ref, a.blocked_reason,
                m.ref AS meeting_ref,
@@ -67,27 +85,35 @@ def get_actions(status: str = "open"):
     today = _date.today()
     by_person = {}
     for r in rows:
-        # Compute health badge from deadline + status
         health = None
         if r["status"] not in ("done", "cancelled", "carried_over") and r["deadline"]:
             days = (r["deadline"] - today).days
             if days < 0:      health = "overdue"
             elif days <= 3:   health = "at_risk"
             else:             health = "on_track"
-        p = (r["assignee"] or "Unknown").strip()
-        by_person.setdefault(p, []).append({
-            "id":              r["ref"],
-            "action":          r["description"],
-            "deadline":        str(r["deadline"]) if r["deadline"] else "",
-            "status":          r["status"],
-            "meeting":         r["meeting_ref"] or r["related_meeting"] or "",
-            "note":            r["latest_update"] or "",
-            "priority":        r["priority"],
-            "effort_hours":    float(r["effort_hours"]) if r["effort_hours"] else None,
-            "project_id":      r["project_id"],
-            "parent_ref":      r["parent_ref"],
-            "health":          health,
-        })
+
+        # Resolve the list of people this action belongs to
+        if r["assignees"]:          # TEXT[] column set
+            people = [p.strip() for p in r["assignees"] if p.strip()]
+        else:
+            people = [(r["assignee"] or "Unknown").strip()]
+
+        payload = {
+            "id":           r["ref"],
+            "action":       r["description"],
+            "deadline":     str(r["deadline"]) if r["deadline"] else "",
+            "status":       r["status"],
+            "meeting":      r["meeting_ref"] or r["related_meeting"] or "",
+            "note":         r["latest_update"] or "",
+            "priority":     r["priority"],
+            "effort_hours": float(r["effort_hours"]) if r["effort_hours"] else None,
+            "project_id":   r["project_id"],
+            "parent_ref":   r["parent_ref"],
+            "health":       health,
+            "assignees":    people,
+        }
+        for p in people:
+            by_person.setdefault(p, []).append(payload)
     return by_person
 
 
@@ -373,17 +399,26 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
           (summary, key_topics, decisions_text, meeting_id))
 
     created_refs = []
+    import re as _re2
     for i, a in enumerate(new_actions, start=1):
-        desc     = (a.get("description") or "").strip()
-        assignee = (a.get("assignee") or "Unknown").strip()
-        deadline = a.get("deadline") or None
-        priority = a.get("priority") or "medium"
-        parent   = a.get("matches_existing") or None
+        desc      = (a.get("description") or "").strip()
+        # assignees: accept list or single string
+        raw_asgn  = a.get("assignees") or a.get("assignee") or "Unknown"
+        if isinstance(raw_asgn, list):
+            assignees = [x.strip() for x in raw_asgn if str(x).strip()]
+        else:
+            assignees = [s.strip() for s in str(raw_asgn).split(",") if s.strip()]
+        if not assignees:
+            assignees = ["Unknown"]
+        primary_assignee = assignees[0]
+        deadline  = a.get("deadline") or None
+        priority  = a.get("priority") or "medium"
+        parent    = a.get("matches_existing") or None
+        project   = (a.get("project_id") or "").strip() or None
         if not desc:
             continue
 
-        # Build ref: meeting_ref like "KIM 009/2026" → "KIM/09/26-{i}"
-        import re as _re2
+        # Build ref: "KIM 009/2026" → "KIM/09/26-{i}"
         m = _re2.match(r"KIM\s+(\d+)/(\d{4})", meeting_ref)
         if m:
             num = int(m.group(1)); yr = m.group(2)[-2:]
@@ -391,21 +426,21 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         else:
             ref = f"{meeting_ref}-{i}"
 
-        # Avoid collision by appending suffix if ref exists
+        # Avoid collision
         existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
         suffix = "a"
         while existing:
-            ref = ref.rstrip("abcdefghij") + suffix
+            ref = ref.rstrip("abcdefghijklmnop") + suffix
             existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
             suffix = chr(ord(suffix) + 1)
 
         _exec("""INSERT INTO actions
-                   (ref, description, assignee, meeting_id, related_meeting,
-                    status, priority, deadline, parent_ref, created_by)
-                 VALUES (%s,%s,%s,%s,%s,'open',%s,%s,%s,%s)
+                   (ref, description, assignee, assignees, meeting_id, related_meeting,
+                    status, priority, deadline, parent_ref, project_id, created_by)
+                 VALUES (%s,%s,%s,%s,%s,%s,'open',%s,%s,%s,%s,%s)
                  ON CONFLICT (ref) DO NOTHING""",
-              (ref, desc, assignee, meeting_id, meeting_ref,
-               priority, deadline, parent, author))
+              (ref, desc, primary_assignee, assignees, meeting_id, meeting_ref,
+               priority, deadline, parent, project, author))
         created_refs.append(ref)
 
     # Apply updates to existing actions (additive: add note, optionally change status)

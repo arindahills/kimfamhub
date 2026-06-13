@@ -4,9 +4,10 @@ type InputMode = 'audio' | 'paste' | 'file'
 
 interface ExtractedAction {
   description: string
-  assignee: string
+  assignees: string[]       // multi-assignee; "All Members" is a valid single entry
   deadline: string | null
   priority: string
+  project_id: string | null
   matches_existing: string | null
 }
 
@@ -68,7 +69,17 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Processing failed')
       setResult(data)
-      setEdited(JSON.parse(JSON.stringify(data.extracted)))
+      // Normalise: Claude may return {assignee: "Hillary"} — coerce to {assignees: ["Hillary"]}
+      const normalised = {
+        ...data.extracted,
+        new_actions: (data.extracted.new_actions || []).map((a: any) => ({
+          ...a,
+          assignees: Array.isArray(a.assignees) ? a.assignees
+            : a.assignee ? [a.assignee] : [],
+          project_id: a.project_id ?? null,
+        })),
+      }
+      setEdited(normalised)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -95,11 +106,25 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
     }
   }
 
-  const updateAction = (i: number, field: keyof ExtractedAction, val: string | null) => {
+  const updateAction = (i: number, field: keyof ExtractedAction, val: string | string[] | null) => {
     if (!edited) return
     const actions = [...edited.new_actions]
     actions[i] = { ...actions[i], [field]: val }
     setEdited({ ...edited, new_actions: actions })
+  }
+
+  const toggleAssignee = (actionIdx: number, member: string) => {
+    if (!edited) return
+    const a = edited.new_actions[actionIdx]
+    if (member === 'All Members') {
+      updateAction(actionIdx, 'assignees', ['All Members'])
+      return
+    }
+    const current = a.assignees.filter(x => x !== 'All Members')
+    const next = current.includes(member)
+      ? current.filter(x => x !== member)
+      : [...current, member]
+    updateAction(actionIdx, 'assignees', next.length ? next : ['Unknown'])
   }
 
   const removeAction = (i: number) => {
@@ -112,14 +137,29 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
     setEdited({
       ...edited,
       new_actions: [...edited.new_actions, {
-        description: '', assignee: '', deadline: null, priority: 'medium', matches_existing: null,
+        description: '', assignees: [], deadline: null, priority: 'medium',
+        project_id: null, matches_existing: null,
       }],
     })
   }
 
-  const MEMBERS = ['Hillary', 'Hellen', 'Alex', 'Solomon', 'Viola', 'Max', 'James', 'All Members']
+  const INDIVIDUAL_MEMBERS = ['Hillary', 'Hellen', 'Alex', 'Solomon', 'Viola', 'Max', 'James']
   const PRIORITIES = ['high', 'medium', 'low']
   const PRIORITY_COLOR: Record<string, string> = { high: '#f87171', medium: '#fbbf24', low: '#64748b' }
+  const PROJECTS = [
+    { id: 'chicken',     name: 'Free Range Chicken' },
+    { id: 'washing_bay', name: 'Washing Bay' },
+    { id: 'sheep',       name: 'Sheep (Dorper)' },
+    { id: 'goats',       name: 'Goats' },
+    { id: 'dairy',       name: 'Dairy (Cows)' },
+    { id: 'mango',       name: 'Mango & Oranges' },
+    { id: 'trees',       name: 'Tree Planting' },
+    { id: 'bees',        name: 'Apiary (Bees)' },
+    { id: 'rabbits',     name: 'Rabbits' },
+    { id: 'irrigation',  name: 'Irrigation & Bananas' },
+    { id: 'fortune_credit', name: 'Fortune Credit' },
+    { id: 'kakoba',      name: 'Kakoba Land' },
+  ]
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -264,6 +304,8 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                       {ext.new_actions.map((a, i) => (
                         <div key={i} className="rounded-lg p-3 space-y-2"
                           style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
+
+                          {/* Description */}
                           <div className="flex items-start gap-2">
                             <input
                               value={a.description}
@@ -275,14 +317,39 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                             <button onClick={() => removeAction(i)}
                               className="text-[10px] shrink-0 mt-0.5" style={{ color: '#ef4444' }}>✕</button>
                           </div>
+
+                          {/* Assignee pills + All Members toggle */}
+                          <div>
+                            <p className="text-[10px] mb-1" style={{ color: '#475569' }}>Assigned to</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {INDIVIDUAL_MEMBERS.map(m => {
+                                const active = a.assignees.includes(m) && !a.assignees.includes('All Members')
+                                return (
+                                  <button key={m} onClick={() => toggleAssignee(i, m)}
+                                    className="text-[10px] px-2 py-0.5 rounded-full transition-all"
+                                    style={{
+                                      background: active ? '#1e3a5f' : '#1e293b',
+                                      color: active ? '#93c5fd' : '#475569',
+                                      border: active ? '1px solid #3b82f655' : '1px solid #334155',
+                                    }}>
+                                    {m}
+                                  </button>
+                                )
+                              })}
+                              <button onClick={() => toggleAssignee(i, 'All Members')}
+                                className="text-[10px] px-2 py-0.5 rounded-full transition-all"
+                                style={{
+                                  background: a.assignees.includes('All Members') ? '#14532d' : '#1e293b',
+                                  color: a.assignees.includes('All Members') ? '#4ade80' : '#475569',
+                                  border: a.assignees.includes('All Members') ? '1px solid #16683455' : '1px solid #334155',
+                                }}>
+                                All Members
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Deadline + priority + project */}
                           <div className="flex flex-wrap gap-2">
-                            <select value={a.assignee}
-                              onChange={e => updateAction(i, 'assignee', e.target.value)}
-                              className="text-[11px] rounded px-2 py-0.5 outline-none"
-                              style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
-                              <option value="">Assign to…</option>
-                              {MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-                            </select>
                             <input type="date" value={a.deadline ?? ''}
                               onChange={e => updateAction(i, 'deadline', e.target.value || null)}
                               className="text-[11px] rounded px-2 py-0.5 outline-none"
@@ -293,7 +360,15 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                               style={{ background: '#1e293b', color: PRIORITY_COLOR[a.priority] ?? '#94a3b8', border: '1px solid #334155' }}>
                               {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                             </select>
+                            <select value={a.project_id ?? ''}
+                              onChange={e => updateAction(i, 'project_id', e.target.value || null)}
+                              className="text-[11px] rounded px-2 py-0.5 outline-none"
+                              style={{ background: '#1e293b', color: a.project_id ? '#38bdf8' : '#475569', border: '1px solid #334155' }}>
+                              <option value="">No project</option>
+                              {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
                           </div>
+
                           {a.matches_existing && (
                             <p className="text-[10px]" style={{ color: '#a78bfa' }}>
                               ↑ Carried over from {a.matches_existing}
