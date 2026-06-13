@@ -8,7 +8,7 @@ const ADMIN_USERS = ['Hillary', 'Hellen']
 type Status = 'pending' | 'overdue' | 'done' | 'all'
 
 interface ActionItem {
-  id: number
+  id: string
   description: string
   responsible: string
   deadline: string | null
@@ -44,7 +44,7 @@ function DeadlineChip({ deadline, status }: { deadline: string | null; status: A
 function ActionCard({ item, isAdmin, onUpdate }: {
   item: ActionItem
   isAdmin: boolean
-  onUpdate: (id: number, status: ActionItem['status']) => void
+  onUpdate: (id: string, status: ActionItem['status']) => void
 }) {
   const s = STATUS_STYLE[item.status]
 
@@ -62,12 +62,12 @@ function ActionCard({ item, isAdmin, onUpdate }: {
           {item.responsible}
         </span>
         {item.meeting_number && (
-          <span className="text-[10px]" style={{ color: '#475569' }}>
+          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>
             KIM {item.meeting_number}
           </span>
         )}
         {item.deadline && (
-          <span className="text-[10px]" style={{ color: '#475569' }}>
+          <span className="text-[10px]" style={{ color: '#e2e8f0' }}>
             {item.deadline}
           </span>
         )}
@@ -101,7 +101,6 @@ export default function ActionsPage() {
       // Flatten into the ActionItem[] shape this component expects
       if (Array.isArray(raw)) return raw
       if (!raw || typeof raw !== 'object') return []
-      let idx = 0
       const flat: ActionItem[] = []
       for (const [person, list] of Object.entries(raw)) {
         for (const a of (list as any[])) {
@@ -111,7 +110,7 @@ export default function ActionsPage() {
             rawStatus === 'done' || rawStatus === 'closed' ? 'done' :
             isPast ? 'overdue' : 'pending'
           flat.push({
-            id: idx++,
+            id: String(a.id || ''),
             description: a.action || a.description || '',
             responsible: person,
             deadline: a.deadline || null,
@@ -129,11 +128,11 @@ export default function ActionsPage() {
     },
   })
 
-  const update = async (id: number, status: ActionItem['status']) => {
-    await fetch(`/api/actions/${id}`, {
+  const update = async (id: string, status: ActionItem['status']) => {
+    await fetch('/api/actions/done', {
       method: 'PATCH', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ action_id: id, status }),
     })
     qc.invalidateQueries({ queryKey: ['actions'] })
   }

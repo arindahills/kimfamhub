@@ -72,6 +72,40 @@ def get_actions(status: str = "open"):
     return by_person
 
 
+@app.patch("/api/actions/done")
+async def mark_action_done(request: Request):
+    """Admin: mark an action point as Done in the Action Tracker sheet."""
+    from fastapi import HTTPException as _HE
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body = await request.json()
+    action_id = str(body.get("action_id", "")).strip()
+    if not action_id:
+        raise _HE(status_code=400, detail="action_id required")
+    try:
+        ws = gc().open_by_key(SHEET_ID).worksheet("Action Tracker")
+        headers = ws.row_values(1)
+        try:
+            id_col = headers.index("Action ID") + 1
+            status_col = headers.index("Status") + 1
+        except ValueError as ve:
+            raise _HE(status_code=500, detail=f"Sheet column not found: {ve}")
+        all_ids = ws.col_values(id_col)
+        try:
+            row_idx = all_ids.index(action_id) + 1  # 1-based
+        except ValueError:
+            raise _HE(status_code=404, detail=f"Action ID not found: {action_id}")
+        ws.update_cell(row_idx, status_col, "Done")
+        return {"ok": True, "action_id": action_id}
+    except _HE:
+        raise
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"mark_action_done: {e}")
+        raise _HE(status_code=500, detail="Sheet update failed")
+
+
 @app.get("/api/members")
 def get_members():
     from db import query as dbq
