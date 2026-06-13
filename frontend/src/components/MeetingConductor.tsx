@@ -123,6 +123,20 @@ function DurationRow({ label, value, onChange, indent }: {
   )
 }
 
+// Map an agenda item to the in-app module it relates to (opened in a new tab so
+// the conductor keeps recording). Keeps the presenter in the meeting flow while
+// giving quick access to the live data for that item.
+function moduleLinkFor(item: AgendaItem): { label: string; path: string } | null {
+  const l = (item.label || '').toLowerCase()
+  if (item.type === 'project' || item.project_id) return { label: 'Projects', path: '/projects' }
+  if (/treasurer|finance|contribution|payment/.test(l)) return { label: 'Finances', path: '/finances' }
+  if (/action review|action point|review action/.test(l)) return { label: 'Action Points', path: '/actions' }
+  if (/equity/.test(l)) return { label: 'Equity', path: '/equity' }
+  if (/loan/.test(l)) return { label: 'Loans', path: '/loans' }
+  if (/expenditure|expense/.test(l)) return { label: 'Expenditure', path: '/expenditure' }
+  return null
+}
+
 function flatten(agenda: AgendaItem[]): AgendaItem[] {
   const flat: AgendaItem[] = []
   for (const item of agenda) {
@@ -607,6 +621,13 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
                 <p className="text-base" style={{ color: '#60a5fa' }}>
                   {currentItem.presenter}
                 </p>
+              )}
+              {moduleLinkFor(currentItem) && (
+                <a href={moduleLinkFor(currentItem)!.path} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg mt-1"
+                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                  ↗ Open {moduleLinkFor(currentItem)!.label}
+                </a>
               )}
             </div>
 
