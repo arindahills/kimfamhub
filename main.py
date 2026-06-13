@@ -676,123 +676,111 @@ def _parse_meeting_date(raw: str):
 
 @app.get("/api/meetings")
 def get_meetings():
-    """Meeting Register sheet → the shape the React Meetings page expects.
-    Sheet columns are 'Meeting Ref' (e.g. 'KIM 001/2026'), 'Date', 'Key Topics',
-    'Key Decisions', 'Next Actions'."""
-    try:
-        rows = gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
-    except Exception as e:
-        import logging as _lg; _lg.getLogger("main").error(f"meetings sheet: {e}")
-        return []
-
-    minutes_index = _minutes_by_date()
-
+    """Meeting list from PostgreSQL with live action progress counts."""
+    from db import query as _dbq
+    rows = _dbq("""
+        SELECT m.id, m.ref, m.date, m.start_time_eat, m.venue,
+               m.key_topics, m.key_decisions, m.next_actions,
+               m.minutes_url, m.summary,
+               COUNT(a.id)                                          AS action_count,
+               COUNT(a.id) FILTER (WHERE a.status = 'done')        AS action_done_count
+        FROM meetings m
+        LEFT JOIN actions a ON a.meeting_id = m.id
+        GROUP BY m.id
+        ORDER BY m.date DESC
+    """)
     out = []
-    for i, r in enumerate(rows):
-        ref = str(r.get("Meeting Ref", "") or "").strip()
-        # frontend renders "KIM {meeting_number}", so strip a leading KIM to avoid "KIM KIM"
+    for r in rows:
+        ref = r["ref"] or ""
         number = ref[3:].strip() if ref.upper().startswith("KIM") else ref
-        if not (ref or r.get("Date")):
-            continue
-        raw_date = str(r.get("Date", "") or "")
-        meeting_date = _parse_meeting_date(raw_date)
-        minutes_url = minutes_index.get(meeting_date) if meeting_date else None
         out.append({
-            "id": i + 1,
-            "meeting_number": number,
-            "meeting_date": raw_date,
-            "location": None,
-            "agenda": None,
-            "next_actions": (str(r.get("Next Actions", "")).strip() or None),
-            "key_decisions": (str(r.get("Key Decisions", "")).strip() or None),
-            "key_topics": (str(r.get("Key Topics", "")).strip() or None),
-            "attendance": [],
-            "minutes_url": minutes_url,
-            "action_count": 0,
-            "action_done_count": 0,
+            "db_id":           r["id"],
+            "id":              r["id"],
+            "meeting_number":  number,
+            "meeting_ref":     ref,
+            "meeting_date":    str(r["date"]) if r["date"] else "",
+            "start_time_eat":  str(r["start_time_eat"]) if r["start_time_eat"] else None,
+            "location":        r["venue"],
+            "key_topics":      r["key_topics"],
+            "key_decisions":   r["key_decisions"],
+            "next_actions":    r["next_actions"],
+            "summary":         r["summary"],
+            "attendance":      [],
+            "minutes_url":     r["minutes_url"],
+            "action_count":    int(r["action_count"]),
+            "action_done_count": int(r["action_done_count"]),
         })
     return out
 
+
+@app.post("/api/meetings")
+async def create_meeting(request: Request):
+    """Create a new meeting record. Admin only."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body = await request.json()
+    ref        = str(body.get("ref", "")).strip()
+    date_str   = str(body.get("date", "")).strip()
+    venue      = str(body.get("venue", "")).strip() or None
+    start_time = str(body.get("start_time", "")).strip() or None
+    key_topics = str(body.get("key_topics", "")).strip() or None
+    if not ref or not date_str:
+        raise _HE(status_code=400, detail="ref and date required")
+    existing = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
+    if existing:
+        raise _HE(status_code=409, detail=f"Meeting {ref} already exists")
+    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, key_topics)
+             VALUES (%s, %s::date, %s, %s::time, %s)""",
+          (ref, date_str, venue, start_time, key_topics))
+    row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
+    return {"ok": True, "db_id": row[0]["id"], "ref": ref}
+
+
 @app.get("/api/meeting")
 def get_next_meeting():
-    """
-    Derive next meeting from the Meeting Register sheet.
-    Picks the first row whose Date is on or after today (EAT = UTC+3).
-    Falls back to the last row if all dates are in the past.
-    """
-    import datetime as _dt
-    rows = gc().open_by_key(SHEET_ID).worksheet("2026 Meeting Register").get_all_records()
-    today = (_dt.datetime.utcnow() + _dt.timedelta(hours=3)).date()  # EAT = UTC+3
-    future = []
-    for r in rows:
-        raw = str(r.get("Date","")).strip()
-        if not raw:
-            continue
-        for fmt in ("%Y-%m-%d", "%d %B %Y", "%B %d, %Y", "%d-%b-%Y", "%d/%m/%Y"):
-            try:
-                d = _dt.datetime.strptime(raw, fmt).date()
-                future.append((d, r))
-                break
-            except ValueError:
-                continue
-    # Sort ascending, keep those >= today
-    future.sort(key=lambda x: x[0])
-    upcoming = [(d, r) for d, r in future if d > today]  # strictly future; meeting day = done
-    if not upcoming:
-        # Default to next Sunday (EAT) until a meeting is formally scheduled
+    """Next upcoming meeting from PostgreSQL (date > today EAT)."""
+    from db import query as _dbq
+    import datetime as _dt, re as _re
+    today = (_dt.datetime.utcnow() + _dt.timedelta(hours=3)).date()
+    rows = _dbq("""
+        SELECT ref, date, start_time_eat, venue
+        FROM meetings
+        WHERE date >= %s
+        ORDER BY date ASC
+        LIMIT 1
+    """, (today,))
+    if not rows:
         days_to_sun = (6 - today.weekday()) % 7 or 7
         next_sun = today + _dt.timedelta(days=days_to_sun)
-        pretty = next_sun.strftime("%A, %d %B %Y")
-        return {"ref":"TBD","date":pretty,"eat":"4:30 PM EAT","ist":"7:00 PM IST","platform":"Google Meet","note":"Date not yet confirmed. Typically every Sunday at 4:30 PM EAT."}
-    chosen_date, chosen = upcoming[0]
-    if not chosen:
-        # All meetings in the past — no future one scheduled yet
-        return {"ref":"TBD","date":"TBD","eat":"4:30 PM EAT","ist":"7:00 PM IST","platform":"Google Meet","note":"Next meeting not yet scheduled. The most recent meeting was " + str(chosen.get("Meeting Ref","")) + " on " + raw_d + "."}
-
-    ref    = chosen.get("Meeting Ref","") or chosen.get("Meeting Ref","TBD")
-    raw_d  = str(chosen.get("Date",""))
-    eat    = str(chosen.get("Start Time (EAT)","4:30 PM EAT")).strip() or "4:30 PM EAT"
-    plat   = str(chosen.get("Platform","Google Meet")).strip() or "Google Meet"
-    # Derive IST from EAT: EAT is UTC+3, IST is UTC+5:30, so IST = EAT + 2h30m
+        return {"ref": "TBD", "date": next_sun.strftime("%A, %d %B %Y"),
+                "eat": "4:30 PM EAT", "ist": "7:00 PM IST",
+                "platform": "Google Meet",
+                "note": "Date not yet confirmed. Typically every Sunday at 4:30 PM EAT."}
+    r = rows[0]
+    ref  = r["ref"]
+    eat  = str(r["start_time_eat"])[:5] if r["start_time_eat"] else "16:30"
+    # Convert HH:MM EAT → IST (+2h30m)
     ist = ""
     try:
-        import re as _re
-        # Try 12h format: "4:30 PM" or "4:30 PM EAT"
-        m12 = _re.match(r"(\d+):(\d+)\s*(AM|PM)", eat, _re.IGNORECASE)
-        # Try 24h format: "16:30" or "19:00"
-        m24 = _re.match(r"^(\d{1,2}):(\d{2})$", eat.strip())
-        if m12:
-            h, mn, ampm = int(m12.group(1)), int(m12.group(2)), m12.group(3).upper()
-            if ampm == "PM" and h != 12: h += 12
-            if ampm == "AM" and h == 12: h = 0
-        elif m24:
-            h, mn = int(m24.group(1)), int(m24.group(2))
-        else:
-            raise ValueError("unrecognised time format")
-        total = h * 60 + mn + 150  # +2h30m for IST
+        h, mn = int(eat[:2]), int(eat[3:5])
+        total = h * 60 + mn + 150
         ih, im = (total // 60) % 24, total % 60
         iampm = "PM" if ih >= 12 else "AM"
         ih12 = ih % 12 or 12
-        # Also reformat EAT into 12h if it came in as 24h
-        if m24:
-            eat_ampm = "PM" if h >= 12 else "AM"
-            eat_h12 = h % 12 or 12
-            eat = f"{eat_h12}:{mn:02d} {eat_ampm} EAT"
+        eat_ampm = "PM" if h >= 12 else "AM"
+        eat_h12 = h % 12 or 12
+        eat = f"{eat_h12}:{mn:02d} {eat_ampm} EAT"
         ist = f"{ih12}:{im:02d} {iampm} IST"
     except Exception:
-        pass
-
-    # Format date nicely if it is parseable
-    pretty_date = raw_d
-    for fmt in ("%Y-%m-%d", "%d %B %Y", "%B %d, %Y", "%d-%b-%Y", "%d/%m/%Y"):
-        try:
-            pretty_date = _dt.datetime.strptime(raw_d, fmt).strftime("%A, %d %B %Y")
-            break
-        except ValueError:
-            continue
-
-    note = "Please update your action points on KimFam Hub before the meeting."
-    return {"ref": ref, "date": pretty_date, "eat": eat, "ist": ist, "platform": plat, "note": note}
+        eat = "4:30 PM EAT"; ist = "7:00 PM IST"
+    pretty = r["date"].strftime("%A, %d %B %Y") if r["date"] else "TBD"
+    return {"ref": ref, "date": pretty, "eat": eat, "ist": ist,
+            "platform": "Google Meet",
+            "note": "Please update your action points on KimFam Hub before the meeting."}
 
 @app.get("/api/projects")
 def get_projects():
