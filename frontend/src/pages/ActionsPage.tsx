@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../components/Toast'
 
 const ADMIN_USERS = ['Hillary', 'Hellen']
 
@@ -254,6 +255,7 @@ export default function ActionsPage() {
   const { t } = useTranslation()
   const { user } = useAuth()
   const qc = useQueryClient()
+  const toast = useToast()
   const isAdmin = ADMIN_USERS.includes(user?.name || '')
   const [filter, setFilter] = useState<FilterTab>('active')
   const [search, setSearch] = useState('')
@@ -288,30 +290,42 @@ export default function ActionsPage() {
   })
 
   const markDone = async (id: string, comment: string) => {
-    await fetch('/api/actions/done', {
-      method: 'PATCH', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action_id: id, comment }),
-    })
-    qc.invalidateQueries({ queryKey: ['actions'] })
+    try {
+      const r = await fetch('/api/actions/done', {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: id, comment }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
+      toast.success(`${id} marked done`)
+      qc.invalidateQueries({ queryKey: ['actions'] })
+    } catch (e: any) { toast.error(`Could not mark done: ${e.message}`) }
   }
 
   const addUpdate = async (id: string, updateText: string) => {
-    await fetch('/api/actions/update', {
-      method: 'PATCH', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action_id: id, update_text: updateText }),
-    })
-    qc.invalidateQueries({ queryKey: ['actions'] })
+    try {
+      const r = await fetch('/api/actions/update', {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: id, update_text: updateText }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
+      toast.success(`Update added to ${id}`)
+      qc.invalidateQueries({ queryKey: ['actions'] })
+    } catch (e: any) { toast.error(`Could not add update: ${e.message}`) }
   }
 
   const setStatus = async (id: string, status: DbStatus) => {
-    await fetch('/api/actions/status', {
-      method: 'PATCH', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action_id: id, status }),
-    })
-    qc.invalidateQueries({ queryKey: ['actions'] })
+    try {
+      const r = await fetch('/api/actions/status', {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: id, status }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
+      toast.success(`${id} → ${status.replace('_', ' ')}`)
+      qc.invalidateQueries({ queryKey: ['actions'] })
+    } catch (e: any) { toast.error(`Could not change status: ${e.message}`) }
   }
 
   const jumpTo = (ref: string) => {

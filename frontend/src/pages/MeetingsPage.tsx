@@ -6,6 +6,7 @@ import MeetingProcessModal from '../components/MeetingProcessModal'
 import MeetingConductor from '../components/MeetingConductor'
 import RetrospectiveView from '../components/RetrospectiveView'
 import type { Retrospective } from '../components/RetrospectiveView'
+import { useToast } from '../components/Toast'
 
 const ADMIN_USERS = ['Hillary', 'Hellen']
 
@@ -57,6 +58,7 @@ function ReviewModal({ meetingId, title, isAdmin, onClose }: {
   const [retro, setRetro] = useState<Retrospective | null>(null)
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
+  const toast = useToast()
 
   const load = () => {
     setLoading(true)
@@ -72,9 +74,13 @@ function ReviewModal({ meetingId, title, isAdmin, onClose }: {
     setGenerating(true)
     try {
       const r = await fetch(`/api/meetings/${meetingId}/retrospective`, { method: 'POST', credentials: 'include' })
-      const d = await r.json()
-      if (r.ok) setRetro(d.retrospective)
-    } catch {/* ignore */} finally { setGenerating(false) }
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.detail || 'Generation failed')
+      setRetro(d.retrospective)
+      toast.success('Meeting review generated')
+    } catch (e: any) {
+      toast.error(`Could not generate review: ${e.message}`)
+    } finally { setGenerating(false) }
   }
 
   return (

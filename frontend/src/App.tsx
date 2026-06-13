@@ -4,6 +4,7 @@ import { Suspense } from 'react'
 import './i18n'
 
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { ToastProvider } from './components/Toast'
 import AppShell from './components/AppShell'
 import LoginPage from './pages/LoginPage'
 import HomePage from './pages/HomePage'
@@ -66,11 +67,13 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <AuthProvider>
-          <Suspense fallback={null}>
-            <AuthGate />
-          </Suspense>
-        </AuthProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <Suspense fallback={null}>
+              <AuthGate />
+            </Suspense>
+          </AuthProvider>
+        </ToastProvider>
       </BrowserRouter>
     </QueryClientProvider>
   )

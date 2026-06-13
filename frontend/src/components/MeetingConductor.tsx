@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import MeetingProcessModal from './MeetingProcessModal'
 import RetrospectiveView from './RetrospectiveView'
 import type { Retrospective } from './RetrospectiveView'
+import { useToast } from './Toast'
 
 interface AgendaItem {
   label: string
@@ -159,6 +160,7 @@ function flatten(agenda: AgendaItem[]): AgendaItem[] {
 }
 
 export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClose, onMeetingProcessed }: Props) {
+  const toast = useToast()
   const [state, setState]           = useState<ConductorState | null>(null)
   const [loading, setLoading]       = useState(true)
   const [acting, setActing]         = useState(false)
@@ -281,8 +283,9 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       const res = await fetch(`/api/meetings/${meetingId}/recording`, {
         method: 'POST', credentials: 'include', body: fd,
       })
-      if (res.ok) setUploadedAudio(true)
-    } catch { /* non-blocking */ }
+      if (res.ok) { setUploadedAudio(true); toast.success('Meeting recording saved') }
+      else toast.error('Recording upload failed — you can add an audio file when processing')
+    } catch { toast.error('Recording upload failed — check your connection') }
     finally { setUploading(false) }
   }
 
@@ -316,6 +319,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       // Mic blocked/unavailable — the meeting still runs but NO audio is captured.
       // Make this loud so nobody assumes a recording exists.
       setRecError('Microphone is blocked, so this meeting is NOT being recorded. Allow microphone access in your browser and reopen the conductor, or rely on a Tactiq transcript / your typed notes for the minutes.')
+      toast.error('Microphone blocked — this meeting is NOT being recorded')
     }
   }
 

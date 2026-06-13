@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useToast } from './Toast'
 
 type TextMode = 'paste' | 'file'
 type Stage    = 'input' | 'review' | 'doc'
@@ -85,6 +86,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
   const [pasteText, setPasteText]   = useState('')
   const [notes, setNotes]           = useState(initialNotes)
   const [serverRecording, setServerRecording] = useState(false)
+  const toast = useToast()
 
   // Ask the server directly whether a conductor recording exists for this meeting,
   // and pull the saved meeting notes — works whether opened from the conductor or
@@ -173,8 +175,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       }
       setEdited(normalised)
       setStage('review')
+      toast.success('Actions and decisions extracted')
     } catch (e: any) {
-      setError(e.message)
+      setError(e.message); toast.error(e.message)
     } finally {
       setProcessing(false)
     }
@@ -194,8 +197,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       setConfirmResult(data)
       setMinutesData(data.minutes_data ?? null)
       setStage('doc')
+      toast.success('Minutes confirmed — actions saved')
     } catch (e: any) {
-      setError(e.message)
+      setError(e.message); toast.error(`Confirm failed: ${e.message}`)
     } finally {
       setConfirming(false)
     }
@@ -215,8 +219,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       if (!res.ok) throw new Error(data.detail || 'Edit failed')
       setMinutesData(data.minutes_data)
       setEditInstruction('')
+      toast.success('Edit applied')
     } catch (e: any) {
-      setError(e.message)
+      setError(e.message); toast.error(`Edit failed: ${e.message}`)
     } finally {
       setApplying(false)
     }
@@ -230,9 +235,10 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Publish failed')
+      toast.success('Minutes published and notification sent')
       onConfirmed()
     } catch (e: any) {
-      setError(e.message)
+      setError(e.message); toast.error(`Publish failed: ${e.message}`)
     } finally {
       setPublishing(false)
     }
