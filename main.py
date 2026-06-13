@@ -630,6 +630,34 @@ async def meetings_minutes_draft(meeting_id: int, request: Request):
     )
 
 
+@app.post("/api/meetings/{meeting_id}/minutes/draft")
+async def meetings_minutes_draft_replace(meeting_id: int, request: Request):
+    """Replace the server draft with an edited .docx uploaded by admin."""
+    from fastapi import HTTPException as _HE
+    import os as _os
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    form = await request.form()
+    docx_file = form.get("docx_file")
+    if not docx_file or not hasattr(docx_file, "filename"):
+        raise _HE(status_code=400, detail="docx_file required")
+
+    fname = (docx_file.filename or "").lower()
+    if not fname.endswith(".docx"):
+        raise _HE(status_code=400, detail="Only .docx files accepted")
+
+    raw = await docx_file.read()
+    path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    with open(path, "wb") as f:
+        f.write(raw)
+
+    return {"ok": True, "message": "Draft replaced — Approve & Send will use this version"}
+
+
 @app.post("/api/meetings/{meeting_id}/publish")
 async def meetings_minutes_publish(meeting_id: int, request: Request):
     """Upload draft .docx to R2 and send WhatsApp group notification."""

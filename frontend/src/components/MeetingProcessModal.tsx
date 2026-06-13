@@ -88,6 +88,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
 
   // ── Doc stage ───────────────────────────────────────────────────────────────
   const [confirmResult, setConfirmResult] = useState<ConfirmResult | null>(null)
+  const [editedDocx, setEditedDocx]       = useState<File | null>(null)
+  const [uploading, setUploading]         = useState(false)
+  const editedDocxRef = useRef<HTMLInputElement>(null)
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   const hasAudio = !!audioFile
@@ -151,6 +154,24 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
       setError(e.message)
     } finally {
       setConfirming(false)
+    }
+  }
+
+  const uploadEditedDraft = async (file: File) => {
+    setUploading(true); setError('')
+    try {
+      const fd = new FormData()
+      fd.append('docx_file', file)
+      const res = await fetch(`/api/meetings/${meetingId}/minutes/draft`, {
+        method: 'POST', credentials: 'include', body: fd,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Upload failed')
+      setEditedDocx(file)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -525,13 +546,14 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                 </div>
               </div>
 
-              {/* Document download */}
+              {/* Document download + re-upload */}
               <div className="rounded-xl p-4 space-y-3"
                 style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
                 <p className="text-xs font-semibold" style={{ color: '#e2e8f0' }}>Meeting minutes generated</p>
                 <p className="text-[11px]" style={{ color: '#64748b' }}>
-                  Download and review the document. When you are happy with it, approve to publish to the group.
+                  Download and review. If you need edits, work through them with Claude, then re-upload the final version before sending.
                 </p>
+
                 <a
                   href={`/api/meetings/${meetingId}/minutes/draft`}
                   download={`KimFam_${meetingRef.replace(/\s+/g, '_')}_Minutes.docx`}
@@ -539,6 +561,36 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                   style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655', textDecoration: 'none' }}>
                   ↓ Download minutes (.docx)
                 </a>
+
+                {/* Re-upload edited version */}
+                <div style={{ borderTop: '1px solid #1e293b', paddingTop: 12 }}>
+                  <p className="text-[10px] mb-2" style={{ color: '#475569' }}>
+                    Made edits? Re-upload to replace before sending.
+                  </p>
+                  <input
+                    ref={editedDocxRef}
+                    type="file"
+                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={e => {
+                      const f = e.target.files?.[0]
+                      if (f) uploadEditedDraft(f)
+                    }}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => editedDocxRef.current?.click()}
+                    disabled={uploading}
+                    className="w-full py-2 rounded-xl text-xs font-medium disabled:opacity-40 transition-all"
+                    style={{
+                      background: editedDocx ? '#14532d33' : '#1e293b',
+                      color:      editedDocx ? '#4ade80'   : '#64748b',
+                      border:     editedDocx ? '1px solid #166834' : '1px solid #334155',
+                    }}>
+                    {uploading ? 'Uploading…'
+                      : editedDocx ? `✓ Edited version loaded: ${editedDocx.name}`
+                      : '↑ Upload edited version'}
+                  </button>
+                </div>
               </div>
 
               {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
