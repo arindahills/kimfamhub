@@ -126,6 +126,92 @@ def meetings_next_ref():
     return {"next_ref": next_ref, "prev_ref": prev_ref}
 
 
+@app.get("/api/meetings/analytics")
+def meetings_analytics(request: Request):
+    """Cross-meeting time analytics for the whole club. Visible to all members.
+    Aggregates per-meeting retrospectives + conductor timings into:
+    efficiency trend, recurring time sinks, and time-spent-per-topic."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    import json as _json_a, re as _re_a
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+
+    rows = _dbq("""SELECT ref, date, conductor_retrospective, conductor_timings
+                   FROM meetings""")
+
+    def _num(ref):
+        m = _re_a.match(r"KIM\s+(\d+)/(\d{4})", (ref or "").strip())
+        return int(m.group(1)) if m else 0
+    def _load(v):
+        return _json_a.loads(v) if isinstance(v, (str, bytes, bytearray)) else (v or None)
+
+    trend = []            # [{ref, date, efficiency, planned_min, actual_min}]
+    sink_counts = {}      # normalised topic -> count of meetings
+    item_agg = {}         # normalised label -> {label, total_s, planned_s, count}
+
+    for r in rows:
+        retro = _load(r["conductor_retrospective"])
+        if isinstance(retro, dict) and retro.get("efficiency_score") is not None:
+            trend.append({
+                "ref": r["ref"], "date": str(r["date"]),
+                "num": _num(r["ref"]),
+                "efficiency": int(retro.get("efficiency_score", 0)),
+                "planned_min": retro.get("planned_total_min"),
+                "actual_min": retro.get("actual_total_min"),
+            })
+            seen = set()
+            for s in (retro.get("time_sinks") or []):
+                key = str(s).strip().lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    sink_counts[key] = sink_counts.get(key, 0) + 1
+
+        timings = _load(r["conductor_timings"]) or {}
+        for v in timings.values():
+            if not isinstance(v, dict):
+                continue
+            label = (v.get("label") or "").strip()
+            if not label:
+                continue
+            key = label.lower()
+            a = item_agg.setdefault(key, {"label": label, "total_s": 0, "planned_s": 0, "count": 0})
+            a["total_s"]   += int(v.get("actual_s", 0))
+            a["planned_s"] += int(v.get("planned_min", 0)) * 60
+            a["count"]     += 1
+
+    trend.sort(key=lambda x: x["num"])
+    avg_eff = round(sum(t["efficiency"] for t in trend) / len(trend)) if trend else None
+    # trend direction: compare last half vs first half average
+    direction = "steady"
+    if len(trend) >= 4:
+        half = len(trend) // 2
+        first = sum(t["efficiency"] for t in trend[:half]) / half
+        last  = sum(t["efficiency"] for t in trend[half:]) / (len(trend) - half)
+        if last - first >= 5:   direction = "improving"
+        elif first - last >= 5: direction = "declining"
+
+    recurring = sorted(
+        [{"topic": k, "meetings": c} for k, c in sink_counts.items() if c >= 2],
+        key=lambda x: -x["meetings"])[:8]
+
+    time_by_topic = sorted(
+        [{"label": a["label"], "total_min": a["total_s"] // 60,
+          "avg_min": round(a["total_s"] / a["count"] / 60, 1) if a["count"] else 0,
+          "planned_min": a["planned_s"] // 60, "occurrences": a["count"]}
+         for a in item_agg.values() if a["total_s"] > 0],
+        key=lambda x: -x["total_min"])[:10]
+
+    return {
+        "trend": trend,
+        "avg_efficiency": avg_eff,
+        "direction": direction,
+        "recurring_sinks": recurring,
+        "time_by_topic": time_by_topic,
+        "meetings_analysed": len(trend),
+    }
+
+
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
     from db import query as _dbq

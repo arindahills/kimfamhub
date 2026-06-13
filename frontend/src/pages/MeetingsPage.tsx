@@ -6,6 +6,7 @@ import MeetingProcessModal from '../components/MeetingProcessModal'
 import MeetingConductor from '../components/MeetingConductor'
 import RetrospectiveView from '../components/RetrospectiveView'
 import type { Retrospective } from '../components/RetrospectiveView'
+import MeetingAnalytics from '../components/MeetingAnalytics'
 import { useToast } from '../components/Toast'
 
 const ADMIN_USERS = ['Hillary', 'Hellen']
@@ -392,6 +393,7 @@ export default function MeetingsPage() {
   const isAdmin = ADMIN_USERS.includes(user?.name || '')
 
   const [showNew, setShowNew]           = useState(false)
+  const [showAnalytics, setShowAnalytics] = useState(false)
   const [processMeeting, setProcess]    = useState<Meeting | null>(null)
   const [conductMeeting, setConduct]    = useState<Meeting | null>(null)
 
@@ -417,13 +419,20 @@ export default function MeetingsPage() {
         <h2 className="text-sm font-semibold" style={{ color: 'var(--text-muted)' }}>
           {t('meetings.title')} ({meetings.length})
         </h2>
-        {isAdmin && (
-          <button onClick={() => setShowNew(true)}
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowAnalytics(true)}
             className="text-xs px-3 py-1.5 rounded-full font-medium"
-            style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
-            + New meeting
+            style={{ background: '#0f766e33', color: '#5eead4', border: '1px solid #0f766e55' }}>
+            📈 Analytics
           </button>
-        )}
+          {isAdmin && (
+            <button onClick={() => setShowNew(true)}
+              className="text-xs px-3 py-1.5 rounded-full font-medium"
+              style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+              + New meeting
+            </button>
+          )}
+        </div>
       </div>
 
       {isLoading && (
@@ -447,6 +456,8 @@ export default function MeetingsPage() {
           onCreated={() => { setShowNew(false); qc.invalidateQueries({ queryKey: ['meetings'] }) }}
         />
       )}
+
+      {showAnalytics && <MeetingAnalytics onClose={() => setShowAnalytics(false)} />}
 
       {/* Conduct Meeting — full screen */}
       {conductMeeting && (
