@@ -312,9 +312,14 @@ export default function MeetingsPage() {
     queryFn: () => fetch('/api/meetings', { credentials: 'include' }).then(r => r.json()),
   })
 
-  const sorted = [...meetings].sort((a, b) =>
-    new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime()
-  )
+  const refNum = (m: Meeting) => {
+    const mm = /KIM\s*(\d+)/i.exec(m.meeting_ref || m.meeting_number || '')
+    return mm ? parseInt(mm[1], 10) : 0
+  }
+  const sorted = [...meetings].sort((a, b) => {
+    const d = new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime()
+    return d !== 0 ? d : refNum(b) - refNum(a)   // same date → highest meeting number first
+  })
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-3">
