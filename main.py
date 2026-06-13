@@ -224,6 +224,16 @@ async def process_meeting(meeting_id: int, request: Request,
         if file_text.strip():
             transcript_parts.append((f"File: {upload_file.filename}", file_text))
 
+    # Auto-use conductor recording if no explicit audio was uploaded
+    conductor_recording = f"/tmp/kimfam_recording_{meeting_id}.webm"
+    if not audio_file and _os.path.exists(conductor_recording):
+        with open(conductor_recording, "rb") as _rf:
+            _rb = _rf.read()
+        class _FakeFile:
+            filename = "conductor_recording.webm"
+            async def read(self): return _rb
+        audio_file = _FakeFile()
+
     if audio_file and hasattr(audio_file, "filename"):
         groq_key = _os.getenv("GROQ_API_KEY", "")
         if not groq_key:
@@ -1049,7 +1059,8 @@ def get_meetings():
     rows = _dbq("""
         SELECT m.id, m.ref, m.date, m.start_time_eat, m.venue,
                m.key_topics, m.key_decisions, m.next_actions,
-               m.minutes_url, m.summary,
+               m.minutes_url,
+               m.conductor_item, m.conductor_started_at, m.conductor_ended_at,
                COUNT(a.id)                                          AS action_count,
                COUNT(a.id) FILTER (WHERE a.status = 'done')        AS action_done_count
         FROM meetings m
@@ -1075,8 +1086,10 @@ def get_meetings():
             "summary":         r["summary"],
             "attendance":      [],
             "minutes_url":     r["minutes_url"],
-            "action_count":    int(r["action_count"]),
+            "action_count":      int(r["action_count"]),
             "action_done_count": int(r["action_done_count"]),
+            "conductor_active":  r["conductor_started_at"] is not None and r["conductor_ended_at"] is None,
+            "conductor_ended":   r["conductor_ended_at"] is not None,
         })
     return out
 
@@ -1101,11 +1114,238 @@ async def create_meeting(request: Request):
     existing = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
     if existing:
         raise _HE(status_code=409, detail=f"Meeting {ref} already exists")
-    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, key_topics)
-             VALUES (%s, %s::date, %s, %s::time, %s)""",
-          (ref, date_str, venue, start_time, key_topics))
+    # Build default agenda from template + active projects
+    agenda = _build_default_agenda(key_topics)
+    import json as _json_ag
+    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, key_topics, agenda)
+             VALUES (%s, %s::date, %s, %s::time, %s, %s)""",
+          (ref, date_str, venue, start_time, key_topics, _json_ag.dumps(agenda)))
     row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
     return {"ok": True, "db_id": row[0]["id"], "ref": ref}
+
+
+def _build_default_agenda(key_topics: str | None = None) -> list:
+    """Generate a standard KimFam meeting agenda. Items 5/6 vary by topics."""
+    from db import query as _dbq_ag
+    # Derive active projects from DB (those with open actions in last 30 days)
+    active_projects = _dbq_ag("""
+        SELECT DISTINCT project_id FROM actions
+        WHERE project_id IS NOT NULL AND status NOT IN ('done','cancelled')
+        ORDER BY project_id
+    """)
+    proj_names = {
+        "chicken": "Free Range Chicken", "washing_bay": "Washing Bay",
+        "sheep": "Sheep (Dorper)", "goats": "Goats", "dairy": "Dairy / Cows",
+        "mango": "Mango & Oranges", "trees": "Tree Planting", "bees": "Apiary",
+        "rabbits": "Rabbits", "irrigation": "Irrigation & Bananas",
+        "fortune_credit": "Fortune Credit", "kakoba": "Kakoba Land",
+    }
+    project_items = [
+        {"label": proj_names.get(r["project_id"], r["project_id"]),
+         "presenter": "", "duration_min": 5, "type": "project",
+         "project_id": r["project_id"]}
+        for r in active_projects
+    ]
+
+    # Parse custom main agenda items from key_topics string
+    main_items = []
+    if key_topics:
+        for raw in key_topics.split(";"):
+            t = raw.strip().strip(",")
+            if t:
+                main_items.append({"label": t, "presenter": "", "duration_min": 10, "type": "agenda"})
+
+    return [
+        {"label": "Opening Prayer",          "presenter": "Dad",    "duration_min": 3,  "type": "fixed"},
+        {"label": "Apologies & Attendance",  "presenter": "Hellen", "duration_min": 3,  "type": "fixed"},
+        {"label": "Treasurer's Brief",       "presenter": "Hellen", "duration_min": 10, "type": "fixed"},
+        {"label": "Action Review",           "presenter": "Hillary","duration_min": 15, "type": "fixed"},
+        *([{"label": "Project Updates", "presenter": "", "duration_min": 0, "type": "section",
+             "children": project_items}] if project_items else []),
+        *([{"label": "Main Agenda",    "presenter": "", "duration_min": 0, "type": "section",
+             "children": main_items}]   if main_items  else []),
+        {"label": "Any Other Business",      "presenter": "",       "duration_min": 5,  "type": "fixed"},
+        {"label": "Next Meeting Date",       "presenter": "Hillary","duration_min": 2,  "type": "fixed"},
+        {"label": "Closing Prayer",          "presenter": "Dad",    "duration_min": 2,  "type": "fixed"},
+    ]
+
+
+# ── Conductor endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/meetings/{meeting_id}/conductor")
+async def conductor_state(meeting_id: int, request: Request):
+    """Current conductor state — polled by all participants every 5s."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    import json as _json_c, datetime as _dt
+
+    token = _get_tok(request)
+    if not _auth_verify(token):
+        raise _HE(status_code=401, detail="Auth required")
+
+    rows = _dbq("""SELECT ref, date, venue, start_time_eat, agenda,
+                          conductor_item, conductor_started_at,
+                          conductor_item_started_at, conductor_ended_at
+                   FROM meetings WHERE id=%s""", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    r = rows[0]
+
+    agenda = _json_c.loads(r["agenda"]) if r["agenda"] else []
+    now_utc = _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)
+
+    item_elapsed = None
+    if r["conductor_item_started_at"]:
+        item_elapsed = int((now_utc - r["conductor_item_started_at"]).total_seconds())
+    total_elapsed = None
+    if r["conductor_started_at"]:
+        total_elapsed = int((now_utc - r["conductor_started_at"]).total_seconds())
+
+    return {
+        "meeting_ref":   r["ref"],
+        "date":          str(r["date"]),
+        "venue":         r["venue"] or "Google Meet",
+        "agenda":        agenda,
+        "current_item":  r["conductor_item"],        # None = not started, -1 = ended
+        "started":       r["conductor_started_at"] is not None,
+        "ended":         r["conductor_ended_at"] is not None,
+        "item_elapsed_s":  item_elapsed,
+        "total_elapsed_s": total_elapsed,
+    }
+
+
+@app.post("/api/meetings/{meeting_id}/recording")
+async def upload_meeting_recording(meeting_id: int, request: Request):
+    """Store an in-app audio recording to /tmp so Process can pick it up."""
+    from fastapi import HTTPException as _HE
+    import os as _os
+    token = _get_tok(request)
+    if not _auth_verify(token):
+        raise _HE(status_code=401, detail="Auth required")
+    form = await request.form()
+    audio = form.get("audio_file")
+    if not audio or not hasattr(audio, "filename"):
+        raise _HE(status_code=400, detail="audio_file required")
+    raw = await audio.read()
+    path = f"/tmp/kimfam_recording_{meeting_id}.webm"
+    with open(path, "wb") as f:
+        f.write(raw)
+    return {"ok": True, "path": path}
+
+
+@app.post("/api/meetings/{meeting_id}/conductor/start")
+async def conductor_start(meeting_id: int, request: Request):
+    """Start the meeting — sets item 0, records start time."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    _exec("""UPDATE meetings SET
+               conductor_item=0,
+               conductor_started_at=NOW(),
+               conductor_item_started_at=NOW(),
+               conductor_ended_at=NULL
+             WHERE id=%s""", (meeting_id,))
+    return {"ok": True, "current_item": 0}
+
+
+@app.post("/api/meetings/{meeting_id}/conductor/next")
+async def conductor_next(meeting_id: int, request: Request):
+    """Advance to next agenda item."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import json as _json_n
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT conductor_item, agenda FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    r = rows[0]
+    agenda = _json_n.loads(r["agenda"]) if r["agenda"] else []
+    # Flatten sections into a linear list for conductor
+    flat = _flatten_agenda(agenda)
+    current = r["conductor_item"] or 0
+    next_item = current + 1
+    _exec("""UPDATE meetings SET conductor_item=%s, conductor_item_started_at=NOW()
+             WHERE id=%s""", (next_item, meeting_id))
+    return {"ok": True, "current_item": next_item, "total_items": len(flat)}
+
+
+@app.post("/api/meetings/{meeting_id}/conductor/goto")
+async def conductor_goto(meeting_id: int, request: Request):
+    """Jump to a specific agenda item index."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body = await request.json()
+    idx = int(body.get("index", 0))
+    rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    _exec("""UPDATE meetings SET conductor_item=%s, conductor_item_started_at=NOW()
+             WHERE id=%s""", (idx, meeting_id))
+    return {"ok": True, "current_item": idx}
+
+
+@app.post("/api/meetings/{meeting_id}/conductor/end")
+async def conductor_end(meeting_id: int, request: Request):
+    """End the meeting — sets ended timestamp."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import datetime as _dt
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT id, conductor_started_at FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    _exec("""UPDATE meetings SET conductor_item=-1, conductor_ended_at=NOW()
+             WHERE id=%s""", (meeting_id,))
+    return {"ok": True, "ended": True}
+
+
+@app.patch("/api/meetings/{meeting_id}/agenda")
+async def update_agenda(meeting_id: int, request: Request):
+    """Replace the agenda for a meeting (admin, before or during)."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import json as _json_upd
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body  = await request.json()
+    agenda = body.get("agenda", [])
+    rows = _dbq("SELECT id FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    _exec("UPDATE meetings SET agenda=%s WHERE id=%s",
+          (_json_upd.dumps(agenda), meeting_id))
+    return {"ok": True}
+
+
+def _flatten_agenda(agenda: list) -> list:
+    """Flatten nested agenda (sections with children) into linear list for conductor."""
+    flat = []
+    for item in agenda:
+        if item.get("type") == "section":
+            flat.append({**item, "is_section_header": True})
+            for child in (item.get("children") or []):
+                flat.append({**child, "is_section_child": True})
+        else:
+            flat.append(item)
+    return flat
 
 
 @app.get("/api/meeting")

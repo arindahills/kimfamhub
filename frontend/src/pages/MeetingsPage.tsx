@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import MeetingProcessModal from '../components/MeetingProcessModal'
+import MeetingConductor from '../components/MeetingConductor'
 
 const ADMIN_USERS = ['Hillary', 'Hellen']
 
@@ -22,6 +23,8 @@ interface Meeting {
   minutes_url: string | null
   action_count: number
   action_done_count: number
+  conductor_active: boolean
+  conductor_ended: boolean
 }
 
 // ── Minutes viewer ────────────────────────────────────────────────────────────
@@ -167,7 +170,11 @@ function Collapsible({ title, body }: { title: string; body: string | null }) {
 }
 
 // ── Meeting card ──────────────────────────────────────────────────────────────
-function MeetingCard({ m, isAdmin, onProcess }: { m: Meeting; isAdmin: boolean; onProcess: (m: Meeting) => void }) {
+function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
+  m: Meeting; isAdmin: boolean
+  onProcess: (m: Meeting) => void
+  onConduct: (m: Meeting) => void
+}) {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
   const [viewMinutes, setViewMinutes] = useState(false)
 
@@ -186,6 +193,17 @@ function MeetingCard({ m, isAdmin, onProcess }: { m: Meeting; isAdmin: boolean; 
           </div>
           <div className="flex gap-1.5 flex-wrap justify-end">
             {isAdmin && (
+              <button onClick={() => onConduct(m)}
+                className="text-[11px] px-2 py-1 rounded-lg font-semibold"
+                style={{
+                  background: m.conductor_active ? '#1e3a5f' : '#0f2a4a',
+                  color:      m.conductor_active ? '#93c5fd' : '#475569',
+                  border:     m.conductor_active ? '1px solid #3b82f6' : '1px solid #1e3a5f',
+                }}>
+                {m.conductor_active ? '● Live' : 'Conduct'}
+              </button>
+            )}
+            {isAdmin && m.conductor_ended && (
               <button onClick={() => onProcess(m)}
                 className="text-[11px] px-2 py-1 rounded-lg"
                 style={{ background: '#4c1d9533', color: '#a78bfa', border: '1px solid #4c1d9555' }}>
@@ -255,6 +273,7 @@ export default function MeetingsPage() {
 
   const [showNew, setShowNew]           = useState(false)
   const [processMeeting, setProcess]    = useState<Meeting | null>(null)
+  const [conductMeeting, setConduct]    = useState<Meeting | null>(null)
 
   const { data: meetings = [], isLoading } = useQuery<Meeting[]>({
     queryKey: ['meetings'],
@@ -293,7 +312,7 @@ export default function MeetingsPage() {
       )}
 
       {sorted.map(m => (
-        <MeetingCard key={m.db_id} m={m} isAdmin={isAdmin} onProcess={setProcess} />
+        <MeetingCard key={m.db_id} m={m} isAdmin={isAdmin} onProcess={setProcess} onConduct={setConduct} />
       ))}
 
       {/* New Meeting modal */}
@@ -301,6 +320,21 @@ export default function MeetingsPage() {
         <NewMeetingModal
           onClose={() => setShowNew(false)}
           onCreated={() => { setShowNew(false); qc.invalidateQueries({ queryKey: ['meetings'] }) }}
+        />
+      )}
+
+      {/* Conduct Meeting — full screen */}
+      {conductMeeting && (
+        <MeetingConductor
+          meetingId={conductMeeting.db_id}
+          meetingRef={conductMeeting.meeting_ref}
+          isAdmin={isAdmin}
+          onClose={() => { setConduct(null); qc.invalidateQueries({ queryKey: ['meetings'] }) }}
+          onMeetingProcessed={() => {
+            setConduct(null)
+            qc.invalidateQueries({ queryKey: ['meetings'] })
+            qc.invalidateQueries({ queryKey: ['actions'] })
+          }}
         />
       )}
 
