@@ -1313,7 +1313,7 @@ async def conductor_state(meeting_id: int, request: Request):
     rows = _dbq("""SELECT ref, date, venue, start_time_eat, agenda,
                           conductor_item, conductor_started_at,
                           conductor_item_started_at, conductor_ended_at,
-                          conductor_recording, conductor_notes
+                          conductor_recording, conductor_notes, conductor_timings
                    FROM meetings WHERE id=%s""", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
@@ -1343,6 +1343,7 @@ async def conductor_state(meeting_id: int, request: Request):
         "total_elapsed_s": total_elapsed,
         "notes":           r["conductor_notes"] or "",
         "recording_present": _os_c.path.exists(f"/tmp/kimfam_recording_{meeting_id}.webm"),
+        "timings": (_json_c.loads(r["conductor_timings"]) if isinstance(r["conductor_timings"], (str, bytes, bytearray)) else (r["conductor_timings"] or {})),
     }
 
 

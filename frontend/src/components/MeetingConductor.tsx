@@ -23,6 +23,9 @@ interface ConductorState {
   recording: boolean
   item_elapsed_s: number | null
   total_elapsed_s: number | null
+  notes?: string
+  recording_present?: boolean
+  timings?: Record<string, { label: string; planned_min: number; actual_s: number }>
 }
 
 interface Props {
@@ -37,6 +40,22 @@ function fmtTime(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = seconds % 60
   return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+function DurationRow({ label, value, onChange, indent }: {
+  label: string; value: number; onChange: (v: number) => void; indent?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg px-3 py-2"
+      style={{ background: '#0d1829', border: '1px solid #1e293b', marginLeft: indent ? 12 : 0 }}>
+      <span className="flex-1 text-sm truncate" style={{ color: '#e2e8f0' }}>{label}</span>
+      <input type="number" min={0} max={120} value={value}
+        onChange={e => onChange(Math.max(0, parseInt(e.target.value || '0', 10)))}
+        className="w-14 rounded-md px-2 py-1 text-sm text-right outline-none"
+        style={{ background: '#121824', color: '#93c5fd', border: '1px solid #334155' }} />
+      <span className="text-[11px]" style={{ color: '#475569' }}>min</span>
+    </div>
+  )
 }
 
 function flatten(agenda: AgendaItem[]): AgendaItem[] {
@@ -95,6 +114,40 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     setNotesSaved(false)
     if (notesSaveRef.current) clearTimeout(notesSaveRef.current)
     notesSaveRef.current = setTimeout(() => saveNotes(text), 1200)
+  }
+
+  // ── Editable agenda durations (before the meeting starts) ───────────────────
+  const [editingTimes, setEditingTimes]   = useState(false)
+  const [draftAgenda, setDraftAgenda]     = useState<AgendaItem[] | null>(null)
+  const [savingAgenda, setSavingAgenda]   = useState(false)
+
+  const openTimeEditor = () => {
+    setDraftAgenda(JSON.parse(JSON.stringify(state?.agenda ?? [])))
+    setEditingTimes(true)
+  }
+
+  const setItemDuration = (topIdx: number, childIdx: number | null, val: number) => {
+    setDraftAgenda(prev => {
+      if (!prev) return prev
+      const copy: AgendaItem[] = JSON.parse(JSON.stringify(prev))
+      if (childIdx === null) copy[topIdx].duration_min = val
+      else if (copy[topIdx].children) copy[topIdx].children![childIdx].duration_min = val
+      return copy
+    })
+  }
+
+  const saveAgenda = async () => {
+    if (!draftAgenda) return
+    setSavingAgenda(true)
+    try {
+      await fetch(`/api/meetings/${meetingId}/agenda`, {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agenda: draftAgenda }),
+      })
+      await fetchState()
+      setEditingTimes(false)
+    } finally { setSavingAgenda(false) }
   }
 
   // Upload a recording blob directly (called automatically when recording stops)
@@ -354,24 +407,68 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 overflow-hidden">
 
-        {!state.started && (
+        {!state.started && !editingTimes && (
           <div className="text-center space-y-6 max-w-sm">
             <p className="text-2xl font-bold" style={{ color: '#e2e8f0' }}>Ready to start</p>
             <p className="text-sm" style={{ color: '#475569' }}>
               {flat.length} agenda items · tap to begin
             </p>
             {isAdmin && (
-              <button onClick={startMeeting} disabled={acting}
-                className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
-                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
-                {acting ? 'Starting…' : 'Start Meeting →'}
-              </button>
+              <>
+                <button onClick={startMeeting} disabled={acting}
+                  className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
+                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                  {acting ? 'Starting…' : 'Start Meeting →'}
+                </button>
+                <button onClick={openTimeEditor}
+                  className="text-xs underline"
+                  style={{ color: '#64748b' }}>
+                  Adjust time per agenda item
+                </button>
+              </>
             )}
             {!isAdmin && (
               <p className="text-sm text-center" style={{ color: '#334155' }}>
                 Waiting for admin to start the meeting…
               </p>
             )}
+          </div>
+        )}
+
+        {!state.started && editingTimes && draftAgenda && (
+          <div className="w-full max-w-md space-y-3 overflow-y-auto" style={{ maxHeight: '70vh' }}>
+            <p className="text-base font-bold text-center" style={{ color: '#e2e8f0' }}>Set time per item</p>
+            <p className="text-[11px] text-center" style={{ color: '#64748b' }}>
+              These are just budgets — nothing auto-advances. The clock turns red when an item runs over.
+            </p>
+            <div className="space-y-1.5">
+              {draftAgenda.map((item, ti) => (
+                item.type === 'section' ? (
+                  <div key={ti} className="pt-2">
+                    <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#475569' }}>{item.label}</p>
+                    {(item.children ?? []).map((child, ci) => (
+                      <DurationRow key={ci} label={child.label} value={child.duration_min}
+                        onChange={v => setItemDuration(ti, ci, v)} indent />
+                    ))}
+                  </div>
+                ) : (
+                  <DurationRow key={ti} label={item.label} value={item.duration_min}
+                    onChange={v => setItemDuration(ti, null, v)} />
+                )
+              ))}
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setEditingTimes(false)}
+                className="flex-1 py-2.5 rounded-xl text-sm"
+                style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+                Cancel
+              </button>
+              <button onClick={saveAgenda} disabled={savingAgenda}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
+                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                {savingAgenda ? 'Saving…' : 'Save times'}
+              </button>
+            </div>
           </div>
         )}
 
@@ -464,7 +561,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
         )}
 
         {state.ended && (
-          <div className="text-center space-y-4 max-w-sm">
+          <div className="text-center space-y-4 max-w-md w-full overflow-y-auto" style={{ maxHeight: '78vh' }}>
             <p className="text-2xl font-bold" style={{ color: '#4ade80' }}>Meeting ended</p>
             <p className="text-sm" style={{ color: '#475569' }}>
               Duration: {fmtTime(localElapsed)}
@@ -474,6 +571,31 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
             )}
             {uploadedAudio && (
               <p className="text-sm" style={{ color: '#4ade80' }}>✓ Recording captured</p>
+            )}
+
+            {/* Time audit — which items ran over their budget */}
+            {state.timings && Object.keys(state.timings).length > 0 && (
+              <div className="rounded-xl p-3 text-left" style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
+                <p className="text-[11px] uppercase tracking-wider mb-2 font-semibold" style={{ color: '#94a3b8' }}>
+                  Time per item (planned → actual)
+                </p>
+                <div className="space-y-1">
+                  {Object.entries(state.timings)
+                    .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+                    .map(([k, t]) => {
+                      const plannedS = (t.planned_min || 0) * 60
+                      const over = plannedS > 0 && t.actual_s > plannedS
+                      return (
+                        <div key={k} className="flex items-center justify-between text-xs">
+                          <span className="truncate flex-1" style={{ color: '#cbd5e1' }}>{t.label}</span>
+                          <span className="ml-2" style={{ color: over ? '#f87171' : '#64748b' }}>
+                            {t.planned_min}m → {fmtTime(t.actual_s)}{over ? ' ⚠' : ''}
+                          </span>
+                        </div>
+                      )
+                    })}
+                </div>
+              </div>
             )}
             {isAdmin && (
               <button onClick={() => setShowTranscriptPrompt(true)}
