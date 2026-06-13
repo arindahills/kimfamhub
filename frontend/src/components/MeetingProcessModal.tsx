@@ -33,11 +33,23 @@ interface ProcessResult {
   extracted: Extracted
 }
 
+interface MinutesData {
+  meeting_ref: string
+  date: string
+  venue: string
+  start_time_eat: string
+  summary: string
+  key_topics: string
+  key_decisions: string[]
+  actions: { ref: string; description: string; assignees: string[]; deadline: string; priority: string }[]
+}
+
 interface ConfirmResult {
   ok: boolean
   created: string[]
   updated: number
   draft_url: string
+  minutes_data: MinutesData
 }
 
 interface Props {
@@ -88,9 +100,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
 
   // ── Doc stage ───────────────────────────────────────────────────────────────
   const [confirmResult, setConfirmResult] = useState<ConfirmResult | null>(null)
-  const [editedDocx, setEditedDocx]       = useState<File | null>(null)
-  const [uploading, setUploading]         = useState(false)
-  const editedDocxRef = useRef<HTMLInputElement>(null)
+  const [minutesData, setMinutesData]     = useState<MinutesData | null>(null)
+  const [editInstruction, setEditInstruction] = useState('')
+  const [applying, setApplying]           = useState(false)
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   const hasAudio = !!audioFile
@@ -149,6 +161,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Confirm failed')
       setConfirmResult(data)
+      setMinutesData(data.minutes_data ?? null)
       setStage('doc')
     } catch (e: any) {
       setError(e.message)
@@ -157,21 +170,24 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
     }
   }
 
-  const uploadEditedDraft = async (file: File) => {
-    setUploading(true); setError('')
+  const applyEdit = async () => {
+    const instr = editInstruction.trim()
+    if (!instr) return
+    setApplying(true); setError('')
     try {
-      const fd = new FormData()
-      fd.append('docx_file', file)
-      const res = await fetch(`/api/meetings/${meetingId}/minutes/draft`, {
-        method: 'POST', credentials: 'include', body: fd,
+      const res  = await fetch(`/api/meetings/${meetingId}/minutes/edit`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: instr }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Upload failed')
-      setEditedDocx(file)
+      if (!res.ok) throw new Error(data.detail || 'Edit failed')
+      setMinutesData(data.minutes_data)
+      setEditInstruction('')
     } catch (e: any) {
       setError(e.message)
     } finally {
-      setUploading(false)
+      setApplying(false)
     }
   }
 
@@ -530,85 +546,132 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
 
           {/* ═══════════════════════════════ STAGE 3: DOC REVIEW ════════════════════════ */}
           {stage === 'doc' && confirmResult && (
-            <div className="space-y-5">
-              {/* Success banner */}
+            <div className="space-y-4">
+
+              {/* Saved banner */}
               <div className="rounded-xl px-4 py-3 flex items-center gap-3"
                 style={{ background: '#14532d33', border: '1px solid #16683444' }}>
-                <span style={{ fontSize: 20 }}>✓</span>
-                <div>
-                  <p className="text-sm font-semibold" style={{ color: '#4ade80' }}>
-                    {confirmResult.created.length} action{confirmResult.created.length !== 1 ? 's' : ''} saved
-                    {confirmResult.updated > 0 ? `, ${confirmResult.updated} updated` : ''}
-                  </p>
-                  <p className="text-[11px]" style={{ color: '#64748b' }}>
-                    Refs: {confirmResult.created.slice(0, 5).join(', ')}{confirmResult.created.length > 5 ? '…' : ''}
-                  </p>
-                </div>
+                <span style={{ fontSize: 18 }}>✓</span>
+                <p className="text-sm font-semibold" style={{ color: '#4ade80' }}>
+                  {confirmResult.created.length} action{confirmResult.created.length !== 1 ? 's' : ''} saved to DB
+                  {confirmResult.updated > 0 ? `, ${confirmResult.updated} existing updated` : ''}
+                </p>
               </div>
 
-              {/* Document download + re-upload */}
-              <div className="rounded-xl p-4 space-y-3"
-                style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
-                <p className="text-xs font-semibold" style={{ color: '#e2e8f0' }}>Meeting minutes generated</p>
-                <p className="text-[11px]" style={{ color: '#64748b' }}>
-                  Download and review. If you need edits, work through them with Claude, then re-upload the final version before sending.
-                </p>
+              {/* Document content — rendered in app */}
+              {minutesData && (
+                <div className="rounded-xl p-4 space-y-4"
+                  style={{ background: '#0d1829', border: '1px solid #1e293b' }}>
 
-                <a
-                  href={`/api/meetings/${meetingId}/minutes/draft`}
-                  download={`KimFam_${meetingRef.replace(/\s+/g, '_')}_Minutes.docx`}
-                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold"
-                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655', textDecoration: 'none' }}>
-                  ↓ Download minutes (.docx)
-                </a>
+                  {/* Header */}
+                  <div>
+                    <p className="text-xs font-bold text-center" style={{ color: '#e2e8f0' }}>
+                      KIMFAM INVESTMENT CLUB — MEETING MINUTES
+                    </p>
+                    <p className="text-[10px] text-center mt-0.5" style={{ color: '#475569' }}>
+                      {minutesData.meeting_ref}
+                      {minutesData.date ? ` · ${minutesData.date}` : ''}
+                      {minutesData.start_time_eat ? ` · ${minutesData.start_time_eat} EAT` : ''}
+                      {minutesData.venue ? ` · ${minutesData.venue}` : ''}
+                    </p>
+                  </div>
 
-                {/* Re-upload edited version */}
-                <div style={{ borderTop: '1px solid #1e293b', paddingTop: 12 }}>
-                  <p className="text-[10px] mb-2" style={{ color: '#475569' }}>
-                    Made edits? Re-upload to replace before sending.
-                  </p>
-                  <input
-                    ref={editedDocxRef}
-                    type="file"
-                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    onChange={e => {
-                      const f = e.target.files?.[0]
-                      if (f) uploadEditedDraft(f)
-                    }}
-                    className="hidden"
-                  />
-                  <button
-                    onClick={() => editedDocxRef.current?.click()}
-                    disabled={uploading}
-                    className="w-full py-2 rounded-xl text-xs font-medium disabled:opacity-40 transition-all"
-                    style={{
-                      background: editedDocx ? '#14532d33' : '#1e293b',
-                      color:      editedDocx ? '#4ade80'   : '#64748b',
-                      border:     editedDocx ? '1px solid #166834' : '1px solid #334155',
-                    }}>
-                    {uploading ? 'Uploading…'
-                      : editedDocx ? `✓ Edited version loaded: ${editedDocx.name}`
-                      : '↑ Upload edited version'}
-                  </button>
+                  {/* Summary */}
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#475569' }}>Summary</p>
+                    <p className="text-[12px] leading-relaxed" style={{ color: '#94a3b8' }}>{minutesData.summary}</p>
+                  </div>
+
+                  {/* Key topics */}
+                  {minutesData.key_topics && (
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#475569' }}>Key Topics</p>
+                      <p className="text-[11px]" style={{ color: '#64748b' }}>{minutesData.key_topics}</p>
+                    </div>
+                  )}
+
+                  {/* Decisions */}
+                  {minutesData.key_decisions.length > 0 && (
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#475569' }}>
+                        Key Decisions ({minutesData.key_decisions.length})
+                      </p>
+                      <ol className="space-y-1 list-decimal list-inside">
+                        {minutesData.key_decisions.map((d, i) => (
+                          <li key={i} className="text-[11px]" style={{ color: '#94a3b8' }}>{d}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {/* Action points */}
+                  {minutesData.actions.length > 0 && (
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider mb-2" style={{ color: '#475569' }}>
+                        Action Points ({minutesData.actions.length})
+                      </p>
+                      <div className="space-y-1.5">
+                        {minutesData.actions.map((a, i) => (
+                          <div key={i} className="rounded-lg px-3 py-2 flex flex-wrap items-start gap-x-3 gap-y-0.5"
+                            style={{ background: '#121824', border: '1px solid #1e293b' }}>
+                            <span className="text-[10px] font-mono shrink-0" style={{ color: '#475569' }}>{a.ref}</span>
+                            <span className="text-[11px] flex-1 min-w-0" style={{ color: '#e2e8f0' }}>{a.description}</span>
+                            <span className="text-[10px] shrink-0" style={{ color: '#64748b' }}>
+                              {Array.isArray(a.assignees) ? a.assignees.join(', ') : a.assignees}
+                            </span>
+                            {a.deadline && (
+                              <span className="text-[10px] shrink-0" style={{ color: '#475569' }}>{a.deadline}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
+              )}
+
+              {/* Edit instruction box */}
+              <div className="rounded-xl p-4 space-y-2"
+                style={{ background: '#0d1829', border: '1px solid #3b82f633' }}>
+                <p className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>
+                  Request a change
+                </p>
+                <textarea
+                  value={editInstruction}
+                  onChange={e => setEditInstruction(e.target.value)}
+                  placeholder={'e.g. "Change the summary to focus on the chicken project decision" or "Remove action KIM/09/26-3" or "Fix the spelling of Viola\'s name in action 2"'}
+                  rows={3}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
+                  style={{ background: '#121824', color: '#e2e8f0', border: '1px solid #334155' }}
+                />
+                <button
+                  onClick={applyEdit}
+                  disabled={applying || !editInstruction.trim()}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
+                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                  {applying ? 'Applying change…' : 'Apply change →'}
+                </button>
               </div>
 
               {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
 
-              {/* Approve & Send */}
-              <div className="rounded-xl p-4 space-y-2"
-                style={{ background: '#0d1829', border: '1px solid #4c1d9533' }}>
-                <p className="text-[11px]" style={{ color: '#64748b' }}>
-                  Approve & Send uploads the minutes to cloud storage and notifies the KimFam group on WhatsApp.
-                </p>
+              {/* Download + Approve */}
+              <div className="space-y-2">
+                <a
+                  href={`/api/meetings/${meetingId}/minutes/draft`}
+                  download={`KimFam_${meetingRef.replace(/\s+/g, '_')}_Minutes.docx`}
+                  className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm"
+                  style={{ background: '#1e293b', color: '#64748b', border: '1px solid #334155', textDecoration: 'none' }}>
+                  ↓ Download .docx
+                </a>
                 <button onClick={publish} disabled={publishing}
                   className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40"
                   style={{ background: '#4c1d9544', color: '#a78bfa', border: '1px solid #4c1d9555' }}>
                   {publishing ? 'Uploading + notifying…' : 'Approve & Send to group →'}
                 </button>
                 <button onClick={onConfirmed}
-                  className="w-full py-2 rounded-xl text-xs"
-                  style={{ background: 'transparent', color: '#475569', border: '1px solid #334155' }}>
+                  className="w-full py-1.5 rounded-xl text-xs"
+                  style={{ background: 'transparent', color: '#334155', border: '1px solid #1e293b' }}>
                   Save without sending
                 </button>
               </div>

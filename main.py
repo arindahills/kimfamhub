@@ -486,18 +486,31 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         if new_status and new_status in valid_transitions and current_status not in ("done", "cancelled"):
             _exec("UPDATE actions SET status=%s WHERE ref=%s", (new_status, ref))
 
-    # ── Generate .docx minutes and save to /tmp ────────────────────────────────
+    # ── Build structured minutes data, save JSON + generate .docx ────────────
     mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
+    mtg_meta = mtg_row[0] if mtg_row else {}
+
+    minutes_data = {
+        "meeting_ref":   meeting_ref,
+        "date":          str(mtg_meta.get("date", "")),
+        "venue":         mtg_meta.get("venue") or "Google Meet",
+        "start_time_eat": str(mtg_meta.get("start_time_eat") or "")[:5],
+        "summary":       summary,
+        "key_topics":    key_topics,
+        "key_decisions": key_decisions,
+        "actions":       docx_actions,
+    }
+
+    data_path  = f"/tmp/kimfam_minutes_{meeting_id}_data.json"
     draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
     try:
-        _docx_bytes = _build_minutes_docx(
-            meeting_ref=meeting_ref,
-            mtg=mtg_row[0] if mtg_row else {},
-            summary=summary,
-            key_topics=key_topics,
-            key_decisions=key_decisions,
-            actions=docx_actions,
-        )
+        import json as _json2
+        with open(data_path, "w") as _f:
+            _json2.dump(minutes_data, _f)
+        _docx_bytes = _build_minutes_docx(mtg=mtg_meta, **{
+            k: minutes_data[k]
+            for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
+        })
         with open(draft_path, "wb") as _f:
             _f.write(_docx_bytes)
     except Exception as _e:
@@ -506,10 +519,11 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         draft_path = None
 
     return {
-        "ok": True,
-        "created": created_refs,
-        "updated": len(updates),
-        "draft_url": f"/api/meetings/{meeting_id}/minutes/draft" if draft_path else None,
+        "ok":         True,
+        "created":    created_refs,
+        "updated":    len(updates),
+        "draft_url":  f"/api/meetings/{meeting_id}/minutes/draft" if draft_path else None,
+        "minutes_data": minutes_data,
     }
 
 
@@ -656,6 +670,112 @@ async def meetings_minutes_draft_replace(meeting_id: int, request: Request):
         f.write(raw)
 
     return {"ok": True, "message": "Draft replaced — Approve & Send will use this version"}
+
+
+@app.post("/api/meetings/{meeting_id}/minutes/edit")
+async def meetings_minutes_edit(meeting_id: int, request: Request):
+    """Apply a plain-English edit instruction to the minutes via Claude, regenerate .docx."""
+    from fastapi import HTTPException as _HE
+    import os as _os, json as _json3, re as _re4
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    body = await request.json()
+    instruction = (body.get("instruction") or "").strip()
+    if not instruction:
+        raise _HE(status_code=400, detail="instruction required")
+
+    data_path  = f"/tmp/kimfam_minutes_{meeting_id}_data.json"
+    draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    if not _os.path.exists(data_path):
+        raise _HE(status_code=404, detail="Minutes data not found — confirm meeting first")
+
+    with open(data_path) as _f:
+        minutes_data = _json3.load(_f)
+
+    prompt = f"""You are editing KimFam Investment Club meeting minutes.
+
+CURRENT MINUTES (JSON):
+{_json3.dumps(minutes_data, indent=2)}
+
+EDIT INSTRUCTION FROM CHAIRMAN:
+{instruction}
+
+Apply the instruction and return ONLY valid JSON with the same structure (no markdown, no explanation):
+{{
+  "meeting_ref": "...",
+  "date": "...",
+  "venue": "...",
+  "start_time_eat": "...",
+  "summary": "...",
+  "key_topics": "...",
+  "key_decisions": ["..."],
+  "actions": [
+    {{"ref":"...","description":"...","assignees":["..."],"deadline":"...","priority":"..."}}
+  ]
+}}
+
+Rules:
+- Only apply what was instructed. Do not change anything else.
+- Preserve all action refs exactly as-is.
+- Keep all existing actions unless explicitly told to remove one.
+"""
+
+    raw = ""
+    try:
+        import asyncio as _aio
+        env = dict(_os.environ); env["HOME"] = "/root"
+        proc = await _aio.create_subprocess_exec(
+            "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+            stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
+        )
+        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode == 0:
+            raw = stdout.decode().strip()
+    except Exception:
+        pass
+
+    if not raw:
+        groq_key = _os.getenv("GROQ_API_KEY", "")
+        if groq_key:
+            from groq import Groq as _Groq
+            resp = _Groq(api_key=groq_key).chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000, temperature=0.1,
+            )
+            raw = resp.choices[0].message.content.strip()
+
+    if not raw:
+        raise _HE(status_code=503, detail="AI unavailable — try again")
+
+    raw = _re4.sub(r"^```(?:json)?\s*", "", raw)
+    raw = _re4.sub(r"\s*```$", "", raw.strip())
+    try:
+        updated = _json3.loads(raw)
+    except Exception:
+        m = _re4.search(r"\{.*\}", raw, _re4.DOTALL)
+        if m:
+            updated = _json3.loads(m.group())
+        else:
+            raise _HE(status_code=502, detail="AI returned unparseable response")
+
+    # Save updated data + regenerate .docx
+    with open(data_path, "w") as _f:
+        _json3.dump(updated, _f)
+
+    mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
+    _docx_bytes = _build_minutes_docx(mtg=mtg_row[0] if mtg_row else {}, **{
+        k: updated[k]
+        for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
+    })
+    with open(draft_path, "wb") as _f:
+        _f.write(_docx_bytes)
+
+    return {"ok": True, "minutes_data": updated}
 
 
 @app.post("/api/meetings/{meeting_id}/publish")
