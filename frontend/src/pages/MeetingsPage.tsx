@@ -205,11 +205,10 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
   const [viewMinutes, setViewMinutes] = useState(false)
 
-  // Conduct is only relevant for the current month's meetings (or currently live ones)
-  const today = new Date()
-  const mDate = new Date(m.meeting_date)
-  const isConductable = m.conductor_active ||
-    (mDate.getFullYear() === today.getFullYear() && mDate.getMonth() === today.getMonth())
+  // Conduct is only relevant for meetings that haven't happened yet (today or future),
+  // or ones currently live. Past meetings get no Conduct button.
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const isConductable = m.conductor_active || m.meeting_date >= todayStr
 
   return (
     <>
