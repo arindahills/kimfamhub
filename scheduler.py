@@ -8,7 +8,7 @@ Jobs:
   daily 08:00   : check_loan_due        — warn 7 days before loan repayment
   5th 08:00     : monthly_payment_reminders — families still owing prev month
 """
-import os, re, hashlib, sqlite3, logging
+import os, re, hashlib, sqlite3, logging, fcntl
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -453,12 +453,13 @@ def check_meeting_today():
 # Scheduler startup
 # ─────────────────────────────────────────────────────────────────────────────
 _scheduler = None
+_lock_fd   = None  # holds the file descriptor so the lock survives for the process lifetime
+
+_LOCK_FILE = "/tmp/kimfam_scheduler.lock"
 
 def start():
-    global _scheduler
-    # Use a PostgreSQL advisory lock so only one gunicorn worker runs the scheduler.
-    # pg_try_advisory_lock(key) returns true if this process acquired it; false otherwise.
-    # The lock is released automatically when the DB connection closes (worker dies).
+    global _scheduler, _lock_fd
+    # Primary guard: PostgreSQL advisory lock (preferred — survives worker recycles cleanly).
     try:
         import psycopg2
         _lock_conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""))
@@ -471,7 +472,19 @@ def start():
             return
         log.info("Scheduler PG advisory lock acquired")
     except Exception as e:
-        log.warning("Scheduler PG lock error, running anyway: %s", e)
+        # Fallback: exclusive file lock so only one worker proceeds even if PG is temporarily
+        # unreachable.  "running anyway" without any guard was the root cause of double-sends.
+        log.warning("Scheduler PG lock unavailable (%s) — falling back to file lock", e)
+        try:
+            _lock_fd = open(_LOCK_FILE, "w")
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            log.info("Scheduler file lock acquired")
+        except BlockingIOError:
+            log.info("Scheduler file lock held by another worker — skipping")
+            return
+        except Exception as fe:
+            log.warning("Scheduler file lock also failed (%s) — skipping to prevent double-send", fe)
+            return
     _ensure_cache_table()
     _scheduler = BackgroundScheduler(timezone=KAMPALA)
     # Action tracker poll: every 30 minutes
