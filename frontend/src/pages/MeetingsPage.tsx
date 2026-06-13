@@ -50,9 +50,14 @@ function MinutesModal({ url, title, onClose }: { url: string; title: string; onC
 
 // ── New Meeting modal ─────────────────────────────────────────────────────────
 function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const today = new Date().toISOString().slice(0, 10)
+  const nextSunday = (() => {
+    const d = new Date()
+    const day = d.getDay() // 0 = Sunday
+    if (day !== 0) d.setDate(d.getDate() + (7 - day))
+    return d.toISOString().slice(0, 10)
+  })()
   const [nextRef, setNextRef]     = useState('')
-  const [date, setDate]           = useState(today)
+  const [date, setDate]           = useState(nextSunday)
   const [venue, setVenue]         = useState('Google Meet')
   const [startTime, setStart]     = useState('16:30')
   const [topics, setTopics]       = useState('')

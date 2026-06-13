@@ -413,33 +413,76 @@ def check_meeting_reminders():
             break
 
 
-# JOB 4b: Meeting reminder — same day at 16:30 Kampala
+# JOB 4b: Meeting reminder — 1 hour before start_time_eat
+# Polls every 30 min. Fires when now is within the 55–85 min window before start.
+# Uses cache DB to ensure only one reminder per meeting ref per day.
 # ─────────────────────────────────────────────────────────────────────────────
 def check_meeting_today():
-    log.info("Scheduler: checking meeting reminders (same-day 4:30pm)")
-    rows = _get_meeting_rows()
-    if not rows:
-        return
-    today = datetime.now(KAMPALA).date()
+    log.info("Scheduler: checking meeting reminders (1-hour-before)")
+    now = datetime.now(KAMPALA)
+    today = now.date()
     env = " [STAGING]" if IS_STAGING else ""
-    for r in rows:
-        date_str = str(r.get("Date", "") or r.get("Meeting Date", "")).strip()
-        ref      = str(r.get("Meeting Ref", "") or r.get("Ref", "")).strip()
-        venue    = str(r.get("Venue", "") or r.get("Location", "")).strip()
-        d = _parse_date(date_str)
-        if d == today:
-            msg = (
-                f"🔔 *KimFam Meeting Today{env}*\n"
-                f"*Ref:* {ref}\n"
-                f"*Time:* 4:30pm EAT — starting now\n"
-                + (f"*Venue:* {venue}\n" if venue else "") +
-                f"_Track minutes and actions live on kimfamhub.com_ 💻"
-                + _SIG
+
+    try:
+        pg = _pg()
+        cur = pg.cursor(cursor_factory=__import__("psycopg2.extras", fromlist=["RealDictCursor"]).RealDictCursor)
+        cur.execute("""
+            SELECT ref, date, start_time_eat, venue FROM meetings
+            WHERE date = %s
+        """, (today,))
+        meetings = cur.fetchall()
+        pg.close()
+    except Exception as e:
+        log.warning("check_meeting_today DB error: %s", e)
+        return
+
+    for r in meetings:
+        ref   = str(r["ref"] or "").strip()
+        venue = str(r["venue"] or "").strip()
+        start = r["start_time_eat"]  # datetime.time or None
+
+        if start:
+            # Build aware datetime for meeting start
+            start_dt = datetime.combine(today, start).replace(tzinfo=KAMPALA)
+            mins_until = (start_dt - now).total_seconds() / 60
+        else:
+            # No recorded start time — fall back to 55-min window before 16:30
+            fallback = datetime.combine(today, __import__("datetime").time(16, 30)).replace(tzinfo=KAMPALA)
+            mins_until = (fallback - now).total_seconds() / 60
+
+        # Fire if we're in the 55–85 minute window before start
+        if not (55 <= mins_until <= 85):
+            continue
+
+        # Dedup: only send once per ref per calendar day
+        cache_key = f"1h_reminder_{ref}_{today}"
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM action_tracker_cache WHERE action_id=?", (cache_key,)
+            ).fetchone()
+            if row:
+                log.info("1-hour reminder already sent for %s today", ref)
+                continue
+            conn.execute(
+                "INSERT INTO action_tracker_cache(action_id,row_hash,updated_at) VALUES(?,?,?)",
+                (cache_key, "sent", str(today))
             )
-            all_phones = [p for p in _notif.MEMBER_PHONES.values() if p]
-            _notif._broadcast(all_phones, msg)
-            log.info("Same-day meeting reminder sent for %s", ref)
-            break
+            conn.commit()
+
+        start_fmt = start.strftime("%-I:%M %p") if start else "4:30 PM"
+        msg = (
+            f"⏰ *KimFam Meeting in 1 hour{env}*\n"
+            f"*Ref:* {ref}\n"
+            f"*Time:* {start_fmt} EAT\n"
+            + (f"*Venue:* {venue}\n" if venue else "") +
+            f"_Join on time. Minutes and actions tracked live on kimfamhub.com_ 💻"
+            + _SIG
+        )
+        all_phones = [p for p in _notif.MEMBER_PHONES.values() if p]
+        if IS_STAGING:
+            all_phones = [_notif.HILLARY_PHONE]
+        _notif._broadcast(all_phones, msg)
+        log.info("1-hour meeting reminder sent for %s (%.0f min until start)", ref, mins_until)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scheduler startup
@@ -487,7 +530,7 @@ def start():
                        id="deadline_check", replace_existing=True)
     _scheduler.add_job(check_meeting_reminders, "cron", hour=8, minute=0,
                        id="meeting_reminder", replace_existing=True)
-    _scheduler.add_job(check_meeting_today, "cron", hour=16, minute=30,
+    _scheduler.add_job(check_meeting_today, "interval", minutes=30,
                        id="meeting_today", replace_existing=True)
     _scheduler.add_job(check_loan_due, "cron", hour=8, minute=5,
                        id="loan_due", replace_existing=True)
