@@ -226,11 +226,11 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
           <div className="flex gap-1.5 flex-wrap justify-end">
             {isAdmin && isConductable && (
               <button onClick={() => onConduct(m)}
-                className="text-[11px] px-2 py-1 rounded-lg font-semibold"
+                className="text-[11px] px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-all hover:brightness-110"
                 style={{
-                  background: m.conductor_active ? '#1e3a5f' : '#0f2a4a',
-                  color:      m.conductor_active ? '#93c5fd' : '#475569',
-                  border:     m.conductor_active ? '1px solid #3b82f6' : '1px solid #1e3a5f',
+                  background: m.conductor_active ? '#15803d' : '#1e3a5f',
+                  color:      m.conductor_active ? '#dcfce7' : '#bfdbfe',
+                  border:     m.conductor_active ? '1px solid #22c55e' : '1px solid #3b82f6',
                 }}>
                 {m.conductor_active ? '● Live' : 'Conduct'}
               </button>
