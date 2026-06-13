@@ -337,6 +337,7 @@ async def process_meeting(meeting_id: int, request: Request,
         SELECT id, ref, description, assignee, deadline, status
         FROM actions
         WHERE status NOT IN ('done','cancelled','carried_over')
+           OR (status = 'done' AND closed_at >= NOW() - INTERVAL '21 days')
         ORDER BY ref DESC
     """)
     # Pull the latest few updates members have posted on each open action so the
@@ -401,8 +402,10 @@ async def process_meeting(meeting_id: int, request: Request,
 RECENT MEETINGS (for context):
 {prev_summary or 'None yet'}
 
-CURRENTLY OPEN ACTIONS — with the progress updates members have already posted in the app
-(do NOT recreate these unless the transcript explicitly assigns a new deadline or owner;
+OPEN AND RECENTLY-COMPLETED ACTIONS — with the progress updates members have already posted
+in the app. Items tagged [done] were completed in the last few weeks: acknowledge them as
+closed/achieved in the summary or decisions, but do NOT reopen them.
+(Do NOT recreate any of these unless the transcript explicitly assigns a new deadline or owner;
 treat the posted updates as factual progress and reflect them in updates_to_existing even if
 the transcript is silent on them):
 {open_summary or 'None'}
@@ -2210,6 +2213,65 @@ async def internal_edit_update(update_id: int, request: Request):
         raise _HE(status_code=400, detail="text required")
     _exec("UPDATE project_updates SET text=%s WHERE id=%s", (new_text, update_id))
     return {"ok": True}
+
+
+# ── Internal action mutations (for the WhatsApp agent's group auto-capture) ────
+@app.post("/api/internal/actions/done")
+async def internal_action_done(request: Request):
+    """Mark an action Done in the DB. Internal-key auth (used by the WhatsApp agent)."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    if not _internal_key_ok(request):
+        raise _HE(status_code=403, detail="Forbidden")
+    body = await request.json()
+    action_ref = str(body.get("action_id", "")).strip()
+    note       = str(body.get("note", "")).strip()
+    author     = str(body.get("author", "agent")).strip() or "agent"
+    if not action_ref:
+        raise _HE(status_code=400, detail="action_id required")
+    rows = _dbq("SELECT id, status FROM actions WHERE ref=%s", (action_ref,))
+    if not rows:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    action_db_id = rows[0]["id"]
+    old_status   = rows[0]["status"]
+    try:
+        _exec("UPDATE actions SET status='done', closed_at=NOW() WHERE ref=%s", (action_ref,))
+        _exec("""INSERT INTO action_updates (action_id, author, text, type, old_value, new_value)
+                 VALUES (%s,%s,%s,'status_change',%s,'done')""",
+              (action_db_id, author, note or "Marked done via WhatsApp auto-capture", old_status))
+        return {"ok": True, "action_id": action_ref}
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"internal_action_done: {e}")
+        raise _HE(status_code=500, detail="DB update failed")
+
+
+@app.post("/api/internal/actions/update")
+async def internal_action_update(request: Request):
+    """Log a progress update on an action. Internal-key auth (used by the WhatsApp agent)."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    if not _internal_key_ok(request):
+        raise _HE(status_code=403, detail="Forbidden")
+    body = await request.json()
+    action_ref  = str(body.get("action_id", "")).strip()
+    update_text = str(body.get("update_text", "")).strip()
+    author      = str(body.get("author", "agent")).strip() or "agent"
+    if not action_ref or not update_text:
+        raise _HE(status_code=400, detail="action_id and update_text required")
+    rows = _dbq("SELECT id, status FROM actions WHERE ref=%s", (action_ref,))
+    if not rows:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    action_db_id = rows[0]["id"]
+    try:
+        _exec("""INSERT INTO action_updates (action_id, author, text, type)
+                 VALUES (%s,%s,%s,'comment')""",
+              (action_db_id, author, update_text))
+        if rows[0]["status"] == "open":
+            _exec("UPDATE actions SET status='in_progress' WHERE ref=%s", (action_ref,))
+        return {"ok": True, "action_id": action_ref}
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"internal_action_update: {e}")
+        raise _HE(status_code=500, detail="DB update failed")
 
 
 
