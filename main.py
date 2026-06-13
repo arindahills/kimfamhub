@@ -827,6 +827,47 @@ def _build_minutes_docx(meeting_ref: str, mtg: dict, summary: str,
     return buf.getvalue()
 
 
+@app.get("/api/meetings/{meeting_id}/minutes")
+async def meetings_minutes_file(meeting_id: int, request: Request):
+    """Download the published minutes .docx. Any authenticated member.
+    Used when minutes are served locally (e.g. staging, or no R2)."""
+    from fastapi import HTTPException as _HE
+    from fastapi.responses import FileResponse as _FR
+    import os as _os
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    if not _os.path.exists(path):
+        raise _HE(status_code=404, detail="Minutes file not found")
+    rows = _dbq("SELECT ref FROM meetings WHERE id=%s", (meeting_id,))
+    safe_ref = (rows[0]["ref"] if rows else f"meeting_{meeting_id}").replace(" ", "_").replace("/", "_")
+    return _FR(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+               filename=f"KimFam_{safe_ref}_Minutes.docx")
+
+
+@app.get("/api/meetings/{meeting_id}/minutes/view")
+async def meetings_minutes_view(meeting_id: int, request: Request):
+    """Render the published minutes .docx as HTML for in-app viewing. All members."""
+    from fastapi import HTTPException as _HE
+    import os as _os, io as _io
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    if not _os.path.exists(path):
+        raise _HE(status_code=404, detail="Minutes file not found")
+    with open(path, "rb") as _f:
+        result = mammoth.convert_to_html(_io.BytesIO(_f.read()))
+    html = f"""<!DOCTYPE html><html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{{font-family:Georgia,serif;max-width:800px;margin:0 auto;padding:20px;background:#fff;color:#1a1a1a;line-height:1.7;font-size:15px}}
+  h1,h2,h3{{color:#1a3a1a;margin-top:1.5em}} table{{border-collapse:collapse;width:100%;margin:1em 0}}
+  td,th{{border:1px solid #ccc;padding:8px 12px}} th{{background:#f0f7f0}}
+  p{{margin:0.7em 0}}
+</style></head><body>{result.value}</body></html>"""
+    return HTMLResp(content=html)
+
+
 @app.get("/api/meetings/{meeting_id}/minutes/draft")
 async def meetings_minutes_draft(meeting_id: int, request: Request):
     """Serve the generated draft .docx for admin review (before publish)."""
@@ -1019,9 +1060,11 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
             import logging as _lg
             _lg.getLogger("main").error(f"R2 upload failed: {_e}")
 
-    # Update DB
+    # Update DB. When R2 isn't used (e.g. staging), point at the app's own
+    # viewable/downloadable endpoint, NOT the raw /tmp path (which can't render).
+    final_url = minutes_url or f"/api/meetings/{meeting_id}/minutes"
     _exec2("UPDATE meetings SET minutes_url=%s WHERE id=%s",
-           (minutes_url or draft_path, meeting_id))
+           (final_url, meeting_id))
 
     # WhatsApp notification. Use the SAME env flag as the rest of the app
     # (KIMFAM_ENV). On staging this must NEVER reach the real family group —
