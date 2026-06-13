@@ -20,6 +20,7 @@ interface ConductorState {
   current_item: number | null
   started: boolean
   ended: boolean
+  recording: boolean
   item_elapsed_s: number | null
   total_elapsed_s: number | null
 }
@@ -64,8 +65,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Audio recorder — only the admin who clicks Start Meeting records ────────
-  const [wantRecord, setWantRecord]   = useState(false)   // pre-start toggle
+  // ── Audio recorder — starts automatically when admin clicks Start Meeting ───
   const [recording, setRecording]     = useState(false)
   const [audioBlob, setAudioBlob]     = useState<Blob | null>(null)
   const [uploading, setUploading]     = useState(false)
@@ -170,7 +170,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   }
 
   const startMeeting = async () => {
-    if (wantRecord) await startRecording()
+    await startRecording()   // always record — error is non-blocking
     await act('start')
   }
 
@@ -278,12 +278,13 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               <p className="text-[9px]" style={{ color: '#334155' }}>total</p>
             </div>
           )}
-          {/* Audio indicator */}
-          {recording && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-full"
-              style={{ background: '#7f1d1d44', border: '1px solid #ef4444' }}>
-              <div className="w-2 h-2 rounded-full" style={{ background: '#ef4444', animation: 'pulse 1s infinite' }} />
-              <span className="text-[10px]" style={{ color: '#fca5a5' }}>REC</span>
+          {/* REC badge — shown to ALL participants when meeting is being recorded */}
+          {state?.recording && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
+              style={{ background: '#7f1d1d55', border: '1px solid #ef444466' }}>
+              <div className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ background: '#ef4444', boxShadow: '0 0 6px #ef4444', animation: 'pulse 1.2s ease-in-out infinite' }} />
+              <span className="text-[11px] font-semibold" style={{ color: '#fca5a5' }}>REC</span>
             </div>
           )}
           <button onClick={onClose} style={{ color: '#475569', fontSize: 18 }}>✕</button>
@@ -300,26 +301,16 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               {flat.length} agenda items · tap to begin
             </p>
             {isAdmin && (
-              <>
-                {/* Record toggle — only for the person starting the meeting */}
-                <button
-                  onClick={() => setWantRecord(r => !r)}
-                  className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 transition-all"
-                  style={{
-                    background: wantRecord ? '#7f1d1d33' : '#0d1829',
-                    color:      wantRecord ? '#fca5a5'   : '#334155',
-                    border:     wantRecord ? '1px solid #ef444444' : '1px solid #1e293b',
-                  }}>
-                  <span>{wantRecord ? '🎙' : '○'}</span>
-                  {wantRecord ? 'Will record when meeting starts' : 'Record this meeting (optional)'}
-                </button>
-
-                <button onClick={startMeeting} disabled={acting}
-                  className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
-                  style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
-                  {acting ? 'Starting…' : 'Start Meeting →'}
-                </button>
-              </>
+              <button onClick={startMeeting} disabled={acting}
+                className="w-full py-4 rounded-2xl text-lg font-bold disabled:opacity-40"
+                style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+                {acting ? 'Starting…' : 'Start Meeting →'}
+              </button>
+            )}
+            {!isAdmin && (
+              <p className="text-sm text-center" style={{ color: '#334155' }}>
+                Waiting for admin to start the meeting…
+              </p>
             )}
           </div>
         )}

@@ -1185,7 +1185,8 @@ async def conductor_state(meeting_id: int, request: Request):
 
     rows = _dbq("""SELECT ref, date, venue, start_time_eat, agenda,
                           conductor_item, conductor_started_at,
-                          conductor_item_started_at, conductor_ended_at
+                          conductor_item_started_at, conductor_ended_at,
+                          conductor_recording
                    FROM meetings WHERE id=%s""", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
@@ -1209,6 +1210,7 @@ async def conductor_state(meeting_id: int, request: Request):
         "current_item":  r["conductor_item"],        # None = not started, -1 = ended
         "started":       r["conductor_started_at"] is not None,
         "ended":         r["conductor_ended_at"] is not None,
+        "recording":     bool(r["conductor_recording"]) and r["conductor_ended_at"] is None,
         "item_elapsed_s":  item_elapsed,
         "total_elapsed_s": total_elapsed,
     }
@@ -1249,7 +1251,8 @@ async def conductor_start(meeting_id: int, request: Request):
                conductor_item=0,
                conductor_started_at=NOW(),
                conductor_item_started_at=NOW(),
-               conductor_ended_at=NULL
+               conductor_ended_at=NULL,
+               conductor_recording=TRUE
              WHERE id=%s""", (meeting_id,))
     return {"ok": True, "current_item": 0}
 
@@ -1310,7 +1313,8 @@ async def conductor_end(meeting_id: int, request: Request):
     rows = _dbq("SELECT id, conductor_started_at FROM meetings WHERE id=%s", (meeting_id,))
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
-    _exec("""UPDATE meetings SET conductor_item=-1, conductor_ended_at=NOW()
+    _exec("""UPDATE meetings SET conductor_item=-1, conductor_ended_at=NOW(),
+                                conductor_recording=FALSE
              WHERE id=%s""", (meeting_id,))
     return {"ok": True, "ended": True}
 
