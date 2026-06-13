@@ -205,43 +205,55 @@ async def process_meeting(meeting_id: int, request: Request,
     txt_field    = form.get("transcript_text", "").strip()
     upload_file  = form.get("transcript_file")
 
-    # ── 2. Get transcript from whichever source was provided ─────────────────
-    transcript = ""
+    # ── 2. Collect transcript from all provided sources, combine if multiple ──
+    transcript_parts = []  # list of (label, text)
 
     if txt_field:
-        transcript = txt_field
+        transcript_parts.append(("Pasted text", txt_field))
 
-    elif upload_file and hasattr(upload_file, "filename"):
-        fname = (upload_file.filename or "").lower()
+    if upload_file and hasattr(upload_file, "filename"):
+        fname_u = (upload_file.filename or "").lower()
         raw = await upload_file.read()
-        if fname.endswith(".docx"):
+        if fname_u.endswith(".docx"):
             from io import BytesIO as _BIO
             import docx as _docx
-            doc = _docx.Document(_BIO(raw))
-            transcript = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            _doc = _docx.Document(_BIO(raw))
+            file_text = "\n".join(p.text for p in _doc.paragraphs if p.text.strip())
         else:
-            # .txt or any other text file
-            transcript = raw.decode("utf-8", errors="replace")
+            file_text = raw.decode("utf-8", errors="replace")
+        if file_text.strip():
+            transcript_parts.append((f"File: {upload_file.filename}", file_text))
 
-    elif audio_file and hasattr(audio_file, "filename"):
+    if audio_file and hasattr(audio_file, "filename"):
         groq_key = _os.getenv("GROQ_API_KEY", "")
         if not groq_key:
             raise _HE(status_code=503, detail="Groq API key not configured")
         from groq import Groq as _Groq
         audio_bytes = await audio_file.read()
-        fname = audio_file.filename or "audio.m4a"
+        audio_name = audio_file.filename or "audio.m4a"
         try:
             resp = _Groq(api_key=groq_key).audio.transcriptions.create(
-                file=(fname, audio_bytes, "audio/mpeg"),
+                file=(audio_name, audio_bytes, "audio/mpeg"),
                 model="whisper-large-v3-turbo",
                 response_format="text",
             )
-            transcript = str(resp).strip()
+            audio_text = str(resp).strip()
+            if audio_text:
+                transcript_parts.append((f"Audio: {audio_name}", audio_text))
         except Exception as e:
             raise _HE(status_code=502, detail=f"Transcription failed: {e}")
 
-    if not transcript:
+    if not transcript_parts:
         raise _HE(status_code=400, detail="No transcript content provided")
+
+    if len(transcript_parts) == 1:
+        transcript = transcript_parts[0][1]
+    else:
+        # Multiple sources — label clearly so Claude can reconcile
+        transcript = "\n\n".join(
+            f"[SOURCE: {label}]\n{text}"
+            for label, text in transcript_parts
+        )
 
     # ── 3. Pull context from DB ───────────────────────────────────────────────
     meeting_rows = _dbq("""
@@ -269,6 +281,13 @@ async def process_meeting(meeting_id: int, request: Request,
         for r in open_actions
     )
 
+    multi_source_note = (
+        "NOTE: Multiple transcript sources are provided below. "
+        "Reconcile them: prefer the more detailed account for each point. "
+        "Do not duplicate actions that appear in both sources.\n\n"
+        if len(transcript_parts) > 1 else ""
+    )
+
     prompt = f"""You are processing minutes for KimFam Investment Club meeting {mtg['ref']} held {mtg['date']}.
 
 RECENT MEETINGS (for context):
@@ -277,7 +296,7 @@ RECENT MEETINGS (for context):
 CURRENTLY OPEN ACTIONS (do NOT recreate these unless the transcript explicitly assigns a new deadline or owner):
 {open_summary or 'None'}
 
-MEETING TRANSCRIPT:
+{multi_source_note}MEETING TRANSCRIPT:
 {transcript}
 
 Extract and return ONLY valid JSON (no markdown, no explanation) in this exact shape:
@@ -399,6 +418,7 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
           (summary, key_topics, decisions_text, meeting_id))
 
     created_refs = []
+    docx_actions = []  # for .docx generation
     import re as _re2
     for i, a in enumerate(new_actions, start=1):
         desc      = (a.get("description") or "").strip()
@@ -442,6 +462,10 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
               (ref, desc, primary_assignee, assignees, meeting_id, meeting_ref,
                priority, deadline, parent, project, author))
         created_refs.append(ref)
+        docx_actions.append({
+            "ref": ref, "description": desc, "assignees": assignees,
+            "deadline": deadline or "", "priority": priority,
+        })
 
     # Apply updates to existing actions (additive: add note, optionally change status)
     for u in updates:
@@ -462,7 +486,203 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         if new_status and new_status in valid_transitions and current_status not in ("done", "cancelled"):
             _exec("UPDATE actions SET status=%s WHERE ref=%s", (new_status, ref))
 
-    return {"ok": True, "created": created_refs, "updated": len(updates)}
+    # ── Generate .docx minutes and save to /tmp ────────────────────────────────
+    mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
+    draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    try:
+        _docx_bytes = _build_minutes_docx(
+            meeting_ref=meeting_ref,
+            mtg=mtg_row[0] if mtg_row else {},
+            summary=summary,
+            key_topics=key_topics,
+            key_decisions=key_decisions,
+            actions=docx_actions,
+        )
+        with open(draft_path, "wb") as _f:
+            _f.write(_docx_bytes)
+    except Exception as _e:
+        import logging as _lg
+        _lg.getLogger("main").error(f"docx generation failed: {_e}")
+        draft_path = None
+
+    return {
+        "ok": True,
+        "created": created_refs,
+        "updated": len(updates),
+        "draft_url": f"/api/meetings/{meeting_id}/minutes/draft" if draft_path else None,
+    }
+
+
+def _build_minutes_docx(meeting_ref: str, mtg: dict, summary: str,
+                         key_topics: str, key_decisions: list, actions: list) -> bytes:
+    """Generate a .docx meeting minutes file. Returns raw bytes."""
+    from docx import Document as _DocxDoc
+    from docx.shared import Pt as _Pt, Cm as _Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _WDA
+    from io import BytesIO as _BIO
+    from datetime import date as _date
+
+    doc = _DocxDoc()
+
+    # Margins
+    for sec in doc.sections:
+        sec.top_margin    = _Cm(2.5)
+        sec.bottom_margin = _Cm(2.5)
+        sec.left_margin   = _Cm(3)
+        sec.right_margin  = _Cm(3)
+
+    # Title block
+    t = doc.add_heading("KIMFAM INVESTMENT CLUB", 0)
+    t.alignment = _WDA.CENTER
+
+    sub = doc.add_paragraph("Meeting Minutes")
+    sub.alignment = _WDA.CENTER
+    for run in sub.runs:
+        run.font.size = _Pt(13)
+        run.font.bold = True
+
+    doc.add_paragraph()
+
+    # Meeting metadata
+    meta = [
+        ("Meeting Reference", meeting_ref),
+        ("Date",   str(mtg.get("date", ""))),
+        ("Time",   (str(mtg.get("start_time_eat") or "")[:5] + " EAT") if mtg.get("start_time_eat") else ""),
+        ("Venue",  mtg.get("venue") or "Google Meet"),
+        ("Prepared by", "KimFam Hub"),
+    ]
+    for label, value in meta:
+        if not value:
+            continue
+        p = doc.add_paragraph()
+        run_l = p.add_run(f"{label}: ")
+        run_l.bold = True
+        p.add_run(value)
+
+    doc.add_paragraph()
+
+    # Summary
+    doc.add_heading("MEETING SUMMARY", 1)
+    doc.add_paragraph(summary or "")
+
+    # Key topics
+    if key_topics:
+        doc.add_heading("KEY TOPICS DISCUSSED", 1)
+        doc.add_paragraph(key_topics)
+
+    # Decisions
+    if key_decisions:
+        doc.add_heading("KEY DECISIONS", 1)
+        for idx, d in enumerate(key_decisions, 1):
+            doc.add_paragraph(f"{idx}. {d}")
+
+    # Action points table
+    if actions:
+        doc.add_heading("ACTION POINTS", 1)
+        tbl = doc.add_table(rows=1, cols=5)
+        tbl.style = "Table Grid"
+        hcells = tbl.rows[0].cells
+        for ci, hdr in enumerate(["Ref", "Description", "Assigned To", "Deadline", "Priority"]):
+            hcells[ci].text = hdr
+            for para in hcells[ci].paragraphs:
+                for run in para.runs:
+                    run.bold = True
+        for a in actions:
+            rc = tbl.add_row().cells
+            rc[0].text = a.get("ref", "")
+            rc[1].text = a.get("description", "")
+            asgn = a.get("assignees", [])
+            rc[2].text = ", ".join(asgn) if isinstance(asgn, list) else str(asgn)
+            rc[3].text = str(a.get("deadline") or "")
+            rc[4].text = (a.get("priority") or "medium").capitalize()
+
+    doc.add_paragraph()
+    doc.add_paragraph(f"Generated by KimFam Hub on {_date.today()}")
+
+    buf = _BIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@app.get("/api/meetings/{meeting_id}/minutes/draft")
+async def meetings_minutes_draft(meeting_id: int, request: Request):
+    """Serve the generated draft .docx for admin review (before publish)."""
+    from fastapi import HTTPException as _HE
+    from fastapi.responses import FileResponse as _FR
+    import os as _os
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    if not _os.path.exists(path):
+        raise _HE(status_code=404, detail="Draft not found — run Process + Confirm first")
+
+    rows = _dbq("SELECT ref FROM meetings WHERE id=%s", (meeting_id,))
+    safe_ref = (rows[0]["ref"] if rows else f"meeting_{meeting_id}").replace(" ", "_").replace("/", "_")
+    return _FR(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"KimFam_{safe_ref}_Minutes.docx",
+    )
+
+
+@app.post("/api/meetings/{meeting_id}/publish")
+async def meetings_minutes_publish(meeting_id: int, request: Request):
+    """Upload draft .docx to R2 and send WhatsApp group notification."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq2, execute as _exec2
+    import os as _os, re as _re3
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    rows = _dbq2("SELECT ref, date FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    mtg = rows[0]
+
+    draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
+    if not _os.path.exists(draft_path):
+        raise _HE(status_code=404, detail="Draft not found — confirm meeting first")
+
+    # Upload to R2
+    import r2_storage as _r2_pub
+    safe_ref  = _re3.sub(r"[^A-Za-z0-9_-]", "_", mtg["ref"])
+    r2_key    = f"minutes/{safe_ref}.docx"
+    minutes_url = None
+    if _r2_pub.is_configured():
+        try:
+            minutes_url = _r2_pub.upload(draft_path, r2_key, public=True)
+        except Exception as _e:
+            import logging as _lg
+            _lg.getLogger("main").error(f"R2 upload failed: {_e}")
+
+    # Update DB
+    _exec2("UPDATE meetings SET minutes_url=%s WHERE id=%s",
+           (minutes_url or draft_path, meeting_id))
+
+    # WhatsApp group notification
+    is_stg   = _os.getenv("APP_ENV", "production") == "staging"
+    group_jid = "120363429341325971@g.us" if is_stg else "254716595631-1631997730@g.us"
+    msg = (
+        f"*KimFam Hub* — Meeting minutes ready\n\n"
+        f"*{mtg['ref']}* ({mtg['date']})\n\n"
+        f"Minutes have been published. Open KimFam Hub to read and download."
+    )
+    try:
+        import requests as _req
+        _req.post("http://localhost:8080/api/send",
+                  json={"recipient": group_jid, "message": msg}, timeout=10)
+    except Exception:
+        pass
+
+    return {"ok": True, "minutes_url": minutes_url}
 
 
 @app.get("/api/members")
