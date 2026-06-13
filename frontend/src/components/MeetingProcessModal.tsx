@@ -81,6 +81,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
   // ── Input stage ─────────────────────────────────────────────────────────────
   const [textMode, setTextMode]     = useState<TextMode>('paste')
   const [pasteText, setPasteText]   = useState('')
+  const [notes, setNotes]           = useState('')
   const [audioFile, setAudioFile]   = useState<File | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const audioRef = useRef<HTMLInputElement>(null)
@@ -108,10 +109,11 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
   const hasAudio = !!audioFile
   const hasText  = textMode === 'paste' ? pasteText.trim().length > 0
                                         : !!uploadFile
+  const hasNotes = notes.trim().length > 0
 
   const submit = async () => {
-    if (!hasAudio && !hasText) {
-      setError('Please provide at least one source — audio or text.')
+    if (!hasAudio && !hasText && !hasNotes) {
+      setError('Please provide at least one source — audio, transcript, or your own notes.')
       return
     }
     setError(''); setProcessing(true)
@@ -123,6 +125,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
       } else if (textMode === 'file' && uploadFile) {
         fd.append('transcript_file', uploadFile)
       }
+      if (notes.trim()) fd.append('secretary_notes', notes)
 
       const res  = await fetch(`/api/meetings/${meetingId}/process`, {
         method: 'POST', credentials: 'include', body: fd,
@@ -376,14 +379,42 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
                 )}
               </div>
 
+              {/* Your notes — secretary's framing */}
+              <div className="rounded-xl p-4 space-y-3"
+                style={{ background: '#0d1829', border: `1px solid ${hasNotes ? '#a78bfa' : '#1e293b'}` }}>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold" style={{ color: '#c4b5fd' }}>Your notes (optional)</p>
+                  {hasNotes && (
+                    <span className="text-[9px] px-2 py-0.5 rounded-full"
+                      style={{ background: '#4c1d9533', color: '#c4b5fd', border: '1px solid #4c1d9555' }}>
+                      secretary
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px]" style={{ color: '#475569' }}>
+                  Your own framing, context, or corrections the transcript won't capture — e.g. "We deferred the
+                  equity vote because Alex was absent" or "Emphasise the washing bay decision." The AI treats this
+                  as authoritative when writing the minutes.
+                </p>
+                <textarea
+                  value={notes}
+                  onChange={e => setNotes(e.target.value)}
+                  placeholder="Type your notes for today's minutes here…"
+                  rows={5}
+                  className="w-full rounded-xl px-4 py-3 text-sm outline-none resize-none"
+                  style={{ background: '#121824', color: '#e2e8f0', border: '1px solid #334155' }}
+                />
+              </div>
+
               {/* Active sources summary */}
-              {(hasAudio || hasText) && (
+              {(hasAudio || hasText || hasNotes) && (
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[10px]" style={{ color: '#475569' }}>Will use:</span>
                   {hasAudio && <SourceChip active label={audioFile!.name} />}
                   {hasText && textMode === 'paste' && <SourceChip active label="pasted text" />}
                   {hasText && textMode === 'file' && <SourceChip active label={uploadFile!.name} />}
-                  {hasAudio && hasText && (
+                  {hasNotes && <SourceChip active label="your notes" />}
+                  {[hasAudio, hasText, hasNotes].filter(Boolean).length > 1 && (
                     <span className="text-[10px]" style={{ color: '#64748b' }}>— sources will be combined</span>
                   )}
                 </div>
@@ -391,7 +422,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, onClose, on
 
               {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
 
-              <button onClick={submit} disabled={processing || (!hasAudio && !hasText)}
+              <button onClick={submit} disabled={processing || (!hasAudio && !hasText && !hasNotes)}
                 className="w-full py-3 rounded-xl text-sm font-semibold disabled:opacity-40 transition-opacity"
                 style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
                 {processing ? 'Transcribing + extracting…' : 'Extract actions and decisions →'}

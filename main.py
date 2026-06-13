@@ -263,6 +263,7 @@ async def process_meeting(meeting_id: int, request: Request,
     audio_file   = form.get("audio_file")
     txt_field    = form.get("transcript_text", "").strip()
     upload_file  = form.get("transcript_file")
+    sec_notes    = (form.get("secretary_notes", "") or "").strip()
 
     # ── 2. Collect transcript from all provided sources, combine if multiple ──
     transcript_parts = []  # list of (label, text)
@@ -312,10 +313,13 @@ async def process_meeting(meeting_id: int, request: Request,
         except Exception as e:
             raise _HE(status_code=502, detail=f"Transcription failed: {e}")
 
-    if not transcript_parts:
-        raise _HE(status_code=400, detail="No transcript content provided")
+    if not transcript_parts and not sec_notes:
+        raise _HE(status_code=400, detail="No content provided — supply audio, a transcript, or your notes")
 
-    if len(transcript_parts) == 1:
+    if not transcript_parts:
+        # Notes-only: the secretary's notes ARE the meeting record
+        transcript = "(No recording or transcript — see the secretary's notes below.)"
+    elif len(transcript_parts) == 1:
         transcript = transcript_parts[0][1]
     else:
         # Multiple sources — label clearly so Claude can reconcile
@@ -357,6 +361,13 @@ async def process_meeting(meeting_id: int, request: Request,
         if len(transcript_parts) > 1 else ""
     )
 
+    secretary_block = (
+        f"\n\nSECRETARY'S NOTES (authoritative — these come directly from the meeting secretary "
+        f"and OVERRIDE the transcript where they conflict. Use them for framing, emphasis, "
+        f"corrections, and any context the transcript missed):\n{sec_notes}\n"
+        if sec_notes else ""
+    )
+
     prompt = f"""You are processing minutes for KimFam Investment Club meeting {mtg['ref']} held {mtg['date']}.
 
 RECENT MEETINGS (for context):
@@ -366,7 +377,7 @@ CURRENTLY OPEN ACTIONS (do NOT recreate these unless the transcript explicitly a
 {open_summary or 'None'}
 
 {multi_source_note}MEETING TRANSCRIPT:
-{transcript}
+{transcript}{secretary_block}
 
 Extract and return ONLY valid JSON (no markdown, no explanation) in this exact shape:
 {{
