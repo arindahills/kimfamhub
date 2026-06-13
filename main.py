@@ -153,6 +153,283 @@ async def add_action_update(request: Request):
         raise _HE(status_code=500, detail="DB update failed")
 
 
+@app.post("/api/meetings/{meeting_id}/process")
+async def process_meeting(meeting_id: int, request: Request,
+    audio_file: "UploadFile | None" = None,
+    transcript_text: str = "",
+    transcript_file: "UploadFile | None" = None,
+):
+    """
+    Accept audio / pasted text / .txt / .docx, transcribe if needed,
+    extract actions + decisions via Claude, return for frontend review.
+    Nothing is written to DB here — that happens on /confirm.
+    """
+    from fastapi import HTTPException as _HE, UploadFile as _UF, File as _File, Form as _Form
+    from db import query as _dbq
+    import os as _os, json as _json, tempfile as _tmp, re as _re
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    # ── 1. Parse multipart body manually (FastAPI doesn't inject File/Form into path endpoints cleanly)
+    form = await request.form()
+    audio_file   = form.get("audio_file")
+    txt_field    = form.get("transcript_text", "").strip()
+    upload_file  = form.get("transcript_file")
+
+    # ── 2. Get transcript from whichever source was provided ─────────────────
+    transcript = ""
+
+    if txt_field:
+        transcript = txt_field
+
+    elif upload_file and hasattr(upload_file, "filename"):
+        fname = (upload_file.filename or "").lower()
+        raw = await upload_file.read()
+        if fname.endswith(".docx"):
+            from io import BytesIO as _BIO
+            import docx as _docx
+            doc = _docx.Document(_BIO(raw))
+            transcript = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        else:
+            # .txt or any other text file
+            transcript = raw.decode("utf-8", errors="replace")
+
+    elif audio_file and hasattr(audio_file, "filename"):
+        groq_key = _os.getenv("GROQ_API_KEY", "")
+        if not groq_key:
+            raise _HE(status_code=503, detail="Groq API key not configured")
+        from groq import Groq as _Groq
+        audio_bytes = await audio_file.read()
+        fname = audio_file.filename or "audio.m4a"
+        try:
+            resp = _Groq(api_key=groq_key).audio.transcriptions.create(
+                file=(fname, audio_bytes, "audio/mpeg"),
+                model="whisper-large-v3-turbo",
+                response_format="text",
+            )
+            transcript = str(resp).strip()
+        except Exception as e:
+            raise _HE(status_code=502, detail=f"Transcription failed: {e}")
+
+    if not transcript:
+        raise _HE(status_code=400, detail="No transcript content provided")
+
+    # ── 3. Pull context from DB ───────────────────────────────────────────────
+    meeting_rows = _dbq("""
+        SELECT ref, date, key_decisions FROM meetings
+        ORDER BY date DESC LIMIT 8
+    """)
+    open_actions = _dbq("""
+        SELECT ref, description, assignee, deadline, status
+        FROM actions
+        WHERE status NOT IN ('done','cancelled','carried_over')
+        ORDER BY ref DESC
+    """)
+    current_meeting = _dbq("SELECT ref, date, venue FROM meetings WHERE id=%s", (meeting_id,))
+    if not current_meeting:
+        raise _HE(status_code=404, detail="Meeting not found")
+    mtg = current_meeting[0]
+
+    prev_summary = "\n".join(
+        f"- {r['ref']} ({r['date']}): {(r['key_decisions'] or 'no decisions recorded')[:120]}"
+        for r in meeting_rows if r['ref'] != mtg['ref']
+    )
+    open_summary = "\n".join(
+        f"- {r['ref']} [{r['status']}] {r['assignee']}: {r['description'][:80]}"
+        + (f" (due {r['deadline']})" if r['deadline'] else "")
+        for r in open_actions
+    )
+
+    prompt = f"""You are processing minutes for KimFam Investment Club meeting {mtg['ref']} held {mtg['date']}.
+
+RECENT MEETINGS (for context):
+{prev_summary or 'None yet'}
+
+CURRENTLY OPEN ACTIONS (do NOT recreate these unless the transcript explicitly assigns a new deadline or owner):
+{open_summary or 'None'}
+
+MEETING TRANSCRIPT:
+{transcript}
+
+Extract and return ONLY valid JSON (no markdown, no explanation) in this exact shape:
+{{
+  "summary": "2-3 sentence meeting summary",
+  "key_topics": "comma-separated list of main topics discussed",
+  "key_decisions": ["decision 1", "decision 2"],
+  "new_actions": [
+    {{
+      "description": "what needs to be done",
+      "assignee": "member name or All Members",
+      "deadline": "YYYY-MM-DD or null",
+      "priority": "high|medium|low",
+      "matches_existing": "KIM/ref if this updates an existing action or null"
+    }}
+  ],
+  "updates_to_existing": [
+    {{
+      "ref": "KIM/existing-ref",
+      "note": "what was said about this action in the meeting",
+      "new_status": "in_progress|blocked|done or null if unchanged"
+    }}
+  ]
+}}
+
+Rules:
+- Only include actions explicitly assigned in the transcript. Do not invent actions.
+- For each open action mentioned, add an entry to updates_to_existing.
+- If an existing action is being carried over with a new deadline, add it to new_actions with matches_existing set.
+- Assignee names must match exactly: Hillary, Hellen, Alex, Solomon, Viola, Max, James, or "All Members".
+- Deadlines must be absolute dates (YYYY-MM-DD). If relative ("next week"), compute from meeting date {mtg['date']}.
+"""
+
+    # ── 4. Call Claude CLI → Groq fallback ───────────────────────────────────
+    raw_json = ""
+
+    try:
+        import asyncio as _aio
+        env = dict(_os.environ); env["HOME"] = "/root"
+        proc = await _aio.create_subprocess_exec(
+            "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+            stdout=_aio.subprocess.PIPE,
+            stderr=_aio.subprocess.DEVNULL,
+            env=env
+        )
+        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode == 0:
+            raw_json = stdout.decode().strip()
+    except Exception:
+        pass
+
+    if not raw_json:
+        groq_key = _os.getenv("GROQ_API_KEY", "")
+        if groq_key:
+            from groq import Groq as _Groq
+            resp = _Groq(api_key=groq_key).chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            raw_json = resp.choices[0].message.content.strip()
+
+    if not raw_json:
+        raise _HE(status_code=503, detail="AI extraction unavailable — try again")
+
+    # Strip markdown fences if model wrapped the JSON
+    raw_json = _re.sub(r"^```(?:json)?\s*", "", raw_json)
+    raw_json = _re.sub(r"\s*```$", "", raw_json.strip())
+
+    try:
+        extracted = _json.loads(raw_json)
+    except _json.JSONDecodeError:
+        # Last resort: find the JSON block
+        m = _re.search(r"\{.*\}", raw_json, _re.DOTALL)
+        if m:
+            extracted = _json.loads(m.group())
+        else:
+            raise _HE(status_code=502, detail="AI returned unparseable response")
+
+    return {
+        "ok": True,
+        "meeting_ref": mtg["ref"],
+        "transcript_preview": transcript[:500] + ("…" if len(transcript) > 500 else ""),
+        "extracted": extracted,
+    }
+
+
+@app.post("/api/meetings/{meeting_id}/confirm")
+async def confirm_meeting_extraction(meeting_id: int, request: Request):
+    """Write approved extraction results to DB (actions + meeting decisions)."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    from datetime import datetime as _dt
+
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+
+    body = await request.json()
+    extracted   = body.get("extracted", {})
+    meeting_ref = body.get("meeting_ref", "")
+    author      = payload.get("sub", "admin")
+
+    rows = _dbq("SELECT id, ref FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+
+    summary        = extracted.get("summary", "")
+    key_topics     = extracted.get("key_topics", "")
+    key_decisions  = extracted.get("key_decisions", [])
+    new_actions    = extracted.get("new_actions", [])
+    updates        = extracted.get("updates_to_existing", [])
+
+    # Update meeting record
+    decisions_text = "\n".join(f"- {d}" for d in key_decisions)
+    _exec("""UPDATE meetings SET summary=%s, key_topics=%s, key_decisions=%s WHERE id=%s""",
+          (summary, key_topics, decisions_text, meeting_id))
+
+    created_refs = []
+    for i, a in enumerate(new_actions, start=1):
+        desc     = (a.get("description") or "").strip()
+        assignee = (a.get("assignee") or "Unknown").strip()
+        deadline = a.get("deadline") or None
+        priority = a.get("priority") or "medium"
+        parent   = a.get("matches_existing") or None
+        if not desc:
+            continue
+
+        # Build ref: meeting_ref like "KIM 009/2026" → "KIM/09/26-{i}"
+        import re as _re2
+        m = _re2.match(r"KIM\s+(\d+)/(\d{4})", meeting_ref)
+        if m:
+            num = int(m.group(1)); yr = m.group(2)[-2:]
+            ref = f"KIM/{num:02d}/{yr}-{i}"
+        else:
+            ref = f"{meeting_ref}-{i}"
+
+        # Avoid collision by appending suffix if ref exists
+        existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
+        suffix = "a"
+        while existing:
+            ref = ref.rstrip("abcdefghij") + suffix
+            existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
+            suffix = chr(ord(suffix) + 1)
+
+        _exec("""INSERT INTO actions
+                   (ref, description, assignee, meeting_id, related_meeting,
+                    status, priority, deadline, parent_ref, created_by)
+                 VALUES (%s,%s,%s,%s,%s,'open',%s,%s,%s,%s)
+                 ON CONFLICT (ref) DO NOTHING""",
+              (ref, desc, assignee, meeting_id, meeting_ref,
+               priority, deadline, parent, author))
+        created_refs.append(ref)
+
+    # Apply updates to existing actions (additive: add note, optionally change status)
+    for u in updates:
+        ref  = (u.get("ref") or "").strip()
+        note = (u.get("note") or "").strip()
+        new_status = (u.get("new_status") or "").strip().lower() or None
+        if not ref or not note:
+            continue
+        rows2 = _dbq("SELECT id, status FROM actions WHERE ref=%s", (ref,))
+        if not rows2:
+            continue
+        action_id = rows2[0]["id"]
+        current_status = rows2[0]["status"]
+        _exec("""INSERT INTO action_updates (action_id, author, text, type)
+                 VALUES (%s,%s,%s,'comment')""",
+              (action_id, f"Meeting {meeting_ref}", f"[From minutes] {note}"))
+        valid_transitions = {"open", "in_progress", "blocked", "done", "cancelled", "carried_over"}
+        if new_status and new_status in valid_transitions and current_status not in ("done", "cancelled"):
+            _exec("UPDATE actions SET status=%s WHERE ref=%s", (new_status, ref))
+
+    return {"ok": True, "created": created_refs, "updated": len(updates)}
+
+
 @app.get("/api/members")
 def get_members():
     from db import query as dbq
