@@ -5917,7 +5917,22 @@ async def club_equity(request: Request):
     ok   = _auth_verify(tok) or _internal_key_ok(request)
     if not ok:
         raise _HE(status_code=401, detail="Auth required")
-    return _fetch_family_equity()
+    data = dict(_fetch_family_equity())   # shallow copy so the decision overlay isn't cached
+    try:
+        _ensure_equity_votes_table()
+        decision = _equity_decision()
+    except Exception:
+        decision = None
+    if decision:
+        m = decision["adopted_model"]
+        where = f" at {decision['meeting_ref']}" if decision.get("meeting_ref") else ""
+        data["decision_status"] = "decided"
+        data["adopted_model"]   = m
+        data["decision_note"]   = (
+            f"Model {m} adopted{where}. This is now the club's official equity model; "
+            f"Models A, B and C remain visible for reference."
+        )
+    return data
 
 @app.get("/api/projects/chicken/allocation")
 async def chicken_allocation(request: Request):
@@ -5947,6 +5962,34 @@ def _ensure_equity_votes_table():
         voter      TEXT NOT NULL,
         voted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     )""")
+    _ex("""CREATE TABLE IF NOT EXISTS equity_decision (
+        id            SERIAL PRIMARY KEY,
+        adopted_model TEXT NOT NULL CHECK (adopted_model IN ('A','B','C')),
+        decided_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        decided_by    TEXT,
+        meeting_ref   TEXT,
+        tally         JSONB,
+        active        BOOLEAN NOT NULL DEFAULT TRUE
+    )""")
+
+def _equity_decision():
+    """The active adopted-model decision, or None if the vote is still open."""
+    from db import query as _q
+    import json as _json_d
+    rows = _q("""SELECT adopted_model, decided_at, decided_by, meeting_ref, tally
+                 FROM equity_decision WHERE active = TRUE
+                 ORDER BY decided_at DESC LIMIT 1""")
+    if not rows:
+        return None
+    r = rows[0]
+    raw = r["tally"]
+    return {
+        "adopted_model": r["adopted_model"],
+        "decided_at": str(r["decided_at"]),
+        "decided_by": r["decided_by"],
+        "meeting_ref": r["meeting_ref"],
+        "tally": (_json_d.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else (raw or {})),
+    }
 
 def _equity_vote_state(member_name: str | None):
     from db import query as _q
@@ -5959,6 +6002,13 @@ def _equity_vote_state(member_name: str | None):
         voted.append({"family_id": r["family_id"], "model": r["model"]})
     my_family = _MEMBER_TO_FAMILY.get(member_name) if member_name else None
     my_vote = next((r["model"] for r in rows if r["family_id"] == my_family), None)
+    decision = _equity_decision()
+    # Leading model (for the "Close vote & adopt" suggestion) — None on a tie.
+    leader = None
+    if any(tally.values()):
+        mx = max(tally.values())
+        leaders = [m for m, c in tally.items() if c == mx]
+        leader = leaders[0] if len(leaders) == 1 else None
     return {
         "tally": tally,
         "total_families": _TOTAL_FAMILIES,
@@ -5966,6 +6016,9 @@ def _equity_vote_state(member_name: str | None):
         "my_family_id": my_family,
         "my_vote": my_vote,
         "voted": voted,
+        "decided": decision is not None,
+        "decision": decision,
+        "leader": leader,
     }
 
 @app.get("/api/club/equity/vote")
@@ -5995,6 +6048,8 @@ async def cast_equity_vote(request: Request):
     if model not in _VALID_MODELS:
         raise _HE(status_code=400, detail="Model must be A, B or C.")
     _ensure_equity_votes_table()
+    if _equity_decision() is not None:
+        raise _HE(status_code=409, detail="The equity model has already been decided — voting is closed.")
     # Upsert: one row per family; re-voting updates the family's choice.
     _ex("""INSERT INTO equity_votes (family_id, model, voter, voted_at)
            VALUES (%s, %s, %s, now())
@@ -6002,6 +6057,52 @@ async def cast_equity_vote(request: Request):
            DO UPDATE SET model = EXCLUDED.model, voter = EXCLUDED.voter, voted_at = now()""",
         (family_id, model, member_name))
     return _equity_vote_state(member_name)
+
+
+@app.post("/api/club/equity/finalize")
+async def finalize_equity_vote(request: Request):
+    """Admin: close the vote and adopt a model. Uses the leading model unless an
+    explicit model is supplied (needed on a tie). Records the decision + tally."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _ex
+    import json as _json_f
+    tok = _get_tok(request)
+    payload = _auth_verify(tok)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    _ensure_equity_votes_table()
+    state = _equity_vote_state(None)
+    body = await request.json()
+    model = str(body.get("model", "")).strip().upper()
+    meeting_ref = str(body.get("meeting_ref", "")).strip() or None
+    if not model:
+        model = state["leader"]   # default to the clear leader
+    if model not in _VALID_MODELS:
+        raise _HE(status_code=400, detail="Vote is tied — choose the model to adopt explicitly (A, B or C).")
+    # Deactivate any prior decision, then record the new one.
+    _ex("UPDATE equity_decision SET active = FALSE WHERE active = TRUE")
+    _ex("""INSERT INTO equity_decision (adopted_model, decided_by, meeting_ref, tally, active)
+           VALUES (%s, %s, %s, %s, TRUE)""",
+        (model, payload.get("sub", "admin"), meeting_ref, _json_f.dumps(state["tally"])))
+    global _ALLOC_CACHE
+    _ALLOC_CACHE = {"data": None, "ts": 0}   # bust equity cache so decision shows immediately
+    return _equity_vote_state(payload.get("sub"))
+
+
+@app.post("/api/club/equity/reopen")
+async def reopen_equity_vote(request: Request):
+    """Admin: reopen the vote (deactivates the current decision)."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _ex
+    tok = _get_tok(request)
+    payload = _auth_verify(tok)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    _ensure_equity_votes_table()
+    _ex("UPDATE equity_decision SET active = FALSE WHERE active = TRUE")
+    global _ALLOC_CACHE
+    _ALLOC_CACHE = {"data": None, "ts": 0}
+    return _equity_vote_state(payload.get("sub"))
 
 
 # ── Club Office Bearers ──────────────────────────────────────────────────────────────────────────────

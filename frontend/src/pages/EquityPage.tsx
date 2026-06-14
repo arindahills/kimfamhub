@@ -2,6 +2,10 @@ import CrossLinks from '../components/CrossLinks'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
+import { useToast } from '../components/Toast'
+
+const EQUITY_ADMINS = ['Hillary', 'Hellen']
 
 interface FamilyRow {
   family: string
@@ -102,6 +106,9 @@ interface VoteState {
   families_voted: number
   my_family_id: string | null
   my_vote: ModelKey | null
+  decided?: boolean
+  decision?: { adopted_model: ModelKey; decided_at: string; decided_by: string; meeting_ref: string | null } | null
+  leader?: ModelKey | null
 }
 
 const MODEL_META: { key: ModelKey; name: string; color: string }[] = [
@@ -113,6 +120,9 @@ const MODEL_META: { key: ModelKey; name: string; color: string }[] = [
 function EquityVoteWidget() {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const toast = useToast()
+  const isAdmin = EQUITY_ADMINS.includes(user?.name || '')
 
   const { data: vote, isLoading } = useQuery<VoteState>({
     queryKey: ['equity-vote'],
@@ -126,8 +136,31 @@ function EquityVoteWidget() {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model }),
-      }).then(r => { if (!r.ok) throw new Error('vote failed'); return r.json() }),
+      }).then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'vote failed'); return r.json() }),
     onSuccess: (fresh: VoteState) => qc.setQueryData(['equity-vote'], fresh),
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const finalize = useMutation({
+    mutationFn: (model: ModelKey | null) =>
+      fetch('/api/club/equity/finalize', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(model ? { model } : {}),
+      }).then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'failed'); return r.json() }),
+    onSuccess: (fresh: VoteState) => {
+      qc.setQueryData(['equity-vote'], fresh)
+      qc.invalidateQueries({ queryKey: ['equity'] })
+      toast.success(`Model ${fresh.decision?.adopted_model} adopted as the club's equity model`)
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const reopen = useMutation({
+    mutationFn: () => fetch('/api/club/equity/reopen', { method: 'POST', credentials: 'include' })
+      .then(async r => { if (!r.ok) throw new Error('failed'); return r.json() }),
+    onSuccess: (fresh: VoteState) => { qc.setQueryData(['equity-vote'], fresh); qc.invalidateQueries({ queryKey: ['equity'] }); toast.success('Vote reopened') },
+    onError: (e: any) => toast.error(e.message),
   })
 
   const askAi = () => {
@@ -156,28 +189,41 @@ function EquityVoteWidget() {
         </div>
         <span style={{ fontSize: 10, color: '#a16207' }}>{vote.families_voted}/{vote.total_families} families voted</span>
       </div>
-      <div style={{ fontSize: 11, color: '#a16207', marginBottom: 12 }}>
-        Each family casts ONE vote for the allocation model. You can change your vote until KIM 009/2026.
-      </div>
+      {vote.decided && vote.decision ? (
+        <div style={{ background: '#0f3d22', border: '1px solid #166534', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#86efac' }}>
+            ✓ Model {vote.decision.adopted_model} adopted — {MODEL_META.find(m => m.key === vote.decision!.adopted_model)?.name}
+          </div>
+          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+            Decided{vote.decision.meeting_ref ? ` at ${vote.decision.meeting_ref}` : ''} · this is the club's official equity model. Voting is closed.
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: '#a16207', marginBottom: 12 }}>
+          Each family casts ONE vote for the allocation model. You can change your vote until the vote is closed.
+        </div>
+      )}
 
       {/* Model buttons */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         {MODEL_META.map(m => {
           const mine = vote.my_vote === m.key
+          const adopted = vote.decided && vote.decision?.adopted_model === m.key
           const count = vote.tally[m.key]
           const pct = totalVotes ? Math.round((count / totalVotes) * 100) : 0
           return (
             <button
               key={m.key}
-              onClick={() => mutation.mutate(m.key)}
-              disabled={mutation.isPending}
+              onClick={() => !vote.decided && mutation.mutate(m.key)}
+              disabled={mutation.isPending || vote.decided}
               style={{
                 flex: 1,
-                background: mine ? m.color + '26' : '#0f172a',
-                border: mine ? `2px solid ${m.color}` : '1px solid #334155',
+                background: adopted ? m.color + '33' : mine ? m.color + '26' : '#0f172a',
+                border: adopted ? '2px solid #22c55e' : mine ? `2px solid ${m.color}` : '1px solid #334155',
                 borderRadius: 10,
                 padding: '10px 6px',
-                cursor: mutation.isPending ? 'wait' : 'pointer',
+                cursor: vote.decided ? 'default' : mutation.isPending ? 'wait' : 'pointer',
+                opacity: vote.decided && !adopted ? 0.6 : 1,
                 textAlign: 'center',
                 transition: 'all 0.15s',
               }}
@@ -189,7 +235,9 @@ function EquityVoteWidget() {
               <div style={{ height: 4, borderRadius: 2, background: '#1e293b', marginTop: 6, overflow: 'hidden' }}>
                 <div style={{ height: '100%', width: `${pct}%`, background: m.color, transition: 'width 0.3s' }} />
               </div>
-              {mine && <div style={{ fontSize: 8, color: m.color, fontWeight: 700, marginTop: 4 }}>✓ YOUR VOTE</div>}
+              {adopted
+                ? <div style={{ fontSize: 8, color: '#4ade80', fontWeight: 700, marginTop: 4 }}>✓ ADOPTED</div>
+                : mine && <div style={{ fontSize: 8, color: m.color, fontWeight: 700, marginTop: 4 }}>✓ YOUR VOTE</div>}
             </button>
           )
         })}
@@ -202,8 +250,42 @@ function EquityVoteWidget() {
               ? <>Your family voted <b style={{ color: MODEL_META.find(m => m.key === vote.my_vote)!.color }}>Model {vote.my_vote}</b>. Tap another to change.</>
               : <>Your family ({vote.my_family_id}) hasn't voted yet — tap a model above.</>)
           : <span style={{ color: '#a16207' }}>Your account isn't linked to a family, so you can view but not vote.</span>}
-        {totalVotes > 0 && <span style={{ color: '#64748b' }}>{'  '}Leading: Model {leader}.</span>}
+        {totalVotes > 0 && !vote.decided && <span style={{ color: '#64748b' }}>{'  '}Leading: Model {leader}.</span>}
       </div>
+
+      {/* Admin: close the vote & adopt the model (or reopen) */}
+      {isAdmin && (
+        vote.decided ? (
+          <button onClick={() => { if (confirm('Reopen the equity vote? Families will be able to vote again.')) reopen.mutate() }}
+            disabled={reopen.isPending}
+            style={{ width: '100%', padding: '8px', borderRadius: 8, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155', cursor: 'pointer', fontSize: 11, marginBottom: 10 }}>
+            {reopen.isPending ? 'Reopening…' : 'Reopen vote'}
+          </button>
+        ) : totalVotes > 0 ? (
+          <div style={{ marginBottom: 10 }}>
+            {vote.leader ? (
+              <button onClick={() => { if (confirm(`Adopt Model ${vote.leader} as the club's equity model? This closes the vote.`)) finalize.mutate(null) }}
+                disabled={finalize.isPending}
+                style={{ width: '100%', padding: '9px', borderRadius: 8, background: '#14532d', color: '#86efac', border: '1px solid #166534', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                {finalize.isPending ? 'Adopting…' : `Close vote & adopt Model ${vote.leader}`}
+              </button>
+            ) : (
+              <div>
+                <div style={{ fontSize: 10, color: '#fbbf24', marginBottom: 6 }}>Vote is tied — choose the model to adopt:</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {(['A', 'B', 'C'] as ModelKey[]).map(k => (
+                    <button key={k} onClick={() => { if (confirm(`Adopt Model ${k}? This closes the vote.`)) finalize.mutate(k) }}
+                      disabled={finalize.isPending}
+                      style={{ flex: 1, padding: '8px', borderRadius: 8, background: '#14532d', color: '#86efac', border: '1px solid #166534', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+                      Adopt {k}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null
+      )}
 
       {/* Ask AI — neutral guidance */}
       <button
