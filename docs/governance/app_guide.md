@@ -6,6 +6,8 @@
 
 **On a computer (desktop/tablet):** The navigation is a sidebar on the LEFT side of the screen. All sections are listed there.
 
+**Quick links:** The Home tab has a launchpad of quick-link tiles (Meetings, Action Points, Finances, Projects, Equity, Ask KimFam) so you can jump straight to any section. Many pages also have "Related:" links to connected sections (for example Finances links to Equity and Loans), and action cards link to their meeting and project.
+
 ---
 
 
@@ -122,8 +124,26 @@ You do not need to do anything on the Home tab — it is a read-only dashboard.
 ### Viewing Club Action Points
 1. Tap "Action Points" in the app.
 2. You will see all current action items with: who is responsible, the deadline, the meeting where it was raised, and the current status.
-3. Colour codes: Open (white/grey), In Progress (blue), Carried Over (yellow), Done (green), Cancelled (grey).
-4. You can filter by status using the buttons at the top (All, Open, In Progress, Done, etc.).
+3. Colour codes: Open (white/grey), In Progress (blue), Carried Over (purple), Done (green), Cancelled (grey).
+4. You can filter by status using the buttons at the top (Active, Overdue, Done, All).
+5. The meeting chip (e.g. KIM 008/2026) and the project tag on each card are tappable shortcuts to the Meetings and Projects pages.
+
+### Adding an Update or Marking Done
+- Tap "Add update" on an action to log progress. The first update automatically moves the action from Open to In Progress.
+- Admins (Hillary, Hellen) can tap "Mark done" to close an action.
+
+### Changing an Action's Status (Admin Only)
+- Tap "Status ▾" on any action to move it to In Progress, Blocked, Carried Over, Cancelled, or to Reopen it.
+
+### Carrying an Action Over to the Next Meeting (Admin Only)
+- Tap "Status ▾" then "Carried Over". This automatically:
+  1. Creates a brand-new action with its own reference (e.g. KIM/13/26-4) in the next upcoming meeting.
+  2. Creates that next meeting if one does not exist yet (defaults to the next Sunday).
+  3. Closes the original action as "carried over" and links the two — the old card shows "→ carried into KIM/13/26-4".
+- You do NOT need to know next week's agenda to carry something over; the action simply rolls forward and stays open until it is done.
+
+### Creating Actions for Future Meetings
+- You do not create actions for a future meeting directly. Instead, raise them in the meeting (type them into the live meeting notes). When the minutes are processed, the AI files them as action points automatically. Open actions then carry forward until resolved.
 
 ---
 
@@ -186,8 +206,23 @@ The Equity tab is a dedicated top-level section covering all three proposed expe
    - Per-Project Investment Share: how much each family funded each expense category
    - Full Expense Log: every recorded club expense, expandable per family per model
 3. A "Download Equity Models Explainer" button at the top lets you download the full document with worked examples for all three models.
-4. This section is read-only. The family vote on which model to adopt happens at a meeting.
-5. The Chicken project's detail view also has an "Equity Analysis" tab that shows the same data in context.
+4. The Chicken project's detail view also has an "Equity Analysis" tab that shows the same data in context.
+
+### Voting on the Equity Model (All Members)
+1. At the top of the Equity tab is the Family Vote widget.
+2. Each family casts ONE vote for Model A, B, or C by tapping it. You can change your family's vote until the vote is closed.
+3. The widget shows the live tally and which model is leading.
+4. "Ask AI" gives a neutral explanation of the three models and how your family stands under each — it will not tell you how to vote.
+
+### Closing the Vote and Adopting a Model (Admin Only)
+1. Once families have voted (usually finalised live at a meeting), an admin taps "Close vote & adopt Model X" (the leading model). On a tie, the admin picks the model to adopt.
+2. This records the decision (which model, when, at which meeting), closes voting, and marks the chosen model as the club's official equity model.
+3. The widget then shows an "✓ Model X adopted" banner, the adopted model is highlighted, and further voting is locked.
+4. An admin can "Reopen vote" if needed, which unlocks voting again.
+
+### What Happens After a Model Is Adopted
+- The adopted model becomes the club's official equity model. All three models stay visible for reference, but the adopted one is marked as official.
+- Future equity figures and member statements reference the adopted model.
 
 ---
 
@@ -204,9 +239,42 @@ The Equity tab is a dedicated top-level section covering all three proposed expe
 
 ### Viewing the Meeting Register
 1. Tap "Meetings" in the app.
-2. You will see the full list of all KIM meetings: date, type, venue, attendees, and a link to the minutes.
-3. The next upcoming meeting is highlighted at the top.
-4. Tap any row to see the meeting details.
+2. You will see all KIM meetings, newest first, each with a clear status: "Live now", "Minutes ready", "Ended · minutes pending", "Scheduled · not started yet", or "Not conducted".
+3. Each card shows the date, time (EAT), venue, action-item progress, and (once published) a "📄 Read" link to the minutes plus a download button.
+4. From the header you can jump to "✅ Action Points" or open "📈 Analytics".
+
+### Creating a Meeting (Admin Only)
+1. Tap "+ New meeting". The reference (e.g. KIM 013/2026) is generated automatically and the date defaults to the next Sunday.
+2. Optionally type the main agenda topics, or tap "✦ AI suggest" to have the app propose topics based on recent meetings and open actions.
+3. Tap "Create meeting". A "📅 New KimFam Meeting Scheduled" notification is sent to all members and the family WhatsApp group.
+
+### Editing a Meeting Before It Is Conducted (Admin Only)
+- Tap "✎ Edit" on any meeting that has not yet started to change its date, time, venue, or agenda topics. This is useful because you often will not know next week's agenda during this week's meeting. Once a meeting is conducted, its agenda is locked.
+
+### Reminders
+- The app automatically sends two WhatsApp reminders for each meeting: one the day before at 08:00 EAT, and one about an hour before the start time.
+
+### Conducting a Meeting (Admin Only)
+1. On meeting day, tap "Conduct" to open the full-screen meeting conductor.
+2. Optionally tap "Adjust time per agenda item" to set a minute budget for each item (this only guides you — nothing auto-advances).
+3. Tap "Start Meeting" and allow microphone access. The meeting is recorded automatically, and everyone sees a red REC badge. If the microphone is blocked you get a clear "NOT recording" warning.
+4. Walk the agenda with "Next": Opening Prayer → Apologies & Attendance → Review of Last Meeting → Treasurer's Brief → Action Review → Project Updates → Main Agenda → Any Other Business → etc.
+   - At Attendance, take the roll call: mark each member Present, Apology, or Absent, with a note for late arrivals.
+   - At "Review of Last Meeting", the previous meeting's scorecard is shown so the family can reflect before starting.
+   - Use the "Meeting notes" box to type minutes as you go; it saves automatically and organises notes by agenda item.
+   - "↗ Open Finances / Action Points" buttons open the live data in a new tab while recording continues.
+5. Tap "End Meeting". You land on the End screen to finalise attendance and see the time audit (planned vs actual per item), then tap "Process minutes →".
+
+### Generating the Minutes (Admin Only)
+1. After ending, the Process screen already has your recording and your live notes. You can also paste a Tactiq transcript.
+2. Tap "Extract actions and decisions". The AI returns the actions and decisions for you to review and edit.
+3. Tap "Confirm" to save the actions to the app and generate the minutes document.
+4. You can type plain-English edits ("change the closing time to 20:30") and tap Apply.
+5. Tap "Approve & Send" to publish the minutes and notify the family group. A meeting review (scorecard) is generated automatically.
+
+### Meeting Review and Analytics (All Members)
+- Tap "📊 Review" on any conducted meeting to see its scorecard: efficiency score, which topics ran over and why, whether they produced decisions, time sinks, and recommendations for next time.
+- Tap "📈 Analytics" in the Meetings header to see trends across all meetings: average efficiency, whether discipline is improving, recurring time sinks, and where meeting time goes.
 
 ---
 
