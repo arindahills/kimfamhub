@@ -1117,7 +1117,8 @@ inputs; do not invent figures, names, or decisions that are not present."""
         return None
     data = _parse(raw)
     if not isinstance(data, dict):
-        groq_key = _os.getenv("GROQ_API_KEY", "")
+        import os as _os_n
+        groq_key = _os_n.getenv("GROQ_API_KEY", "")
         if groq_key:
             try:
                 from groq import Groq as _Groq
