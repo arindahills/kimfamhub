@@ -691,36 +691,58 @@ Rules:
 
     # ── 4. Call Claude CLI → Groq fallback ───────────────────────────────────
     raw_json = ""
+    import logging as _lg_ai
 
-    try:
-        import asyncio as _aio
-        env = dict(_os.environ); env["HOME"] = "/root"
-        proc = await _aio.create_subprocess_exec(
-            "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
-            stdout=_aio.subprocess.PIPE,
-            stderr=_aio.subprocess.DEVNULL,
-            env=env
-        )
-        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
-        if proc.returncode == 0:
-            raw_json = stdout.decode().strip()
-    except Exception:
-        pass
+    # 1. DeepSeek — paid, high capacity, handles long full-meeting transcripts.
+    deepseek_key = _os.getenv("DEEPSEEK_API_KEY", "")
+    if deepseek_key:
+        try:
+            from openai import OpenAI as _OAI_ds
+            _ds = _OAI_ds(api_key=deepseek_key, base_url="https://api.deepseek.com")
+            resp = _ds.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4000, temperature=0.1,
+            )
+            raw_json = (resp.choices[0].message.content or "").strip()
+        except Exception as _de:
+            _lg_ai.getLogger("main").error(f"DeepSeek extract failed: {_de}")
 
+    # 2. Claude CLI — works for smaller prompts; may time out on a very long transcript.
+    if not raw_json:
+        try:
+            import asyncio as _aio
+            env = dict(_os.environ); env["HOME"] = "/root"
+            proc = await _aio.create_subprocess_exec(
+                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env
+            )
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode == 0:
+                raw_json = stdout.decode().strip()
+        except Exception:
+            pass
+
+    # 3. Groq — free tier ~12k TPM. Truncate a long transcript so it still fits,
+    #    and never let a provider error crash the request (was causing a 500).
     if not raw_json:
         groq_key = _os.getenv("GROQ_API_KEY", "")
         if groq_key:
-            from groq import Groq as _Groq
-            resp = _Groq(api_key=groq_key).chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.1,
-            )
-            raw_json = resp.choices[0].message.content.strip()
+            try:
+                from groq import Groq as _Groq
+                _gprompt = prompt if len(prompt) <= 26000 else (
+                    prompt[:26000] + "\n\n[Transcript truncated to fit; summarise what is present above.]")
+                resp = _Groq(api_key=groq_key).chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": _gprompt}],
+                    max_tokens=2000, temperature=0.1,
+                )
+                raw_json = (resp.choices[0].message.content or "").strip()
+            except Exception as _ge:
+                _lg_ai.getLogger("main").error(f"Groq extract failed: {_ge}")
 
     if not raw_json:
-        raise _HE(status_code=503, detail="AI extraction unavailable — try again")
+        raise _HE(status_code=503, detail="AI extraction is busy right now — please tap Extract again in a moment.")
 
     # Strip markdown fences if model wrapped the JSON
     raw_json = _re.sub(r"^```(?:json)?\s*", "", raw_json)
