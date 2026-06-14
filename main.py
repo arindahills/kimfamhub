@@ -875,10 +875,21 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         import json as _json2
         with open(data_path, "w") as _f:
             _json2.dump(minutes_data, _f)
-        _docx_bytes = _build_minutes_docx(mtg=mtg_meta, **{
-            k: minutes_data[k]
-            for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
-        })
+        # Prefer the full old-style narrative minutes; fall back to the simple
+        # builder if the AI narrative can't be generated.
+        _docx_bytes = None
+        try:
+            _narr = _generate_minutes_narrative(meeting_id, key_topics, key_decisions, docx_actions)
+            if _narr:
+                _docx_bytes = _build_minutes_docx_v2(meeting_ref, mtg_meta, _narr, docx_actions)
+        except Exception as _ne:
+            import logging as _lg
+            _lg.getLogger("main").error(f"narrative minutes failed, falling back: {_ne}")
+        if _docx_bytes is None:
+            _docx_bytes = _build_minutes_docx(mtg=mtg_meta, **{
+                k: minutes_data[k]
+                for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
+            })
         with open(draft_path, "wb") as _f:
             _f.write(_docx_bytes)
     except Exception as _e:
@@ -992,6 +1003,234 @@ def _build_minutes_docx(meeting_ref: str, mtg: dict, summary: str,
     buf = _BIO()
     doc.save(buf)
     buf.seek(0)
+    return buf.getvalue()
+
+
+def _minutes_filename(date_val) -> str:
+    """File name matching the old convention: KIMFAM_Meeting_Minutes_June_7_2026.docx"""
+    import datetime as _dt
+    d = None
+    if isinstance(date_val, str):
+        try: d = _dt.date.fromisoformat(date_val[:10])
+        except Exception: d = None
+    elif isinstance(date_val, (_dt.date, _dt.datetime)):
+        d = date_val if isinstance(date_val, _dt.date) else date_val.date()
+    if not d:
+        return "KIMFAM_Meeting_Minutes.docx"
+    return f"KIMFAM_Meeting_Minutes_{d.strftime('%B')}_{d.day}_{d.year}.docx"
+
+
+def _fmt_eat(ts) -> str:
+    """Format a tz-aware UTC timestamp as an EAT clock string, e.g. '4:35 PM'."""
+    if not ts:
+        return ""
+    import datetime as _dt
+    try:
+        eat = ts.astimezone(_dt.timezone(_dt.timedelta(hours=3)))
+        return eat.strftime("%-I:%M %p")
+    except Exception:
+        return ""
+
+
+def _generate_minutes_narrative(meeting_id: int, key_topics: str,
+                                key_decisions: list, actions: list) -> dict | None:
+    """Produce full old-style KimFam minutes (attendance + numbered narrative
+    sections) from the transcript, live notes, roll call and actions. Returns a
+    structured dict the docx builder renders, or None on failure."""
+    from db import query as _dbq_n
+    import json as _json_n2, re as _re_n2
+    rows = _dbq_n("""SELECT ref, date, venue, conductor_notes, transcript,
+                            attendance, conductor_started_at, conductor_ended_at
+                     FROM meetings WHERE id=%s""", (meeting_id,))
+    if not rows:
+        return None
+    r = rows[0]
+    _att_raw = r["attendance"]
+    attendance = (_json_n2.loads(_att_raw) if isinstance(_att_raw, (str, bytes, bytearray)) else (_att_raw or {}))
+    att_lines = []
+    for _m, _e in (attendance or {}).items():
+        if isinstance(_e, dict) and _e.get("status"):
+            _c = (_e.get("comment") or "").strip()
+            att_lines.append(f"- {_m}: {_e['status']}" + (f" ({_c})" if _c else ""))
+    notes = (r["conductor_notes"] or "")[:4000]
+    transcript = (r["transcript"] or "")[:9000]
+    acts_txt = "\n".join(
+        f"- {a.get('ref','')}: {a.get('description','')[:90]} "
+        f"[{', '.join(a['assignees']) if isinstance(a.get('assignees'), list) else a.get('assignees','')}"
+        f"{', due ' + str(a.get('deadline')) if a.get('deadline') else ''}]"
+        for a in (actions or [])
+    ) or "None recorded"
+    prev = _dbq_n("""SELECT ref, date, key_decisions FROM meetings
+                     WHERE date < %s ORDER BY date DESC LIMIT 1""", (r["date"],))
+    prev_txt = (f"{prev[0]['ref']} ({prev[0]['date']}): {(prev[0]['key_decisions'] or '')[:400]}"
+                if prev else "None")
+
+    prompt = f"""You are the Secretary writing the official minutes for KimFam Investment Club
+meeting {r['ref']} held {r['date']}. Write them in the club's established house style.
+
+STRICT STYLE RULES:
+- NO em-dashes or en-dashes anywhere. Use commas, colons, semicolons or full stops.
+- Warm, factual, third-person minute style (e.g. "Hellen presented the financial position.").
+- Use Ugandan shilling amounts as "UGX 1,234,567" with comma separators.
+- Follow the club's standard section order.
+
+INPUTS
+Previous meeting: {prev_txt}
+Roll call (authoritative attendance):
+{chr(10).join(att_lines) or '(not recorded)'}
+Secretary's live notes (organised by agenda item):
+{notes or '(none)'}
+Actions agreed this meeting:
+{acts_txt}
+Transcript (may be partial):
+{transcript or '(no transcript)'}
+
+Return ONLY valid JSON (no markdown) in EXACTLY this shape:
+{{
+  "attendance": {{"present": ["Name", "..."], "apologies": ["Name with reason", "..."], "absent": ["Name", "..."]}},
+  "sections": [
+    {{"number": "1", "title": "OPENING", "paragraphs": ["..."], "bullets": [],
+      "subsections": []}},
+    {{"number": "2", "title": "TREASURER'S REPORT", "paragraphs": ["..."], "bullets": ["..."], "subsections": []}},
+    {{"number": "3", "title": "REVIEW OF PREVIOUS MINUTES", "paragraphs": ["..."], "bullets": [], "subsections": []}},
+    {{"number": "4", "title": "FOLLOW-UP ON ACTION POINTS", "paragraphs": [], "bullets": [],
+      "subsections": [{{"number": "4.1", "title": "Item name (KIM/ref)", "paragraphs": ["..."], "bullets": ["..."]}}]}},
+    {{"number": "5", "title": "MAIN AGENDA", "paragraphs": [], "bullets": [],
+      "subsections": [{{"number": "5.1", "title": "Topic", "paragraphs": ["..."], "bullets": ["..."]}}]}},
+    {{"number": "6", "title": "ANY OTHER BUSINESS", "paragraphs": ["..."], "bullets": [], "subsections": []}},
+    {{"number": "7", "title": "NEXT MEETING", "paragraphs": ["..."], "bullets": [], "subsections": []}}
+  ],
+  "decisions": ["Concise decision 1", "Concise decision 2"]
+}}
+
+Only include sections and subsections that the inputs actually support. Keep it faithful to the
+inputs; do not invent figures, names, or decisions that are not present."""
+    raw = _ask_claude(prompt, timeout=120)
+    def _parse(x):
+        if not x: return None
+        try: return _json_n2.loads(x)
+        except Exception:
+            m = _re_n2.search(r"\{.*\}", x, _re_n2.DOTALL)
+            if m:
+                try: return _json_n2.loads(m.group())
+                except Exception: return None
+        return None
+    data = _parse(raw)
+    if not isinstance(data, dict):
+        groq_key = _os.getenv("GROQ_API_KEY", "")
+        if groq_key:
+            try:
+                from groq import Groq as _Groq
+                resp = _Groq(api_key=groq_key).chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000, temperature=0.2)
+                data = _parse(resp.choices[0].message.content.strip())
+            except Exception:
+                data = None
+    if not isinstance(data, dict):
+        return None
+    data["_start_eat"] = _fmt_eat(r["conductor_started_at"])
+    data["_end_eat"]   = _fmt_eat(r["conductor_ended_at"])
+    return data
+
+
+def _build_minutes_docx_v2(meeting_ref: str, mtg: dict, narrative: dict, actions: list) -> bytes:
+    """Render the rich, old-style minutes (attendance + numbered narrative sections
+    + action points table) to .docx bytes."""
+    from docx import Document as _DocxDoc
+    from docx.shared import Pt as _Pt, Cm as _Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _WDA
+    from io import BytesIO as _BIO2
+    from datetime import date as _date2, datetime as _dt2
+
+    doc = _DocxDoc()
+    for sec in doc.sections:
+        sec.top_margin = _Cm(2.5); sec.bottom_margin = _Cm(2.5)
+        sec.left_margin = _Cm(3); sec.right_margin = _Cm(3)
+
+    t = doc.add_heading("KIMFAM INVESTMENT CLUB", 0); t.alignment = _WDA.CENTER
+    sub = doc.add_paragraph("MEETING MINUTES"); sub.alignment = _WDA.CENTER
+    for run in sub.runs: run.font.size = _Pt(13); run.font.bold = True
+
+    # Header line: KIM 013/2026  |  Sunday, 21 June 2026
+    day_date = ""
+    try:
+        _d = _dt2.fromisoformat(str(mtg.get("date"))[:10])
+        day_date = _d.strftime("%A, %-d %B %Y")
+    except Exception:
+        day_date = str(mtg.get("date", ""))
+    hdr = doc.add_paragraph(); hdr.alignment = _WDA.CENTER
+    hr = hdr.add_run(f"{meeting_ref}    |    {day_date}"); hr.bold = True
+    # Actual conduct time
+    _start = narrative.get("_start_eat"); _end = narrative.get("_end_eat")
+    if _start:
+        tl = doc.add_paragraph(); tl.alignment = _WDA.CENTER
+        tl.add_run(f"Started {_start} EAT" + (f", ended {_end} EAT" if _end else "")
+                   + f"  |  {mtg.get('venue') or 'Google Meet'}").italic = True
+    doc.add_paragraph()
+
+    # Attendance
+    att = narrative.get("attendance") or {}
+    if any(att.get(k) for k in ("present", "apologies", "absent")):
+        doc.add_heading("ATTENDANCE", 1)
+        if att.get("present"):
+            p = doc.add_paragraph(); p.add_run("Present: ").bold = True
+            p.add_run(", ".join(att["present"]))
+        if att.get("apologies"):
+            p = doc.add_paragraph(); p.add_run("Absent with apologies: ").bold = True
+            p.add_run(", ".join(att["apologies"]))
+        if att.get("absent"):
+            p = doc.add_paragraph(); p.add_run("Absent: ").bold = True
+            p.add_run(", ".join(att["absent"]))
+
+    def _render_block(b, level):
+        for para in (b.get("paragraphs") or []):
+            if para and para.strip():
+                doc.add_paragraph(para.strip())
+        for bullet in (b.get("bullets") or []):
+            if bullet and bullet.strip():
+                doc.add_paragraph(bullet.strip(), style="List Bullet")
+
+    for s in (narrative.get("sections") or []):
+        title = f"{s.get('number','')}. {s.get('title','')}".strip(". ")
+        if not title:
+            continue
+        doc.add_heading(title, 1)
+        _render_block(s, 1)
+        for ss in (s.get("subsections") or []):
+            stitle = f"{ss.get('number','')}  {ss.get('title','')}".strip()
+            if stitle:
+                doc.add_heading(stitle, 2)
+            _render_block(ss, 2)
+
+    # Action points table
+    if actions:
+        doc.add_heading("ACTION POINTS", 1)
+        tbl = doc.add_table(rows=1, cols=5); tbl.style = "Table Grid"
+        for ci, hdr2 in enumerate(["Ref", "Description", "Assigned To", "Deadline", "Priority"]):
+            cell = tbl.rows[0].cells[ci]; cell.text = hdr2
+            for para in cell.paragraphs:
+                for run in para.runs: run.bold = True
+        for a in actions:
+            rc = tbl.add_row().cells
+            rc[0].text = a.get("ref", "")
+            rc[1].text = a.get("description", "")
+            asgn = a.get("assignees", [])
+            rc[2].text = ", ".join(asgn) if isinstance(asgn, list) else str(asgn)
+            rc[3].text = str(a.get("deadline") or "")
+            rc[4].text = (a.get("priority") or "medium").capitalize()
+
+    # Decisions
+    if narrative.get("decisions"):
+        doc.add_heading("KEY DECISIONS", 1)
+        for idx, d in enumerate(narrative["decisions"], 1):
+            doc.add_paragraph(f"{idx}. {d}")
+
+    doc.add_paragraph()
+    doc.add_paragraph(f"Prepared on KimFam Hub, {_date2.today().strftime('%-d %B %Y')}.")
+
+    buf = _BIO2(); doc.save(buf); buf.seek(0)
     return buf.getvalue()
 
 
@@ -1217,10 +1456,11 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     if not _os.path.exists(draft_path):
         raise _HE(status_code=404, detail="Draft not found — confirm meeting first")
 
-    # Upload to R2
+    # Upload to R2. File named to match the old convention:
+    # KIMFAM_Meeting_Minutes_June_7_2026.docx
     import r2_storage as _r2_pub
-    safe_ref  = _re3.sub(r"[^A-Za-z0-9_-]", "_", mtg["ref"])
-    r2_key    = f"minutes/{safe_ref}.docx"
+    _fname    = _minutes_filename(mtg["date"])
+    r2_key    = f"minutes/{_fname}"
     minutes_url = None
     if _r2_pub.is_configured():
         try:
@@ -1263,7 +1503,7 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
         _app_dir = _os.path.dirname(__file__)
         _minutes_dir = _os.path.join(_app_dir, "docs", "minutes")
         _os.makedirs(_minutes_dir, exist_ok=True)
-        _sh.copy2(draft_path, _os.path.join(_minutes_dir, f"{safe_ref}.docx"))
+        _sh.copy2(draft_path, _os.path.join(_minutes_dir, _fname))
         _sp.Popen(
             [_sys.executable, _os.path.join(_app_dir, "embed_documents.py")],
             cwd=_app_dir, env={**_os.environ},
