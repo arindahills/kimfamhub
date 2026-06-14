@@ -377,6 +377,23 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
             <div className="text-xs" style={{ color: '#64748b' }}>
               {m.meeting_date}{m.start_time_eat ? ` · ${m.start_time_eat.slice(0, 5)} EAT` : ''}{m.location ? ` · ${m.location}` : ''}
             </div>
+            {/* Status declaration — so a new user instantly knows where this meeting stands */}
+            {(() => {
+              const todayStr = new Date().toISOString().slice(0, 10)
+              let label = '', color = '#64748b', dot = false
+              if (m.conductor_active)            { label = 'Live now';            color = '#4ade80'; dot = true }
+              else if (m.conductor_ended && m.minutes_url) { label = 'Minutes ready'; color = '#93c5fd' }
+              else if (m.conductor_ended)        { label = 'Ended · minutes pending'; color = '#fcd34d' }
+              else if (m.meeting_date >= todayStr) { label = 'Scheduled · not started yet'; color = '#94a3b8' }
+              else                               { label = 'Not conducted';        color = '#64748b' }
+              return (
+                <div className="inline-flex items-center gap-1 mt-1 text-[10px] px-2 py-0.5 rounded-full"
+                  style={{ color, background: color + '1a', border: `1px solid ${color}33` }}>
+                  {dot && <span className="w-1.5 h-1.5 rounded-full" style={{ background: color, animation: 'pulse 1.2s ease-in-out infinite' }} />}
+                  {label}
+                </div>
+              )
+            })()}
           </div>
           <div className="flex gap-1.5 flex-wrap justify-end">
             {isAdmin && isConductable && (
