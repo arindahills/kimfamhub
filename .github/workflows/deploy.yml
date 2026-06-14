@@ -297,3 +297,13 @@ jobs:
           STATUS=$(curl -sk -o /dev/null -w "%{http_code}" https://kimfamhub.com/ || echo "000")
           echo "Prod health check: HTTP $STATUS"
           [ "$STATUS" = "200" ] || exit 1
+
+      # Keep Ask KimFam's knowledge base current with the app. embed_documents.py
+      # delta-tracks, so only changed docs (e.g. app_guide.md) are re-embedded.
+      # Non-fatal: a re-embed hiccup must never fail a successful deploy.
+      - name: Re-embed Ask KimFam knowledge base
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            $HETZNER_USER@$HETZNER_HOST \
+            "cd $PROD_DIR && $PROD_DIR/venv/bin/python embed_documents.py 2>&1 | tail -3" \
+            || echo "Re-embed skipped/failed (non-fatal) — knowledge base unchanged."
