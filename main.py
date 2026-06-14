@@ -1253,6 +1253,24 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     except Exception:
         pass
 
+    # Make the new minutes answerable in Ask KimFam: save the .docx into the
+    # embedder's read path and re-embed in the background (delta-tracked, so only
+    # this new file is processed; non-blocking so publish returns immediately).
+    try:
+        import shutil as _sh, subprocess as _sp, sys as _sys
+        _app_dir = _os.path.dirname(__file__)
+        _minutes_dir = _os.path.join(_app_dir, "docs", "minutes")
+        _os.makedirs(_minutes_dir, exist_ok=True)
+        _sh.copy2(draft_path, _os.path.join(_minutes_dir, f"{safe_ref}.docx"))
+        _sp.Popen(
+            [_sys.executable, _os.path.join(_app_dir, "embed_documents.py")],
+            cwd=_app_dir, env={**_os.environ},
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+    except Exception as _ee:
+        import logging as _lg
+        _lg.getLogger("main").error(f"minutes embed kickoff failed: {_ee}")
+
     return {"ok": True, "minutes_url": minutes_url}
 
 
