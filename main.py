@@ -1537,6 +1537,26 @@ async def create_meeting(request: Request):
              VALUES (%s, %s::date, %s, %s::time, %s, %s)""",
           (ref, date_str, venue, start_time, key_topics, _json_ag.dumps(agenda)))
     row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
+
+    # Announce the new meeting to the family group + all members (best-effort).
+    # _broadcast is env-aware: prod → group + members, staging → Hillary + test group.
+    try:
+        import notifications as _notif_cm
+        _t = (start_time or "")[:5]
+        _msg = (
+            f"📅 *New KimFam Meeting Scheduled*\n\n"
+            f"*{ref}*\n"
+            f"*Date:* {date_str}\n"
+            + (f"*Time:* {_t} EAT\n" if _t else "")
+            + (f"*Venue:* {venue}\n" if venue else "")
+            + (f"\n*Agenda:*\n{key_topics}\n" if key_topics else "")
+            + f"\nFull agenda and details on kimfamhub.com. See you there."
+        )
+        _phones = [p for p in _notif_cm.MEMBER_PHONES.values() if p]
+        _notif_cm._broadcast(_phones, _msg)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("main").error(f"meeting-create notify failed: {_e}")
+
     return {"ok": True, "db_id": row[0]["id"], "ref": ref}
 
 
