@@ -66,6 +66,13 @@ const STEPS: Step[] = [
     route: '/actions',
   },
   {
+    tourId: 'nav-meetings',
+    icon: '📋',
+    title: 'Meetings',
+    body: 'Every KIM meeting with its status, minutes to read, and a review of how it went. Admins conduct meetings live here (record, roll call, agenda) and the app writes the minutes and action points for you.',
+    route: '/meetings',
+  },
+  {
     tourId: 'nav-updates',
     icon: '📰',
     title: 'Updates',
