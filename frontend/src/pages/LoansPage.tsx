@@ -1,3 +1,4 @@
+import CrossLinks from '../components/CrossLinks'
 import { useQuery } from '@tanstack/react-query'
 
 interface LoanHeader {
@@ -75,6 +76,7 @@ export default function LoansPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
+      <CrossLinks links={[{ to: '/finances', label: '💰 Finances' }, { to: '/equity', label: '⚖️ Equity' }]} />
       {/* Loan summary card */}
       <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
         <div className="flex justify-between items-start mb-3">

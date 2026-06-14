@@ -1,3 +1,4 @@
+import CrossLinks from '../components/CrossLinks'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -479,6 +480,7 @@ export default function EquityPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
+      <CrossLinks links={[{ to: '/finances', label: '💰 Finances' }, { to: '/loans', label: '🏦 Loans' }, { to: '/members', label: '👤 Members' }]} />
       {/* Live family vote widget (replaces the old static banner) */}
       <EquityVoteWidget />
 

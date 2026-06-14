@@ -1,3 +1,4 @@
+import CrossLinks from '../components/CrossLinks'
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -1259,6 +1260,7 @@ export default function FinancesPage() {
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
+      <CrossLinks links={[{ to: '/equity', label: '⚖️ Equity' }, { to: '/loans', label: '🏦 Loans' }, { to: '/expenditure', label: '💸 Expenditure' }]} />
 
       {/* Admin: pending confirmations */}
       {isAdmin && pending && pending.length > 0 && (

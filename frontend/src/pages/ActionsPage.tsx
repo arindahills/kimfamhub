@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
@@ -116,7 +117,8 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-[11px]" style={{ color: '#64748b' }}>{item.responsible}</span>
         {item.meeting_number && (
-          <span className="text-[10px]" style={{ color: '#94a3b8' }}>KIM {item.meeting_number}</span>
+          <Link to="/meetings" className="text-[10px] hover:underline" style={{ color: '#93c5fd', textDecoration: 'none' }}
+            title="Go to Meetings">KIM {item.meeting_number}</Link>
         )}
         {item.deadline && (
           <span className="text-[10px]" style={{ color: '#94a3b8' }}>{item.deadline}</span>
@@ -159,10 +161,11 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
           </button>
         )}
         {item.project_id && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded"
-            style={{ color: '#38bdf8', background: '#0c4a6e33', border: '1px solid #0369a144' }}>
+          <Link to="/projects" className="text-[10px] px-1.5 py-0.5 rounded hover:brightness-125"
+            style={{ color: '#38bdf8', background: '#0c4a6e33', border: '1px solid #0369a144', textDecoration: 'none' }}
+            title="Go to Projects">
             {item.project_id}
-          </span>
+          </Link>
         )}
       </div>
 

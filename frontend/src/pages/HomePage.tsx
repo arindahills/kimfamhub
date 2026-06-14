@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { FAMILY_TREE, parseAge } from '../data/familyTree'
@@ -145,6 +146,25 @@ export default function HomePage() {
           <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>12</div>
           <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{t('home.activeProjects')}</div>
         </div>
+      </div>
+
+      {/* Quick links — launchpad so a new user never wonders where to go */}
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        {([
+          ['/meetings',  '📋', 'Meetings'],
+          ['/actions',   '✅', 'Action Points'],
+          ['/finances',  '💰', 'Finances'],
+          ['/projects',  '🌱', 'Projects'],
+          ['/equity',    '⚖️', 'Equity'],
+          ['/ask',       '🤖', 'Ask KimFam'],
+        ] as [string, string, string][]).map(([to, icon, label]) => (
+          <Link key={to} to={to}
+            className="rounded-xl p-3 flex flex-col items-center gap-1 text-center transition-all hover:brightness-110"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', textDecoration: 'none' }}>
+            <span className="text-xl">{icon}</span>
+            <span className="text-[11px] font-medium" style={{ color: '#cbd5e1' }}>{label}</span>
+          </Link>
+        ))}
       </div>
 
       {/* About */}
