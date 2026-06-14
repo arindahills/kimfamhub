@@ -521,6 +521,63 @@ async def _condense_transcript(transcript: str) -> str:
             "in sections.]\n\n" + "\n\n".join(parts))
 
 
+def _transcribe_audio(audio_bytes: bytes, audio_name: str, groq_key: str) -> str:
+    """Transcribe a recording of any length with Groq Whisper. Groq caps a single
+    file at 25 MB, so a long meeting (e.g. 177 min of conductor audio) is first
+    re-encoded to mono 16 kHz low-bitrate MP3 and split into 15-minute segments
+    with ffmpeg; each segment is transcribed and the text is stitched back in
+    order. Short recordings go straight through in one call. Raises on hard
+    failure so the caller can surface a clear error."""
+    import os as _os_a, tempfile as _tmp_a, glob as _glob_a, subprocess as _sub_a
+    from groq import Groq as _Groq
+
+    def _one(path_or_tuple):
+        return str(_Groq(api_key=groq_key).audio.transcriptions.create(
+            file=path_or_tuple, model="whisper-large-v3-turbo",
+            response_format="text")).strip()
+
+    # Small enough for a single Whisper call — keep the original bytes as-is.
+    if len(audio_bytes) <= 24 * 1024 * 1024:
+        return _one((audio_name, audio_bytes, "audio/mpeg"))
+
+    workdir = _tmp_a.mkdtemp(prefix="kf_audio_")
+    src = _os_a.path.join(workdir, "src_" + _os_a.path.basename(audio_name or "audio"))
+    seg_tmpl = _os_a.path.join(workdir, "seg_%03d.mp3")
+    try:
+        with open(src, "wb") as _f:
+            _f.write(audio_bytes)
+        # Re-encode to speech-optimal mono 16 kHz 32 kbps MP3 and cut into 900s
+        # segments. 15 min @ 32 kbps ~ 3.6 MB per chunk, well under the 25 MB cap.
+        _sub_a.run(
+            ["ffmpeg", "-y", "-i", src, "-ac", "1", "-ar", "16000",
+             "-c:a", "libmp3lame", "-b:a", "32k", "-f", "segment",
+             "-segment_time", "900", "-reset_timestamps", "1", seg_tmpl],
+            check=True, stdout=_sub_a.DEVNULL, stderr=_sub_a.DEVNULL, timeout=900,
+        )
+        segs = sorted(_glob_a.glob(_os_a.path.join(workdir, "seg_*.mp3")))
+        if not segs:
+            # Fallback: ffmpeg produced nothing usable; try the original in one shot.
+            return _one((audio_name, audio_bytes, "audio/mpeg"))
+        out = []
+        for i, seg in enumerate(segs, 1):
+            try:
+                with open(seg, "rb") as _sf:
+                    txt = _one((_os_a.path.basename(seg), _sf.read(), "audio/mpeg"))
+                if txt:
+                    out.append(txt)
+            except Exception as _se:
+                import logging as _lg_a
+                _lg_a.getLogger("main").error(f"Audio segment {i} transcribe failed: {_se}")
+        return " ".join(out).strip()
+    finally:
+        try:
+            for _p in _glob_a.glob(_os_a.path.join(workdir, "*")):
+                _os_a.remove(_p)
+            _os_a.rmdir(workdir)
+        except Exception:
+            pass
+
+
 @app.post("/api/meetings/{meeting_id}/process")
 async def process_meeting(meeting_id: int, request: Request,
     audio_file: "UploadFile | None" = None,
@@ -581,16 +638,16 @@ async def process_meeting(meeting_id: int, request: Request,
         groq_key = _os.getenv("GROQ_API_KEY", "")
         if not groq_key:
             raise _HE(status_code=503, detail="Groq API key not configured")
-        from groq import Groq as _Groq
         audio_bytes = await audio_file.read()
         audio_name = audio_file.filename or "audio.m4a"
         try:
-            resp = _Groq(api_key=groq_key).audio.transcriptions.create(
-                file=(audio_name, audio_bytes, "audio/mpeg"),
-                model="whisper-large-v3-turbo",
-                response_format="text",
-            )
-            audio_text = str(resp).strip()
+            # Handles recordings of any length: long audio is re-encoded + split
+            # into 15-min segments and transcribed chunk-by-chunk, then stitched.
+            # Runs in a thread so the long ffmpeg + Whisper work doesn't freeze the
+            # worker's event loop for the whole upload.
+            import asyncio as _aio_t
+            audio_text = await _aio_t.to_thread(
+                _transcribe_audio, audio_bytes, audio_name, groq_key)
             if audio_text:
                 transcript_parts.append((f"Audio: {audio_name}", audio_text))
         except Exception as e:
