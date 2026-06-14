@@ -458,7 +458,7 @@ async def _ai_complete(prompt: str, claude_timeout: int = 150) -> str:
     """One AI completion. Claude CLI is PRIMARY (for prompts it can handle in time);
     DeepSeek is the high-capacity fallback for oversized prompts or Claude failures;
     Groq (truncated) is the last resort. Never raises — returns '' if all fail."""
-    import logging as _lg_ai, asyncio as _aio
+    import os as _os, logging as _lg_ai, asyncio as _aio
     raw = ""
     if len(prompt) <= 24000:
         try:
