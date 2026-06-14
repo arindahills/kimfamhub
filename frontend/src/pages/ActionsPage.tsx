@@ -316,6 +316,8 @@ export default function ActionsPage() {
   }
 
   const setStatus = async (id: string, status: DbStatus) => {
+    // Carry-over is special: it creates a continuation action in the next meeting.
+    if (status === 'carried_over') return carryOver(id)
     try {
       const r = await fetch('/api/actions/status', {
         method: 'PATCH', credentials: 'include',
@@ -326,6 +328,21 @@ export default function ActionsPage() {
       toast.success(`${id} → ${status.replace('_', ' ')}`)
       qc.invalidateQueries({ queryKey: ['actions'] })
     } catch (e: any) { toast.error(`Could not change status: ${e.message}`) }
+  }
+
+  const carryOver = async (id: string) => {
+    try {
+      const r = await fetch('/api/actions/carry-over', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: id }),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d.detail || 'Failed')
+      toast.success(`${id} carried over to ${d.carried_to_meeting} as ${d.new_ref}`)
+      qc.invalidateQueries({ queryKey: ['actions'] })
+      qc.invalidateQueries({ queryKey: ['meetings'] })
+    } catch (e: any) { toast.error(`Could not carry over: ${e.message}`) }
   }
 
   const jumpTo = (ref: string) => {

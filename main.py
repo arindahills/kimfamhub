@@ -372,6 +372,88 @@ async def set_action_status(request: Request):
         raise _HE(status_code=500, detail="DB update failed")
 
 
+def _next_or_create_meeting():
+    """Return (id, ref) of the next upcoming, not-yet-conducted meeting.
+    Creates it (next Sunday, KIM N+1, default agenda) if none exists."""
+    from db import query as _dbq, execute as _exec
+    from datetime import date as _date, timedelta as _td
+    import json as _json_nm
+    rows = _dbq("""SELECT id, ref FROM meetings
+                   WHERE date >= CURRENT_DATE AND conductor_started_at IS NULL
+                   ORDER BY date ASC, ref ASC LIMIT 1""")
+    if rows:
+        return rows[0]["id"], rows[0]["ref"]
+    # None upcoming — create the next meeting on the next Sunday.
+    ref, _prev = _compute_next_ref()
+    today = _date.today()
+    days = (6 - today.weekday()) % 7  # Sunday = weekday 6; 0 if today is Sunday
+    nxt_sunday = today + _td(days=days if days else 7)
+    agenda = _build_default_agenda(None)
+    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, agenda)
+             VALUES (%s, %s::date, %s, %s::time, %s)""",
+          (ref, str(nxt_sunday), "Google Meet", "16:30", _json_nm.dumps(agenda)))
+    row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
+    return row[0]["id"], ref
+
+
+@app.post("/api/actions/carry-over")
+async def carry_over_action(request: Request):
+    """Admin: carry an action forward to the next meeting. Creates a fresh
+    continuation action there (parent_ref = old ref) and marks the old one
+    carried_over. Creates the next meeting if none exists yet."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import re as _re_co
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    body = await request.json()
+    action_ref = str(body.get("action_id", "")).strip()
+    comment    = str(body.get("comment", "")).strip()
+    if not action_ref:
+        raise _HE(status_code=400, detail="action_id required")
+    src = _dbq("""SELECT id, description, assignee, assignees, deadline, priority,
+                         project_id, status
+                  FROM actions WHERE ref=%s""", (action_ref,))
+    if not src:
+        raise _HE(status_code=404, detail=f"Action not found: {action_ref}")
+    a = src[0]
+    author = payload.get("sub", "admin")
+
+    target_id, target_ref = _next_or_create_meeting()
+
+    # Build the continuation ref under the target meeting: KIM/NN/YY-{i}
+    m = _re_co.match(r"KIM\s+(\d+)/(\d{4})", target_ref)
+    if m:
+        num = int(m.group(1)); yr = m.group(2)[-2:]
+        i = (_dbq("SELECT COUNT(*) AS c FROM actions WHERE meeting_id=%s", (target_id,))[0]["c"]) + 1
+        new_ref = f"KIM/{num:02d}/{yr}-{i}"
+        while _dbq("SELECT ref FROM actions WHERE ref=%s", (new_ref,)):
+            i += 1; new_ref = f"KIM/{num:02d}/{yr}-{i}"
+    else:
+        new_ref = f"{target_ref}-carry"
+
+    try:
+        _exec("""INSERT INTO actions
+                   (ref, description, assignee, assignees, meeting_id, related_meeting,
+                    status, priority, deadline, parent_ref, project_id, created_by)
+                 VALUES (%s,%s,%s,%s,%s,%s,'open',%s,%s,%s,%s,%s)""",
+              (new_ref, a["description"], a["assignee"], a["assignees"], target_id, target_ref,
+               a["priority"] or "medium", a["deadline"], action_ref, a["project_id"], author))
+        # Close out the source action as carried over
+        _exec("UPDATE actions SET status='carried_over', closed_at=NOW() WHERE ref=%s", (action_ref,))
+        _exec("""INSERT INTO action_updates (action_id, author, text, type, old_value, new_value)
+                 VALUES (%s,%s,%s,'status_change',%s,'carried_over')""",
+              (a["id"], author,
+               (comment + " " if comment else "") + f"Carried over to {target_ref} as {new_ref}",
+               a["status"]))
+        return {"ok": True, "carried_to_meeting": target_ref, "new_ref": new_ref}
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"carry_over_action: {e}")
+        raise _HE(status_code=500, detail="Carry-over failed")
+
+
 @app.post("/api/meetings/{meeting_id}/process")
 async def process_meeting(meeting_id: int, request: Request,
     audio_file: "UploadFile | None" = None,
@@ -1456,6 +1538,37 @@ async def create_meeting(request: Request):
           (ref, date_str, venue, start_time, key_topics, _json_ag.dumps(agenda)))
     row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
     return {"ok": True, "db_id": row[0]["id"], "ref": ref}
+
+
+@app.patch("/api/meetings/{meeting_id}")
+async def edit_meeting(meeting_id: int, request: Request):
+    """Edit a meeting's date/time/venue/topics — allowed until it is conducted.
+    Rebuilds the agenda from the new topics. Admin only."""
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _dbq
+    import json as _json_em
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    rows = _dbq("SELECT id, conductor_started_at FROM meetings WHERE id=%s", (meeting_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Meeting not found")
+    if rows[0]["conductor_started_at"] is not None:
+        raise _HE(status_code=409, detail="This meeting has already been conducted — its agenda is locked.")
+    body = await request.json()
+    date_str   = str(body.get("date", "")).strip()
+    venue      = str(body.get("venue", "")).strip() or None
+    start_time = str(body.get("start_time", "")).strip() or None
+    key_topics = str(body.get("key_topics", "")).strip() or None
+    if not date_str:
+        raise _HE(status_code=400, detail="date required")
+    agenda = _build_default_agenda(key_topics)
+    _exec("""UPDATE meetings SET date=%s::date, venue=%s, start_time_eat=%s::time,
+                                 key_topics=%s, agenda=%s
+             WHERE id=%s""",
+          (date_str, venue, start_time, key_topics, _json_em.dumps(agenda), meeting_id))
+    return {"ok": True, "id": meeting_id}
 
 
 def _build_default_agenda(key_topics: str | None = None) -> list:

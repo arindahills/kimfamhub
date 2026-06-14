@@ -121,6 +121,84 @@ function ReviewModal({ meetingId, title, isAdmin, onClose }: {
 }
 
 // ── New Meeting modal ─────────────────────────────────────────────────────────
+// ── Edit Meeting modal — agenda/date editable until the meeting is conducted ───
+function EditMeetingModal({ m, onClose, onSaved }: { m: Meeting; onClose: () => void; onSaved: () => void }) {
+  const [date, setDate]       = useState(m.meeting_date)
+  const [venue, setVenue]     = useState(m.location || 'Google Meet')
+  const [startTime, setStart] = useState((m.start_time_eat || '16:30').slice(0, 5))
+  const [topics, setTopics]   = useState(m.key_topics || '')
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
+  const toast = useToast()
+
+  const save = async () => {
+    setError(''); setSaving(true)
+    try {
+      const res = await fetch(`/api/meetings/${m.db_id}`, {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, venue, start_time: startTime, key_topics: topics }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(d.detail || 'Failed to save')
+      toast.success(`${m.meeting_ref} updated`)
+      onSaved()
+    } catch (e: any) { setError(e.message); toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.7)' }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="w-full max-w-sm rounded-2xl p-5 space-y-4" style={{ background: '#121824', border: '1px solid #1e293b' }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: '#e2e8f0' }}>Edit Meeting</h2>
+            <div className="text-[11px] font-mono mt-0.5" style={{ color: '#3b82f6' }}>{m.meeting_ref}</div>
+          </div>
+          <button onClick={onClose} style={{ color: '#475569' }}>✕</button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Meeting date</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+              className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+              style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Start time (EAT)</label>
+              <input type="time" value={startTime} onChange={e => setStart(e.target.value)}
+                className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Venue</label>
+              <input value={venue} onChange={e => setVenue(e.target.value)}
+                className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Main agenda topics</label>
+            <textarea value={topics} onChange={e => setTopics(e.target.value)} rows={3}
+              placeholder="Separate items with semicolons"
+              className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
+              style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }} />
+            <p className="text-[10px] mt-1" style={{ color: '#334155' }}>Editable until the meeting is conducted. Fixed items (prayer, attendance, etc.) stay automatic.</p>
+          </div>
+        </div>
+        {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
+        <button onClick={save} disabled={saving || !date}
+          className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
+          style={{ background: '#1e3a5f', color: '#93c5fd', border: '1px solid #3b82f655' }}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const nextSunday = (() => {
     const d = new Date()
@@ -277,6 +355,9 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
   const progress = m.action_count > 0 ? Math.round((m.action_done_count / m.action_count) * 100) : 0
   const [viewMinutes, setViewMinutes] = useState(false)
   const [viewReview, setViewReview]   = useState(false)
+  const [editing, setEditing]         = useState(false)
+  const cardQc = useQueryClient()
+  const notConducted = !m.conductor_active && !m.conductor_ended
 
   // Conduct is only relevant for meetings that haven't happened yet (today or future),
   // or ones currently live. Past meetings get no Conduct button.
@@ -306,6 +387,13 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
                   border:     m.conductor_active ? '1px solid #22c55e' : '1px solid #3b82f6',
                 }}>
                 {m.conductor_active ? '● Live' : 'Conduct'}
+              </button>
+            )}
+            {isAdmin && notConducted && (
+              <button onClick={() => setEditing(true)}
+                className="text-[11px] px-2 py-1 rounded-lg"
+                style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+                ✎ Edit
               </button>
             )}
             {isAdmin && m.conductor_ended && (
@@ -379,6 +467,14 @@ function MeetingCard({ m, isAdmin, onProcess, onConduct }: {
           title={`KIM ${m.meeting_number} — ${m.meeting_date}`}
           isAdmin={isAdmin}
           onClose={() => setViewReview(false)}
+        />
+      )}
+
+      {editing && (
+        <EditMeetingModal
+          m={m}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); cardQc.invalidateQueries({ queryKey: ['meetings'] }) }}
         />
       )}
     </>
