@@ -681,20 +681,21 @@ async def process_meeting(meeting_id: int, request: Request,
             for label, text in transcript_parts
         )
 
-    # Long meetings (e.g. a 3-hour Tactiq transcript) are condensed chunk-by-chunk
-    # so the final extraction (and the narrative minutes) fit a single AI call.
-    # Skip if this is already a condensed record (e.g. reused from a prior run).
-    _already_condensed = transcript.startswith("[This is a condensed record")
-    if transcript_parts and len(transcript) > 18000 and not _already_condensed:
-        transcript = await _condense_transcript(transcript)
-
-    # Persist the (condensed) transcript for the retrospective + narrative minutes
+    # Persist the FULL, raw transcript. The minutes writer and retrospective need
+    # the complete detail (figures, who said what); condensing here is what made
+    # past minutes thin. The extraction prompt below uses a condensed COPY only.
     if transcript_parts:
         try:
             from db import execute as _exec_tx
             _exec_tx("UPDATE meetings SET transcript=%s WHERE id=%s", (transcript, meeting_id))
         except Exception:
             pass
+
+    # For the action/decision EXTRACTION call only, condense a long transcript so
+    # it fits one AI call. This does NOT touch the stored transcript above.
+    _already_condensed = transcript.startswith("[This is a condensed record")
+    if transcript_parts and len(transcript) > 18000 and not _already_condensed:
+        transcript = await _condense_transcript(transcript)
 
     # ── 3. Pull context from DB ───────────────────────────────────────────────
     meeting_rows = _dbq("""
@@ -933,19 +934,22 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
         else:
             ref = f"{meeting_ref}-{i}"
 
-        # Avoid collision
-        existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
-        suffix = "a"
-        while existing:
-            ref = ref.rstrip("abcdefghijklmnop") + suffix
-            existing = _dbq("SELECT ref FROM actions WHERE ref=%s", (ref,))
-            suffix = chr(ord(suffix) + 1)
-
+        # Idempotent: re-confirming the same meeting updates the deterministic ref
+        # in place rather than creating a duplicate "-1a" set (the old collision
+        # logic is what duplicated actions on a double-tap). Status is left
+        # untouched so a manually progressed action is not reset to open.
         _exec("""INSERT INTO actions
                    (ref, description, assignee, assignees, meeting_id, related_meeting,
                     status, priority, deadline, parent_ref, project_id, created_by)
                  VALUES (%s,%s,%s,%s,%s,%s,'open',%s,%s,%s,%s,%s)
-                 ON CONFLICT (ref) DO NOTHING""",
+                 ON CONFLICT (ref) DO UPDATE SET
+                    description = EXCLUDED.description,
+                    assignee    = EXCLUDED.assignee,
+                    assignees   = EXCLUDED.assignees,
+                    priority    = EXCLUDED.priority,
+                    deadline    = EXCLUDED.deadline,
+                    parent_ref  = EXCLUDED.parent_ref,
+                    project_id  = EXCLUDED.project_id""",
               (ref, desc, primary_assignee, assignees, meeting_id, meeting_ref,
                priority, deadline, parent, project, author))
         created_refs.append(ref)
@@ -953,6 +957,11 @@ async def confirm_meeting_extraction(meeting_id: int, request: Request):
             "ref": ref, "description": desc, "assignees": assignees,
             "deadline": deadline or "", "priority": priority,
         })
+
+    # Idempotent: clear any prior "[From minutes]" notes for this meeting so a
+    # re-confirm does not stack duplicate update comments on existing actions.
+    _exec("DELETE FROM action_updates WHERE author=%s AND text LIKE %s",
+          (f"Meeting {meeting_ref}", "[From minutes]%"))
 
     # Apply updates to existing actions (additive: add note, optionally change status)
     for u in updates:
@@ -1171,8 +1180,36 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
         if isinstance(_e, dict) and _e.get("status"):
             _c = (_e.get("comment") or "").strip()
             att_lines.append(f"- {_m}: {_e['status']}" + (f" ({_c})" if _c else ""))
-    notes = (r["conductor_notes"] or "")[:4000]
-    transcript = (r["transcript"] or "")[:9000]
+    # Use the FULL notes and transcript. Truncating here is what produced thin
+    # minutes; we keep all the detail and handle length via a map-reduce below.
+    notes = (r["conductor_notes"] or "")[:6000]
+    transcript = (r["transcript"] or "")
+    if len(transcript) > 200000:   # hard safety cap, far above a 3-hour meeting
+        transcript = transcript[:200000]
+
+    # A 3-hour transcript is too large for one final pass (sonnet times out).
+    # MAP: split it and have haiku write DETAILED notes per chunk (preserving every
+    # figure, decision and assignment). REDUCE (further below): sonnet assembles the
+    # house-style minutes from these notes. This keeps the detail that makes good
+    # minutes while fitting the time budget.
+    if len(transcript) > 40000:
+        _chunks = [transcript[i:i + 35000] for i in range(0, len(transcript), 35000)]
+        _digparts = []
+        # Keep each part's notes compact so the final assemble prompt stays within the
+        # size the CLI can handle in time (a ~30k prompt works; ~60k times out).
+        _per_cap = max(3500, 22000 // max(1, len(_chunks)))
+        for _idx, _ch in enumerate(_chunks, 1):
+            _dp = (
+                f"This is part {_idx} of {len(_chunks)} of a KimFam Investment Club meeting "
+                f"transcript. Write CONCISE but COMPLETE minute notes for this part as short "
+                f"bullet points: every topic, every figure and amount (UGX, percentages, USD), "
+                f"every decision, and every action assigned (who and any deadline). Keep all "
+                f"facts and numbers but no filler or dialogue. No em-dashes or en-dashes.\n\n"
+                f"PART {_idx}:\n{_ch}"
+            )
+            _out = (_ask_claude(_dp, model="claude-haiku-4-5-20251001", timeout=180) or "")[:_per_cap]
+            _digparts.append(f"--- Notes from part {_idx} of {len(_chunks)} ---\n{_out or '(part unavailable)'}")
+        transcript = "\n\n".join(_digparts)
     acts_txt = "\n".join(
         f"- {a.get('ref','')}: {a.get('description','')[:90]} "
         f"[{', '.join(a['assignees']) if isinstance(a.get('assignees'), list) else a.get('assignees','')}"
@@ -1184,14 +1221,30 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
     prev_txt = (f"{prev[0]['ref']} ({prev[0]['date']}): {(prev[0]['key_decisions'] or '')[:400]}"
                 if prev else "None")
 
-    prompt = f"""You are the Secretary writing the official minutes for KimFam Investment Club
-meeting {r['ref']} held {r['date']}. Write them in the club's established house style.
+    prompt = f"""You are the Secretary writing the official, detailed minutes for KimFam
+Investment Club meeting {r['ref']} held {r['date']}, working from the full meeting
+transcript. Produce thorough, faithful minutes in the club's established house style.
+The family relies on these minutes as the permanent record, so capture every topic,
+figure, decision and assignment that the transcript actually contains. Do not be brief.
 
 STRICT STYLE RULES:
 - NO em-dashes or en-dashes anywhere. Use commas, colons, semicolons or full stops.
 - Warm, factual, third-person minute style (e.g. "Hellen presented the financial position.").
-- Use Ugandan shilling amounts as "UGX 1,234,567" with comma separators.
-- Follow the club's standard section order.
+- Use Ugandan shilling amounts as "UGX 1,234,567" with comma separators; keep all figures and percentages.
+- Refer to Simon and Viola together as "the Arungas" (the family prefers this).
+- Use the roll call below as the authoritative attendance; do not invent presence.
+- Do not invent figures, names, or decisions that are not in the inputs.
+
+HOUSE STRUCTURE (use the sections that the meeting actually covered; add subsections freely):
+- OPENING (who opened, prayer, chair/secretary, quorum)
+- FINANCIAL REPORT / TREASURER'S REPORT (balance, expenditure, arrears, with figures)
+- REVIEW OF PREVIOUS MINUTES
+- FOLLOW-UP ON ACTION POINTS (one numbered subsection per item reviewed, with its KIM reference and status)
+- MAIN AGENDA and/or PROJECT UPDATES (one numbered subsection per topic discussed, e.g. equity model vote, new venture proposals, project selection, investment decisions, each with the discussion, figures and outcome)
+- ANY OTHER BUSINESS
+- NEXT MEETING
+- CLOSE (closing prayer)
+Within each section use "paragraphs" for narrative and "bullets" for specifics (figures, sub-points, the agreed action). Be generous with bullets so nothing is lost.
 
 INPUTS
 Previous meeting: {prev_txt}
@@ -1201,30 +1254,26 @@ Secretary's live notes (organised by agenda item):
 {notes or '(none)'}
 Actions agreed this meeting:
 {acts_txt}
-Transcript (may be partial):
+MEETING RECORD (full transcript, or detailed section notes for a long meeting):
 {transcript or '(no transcript)'}
 
-Return ONLY valid JSON (no markdown) in EXACTLY this shape:
+Return ONLY valid JSON (no markdown) in EXACTLY this shape (use as many sections,
+subsections, paragraphs and bullets as the meeting needs):
 {{
-  "attendance": {{"present": ["Name", "..."], "apologies": ["Name with reason", "..."], "absent": ["Name", "..."]}},
+  "attendance": {{"present": ["Name (Family)", "..."], "apologies": ["Name with reason", "..."], "absent": ["Name", "..."]}},
+  "chair": "Name",
+  "secretary": "Name",
   "sections": [
-    {{"number": "1", "title": "OPENING", "paragraphs": ["..."], "bullets": [],
-      "subsections": []}},
-    {{"number": "2", "title": "TREASURER'S REPORT", "paragraphs": ["..."], "bullets": ["..."], "subsections": []}},
-    {{"number": "3", "title": "REVIEW OF PREVIOUS MINUTES", "paragraphs": ["..."], "bullets": [], "subsections": []}},
+    {{"number": "1", "title": "OPENING", "paragraphs": ["..."], "bullets": [], "subsections": []}},
     {{"number": "4", "title": "FOLLOW-UP ON ACTION POINTS", "paragraphs": [], "bullets": [],
-      "subsections": [{{"number": "4.1", "title": "Item name (KIM/ref)", "paragraphs": ["..."], "bullets": ["..."]}}]}},
-    {{"number": "5", "title": "MAIN AGENDA", "paragraphs": [], "bullets": [],
-      "subsections": [{{"number": "5.1", "title": "Topic", "paragraphs": ["..."], "bullets": ["..."]}}]}},
-    {{"number": "6", "title": "ANY OTHER BUSINESS", "paragraphs": ["..."], "bullets": [], "subsections": []}},
-    {{"number": "7", "title": "NEXT MEETING", "paragraphs": ["..."], "bullets": [], "subsections": []}}
+      "subsections": [{{"number": "4.1", "title": "Item name (KIM/ref)", "paragraphs": ["..."], "bullets": ["..."]}}]}}
   ],
   "decisions": ["Concise decision 1", "Concise decision 2"]
 }}
 
-Only include sections and subsections that the inputs actually support. Keep it faithful to the
-inputs; do not invent figures, names, or decisions that are not present."""
-    raw = _ask_claude(prompt, timeout=120)
+Number the sections sequentially from 1. Only include what the inputs support, but be
+exhaustive about what they do support."""
+    raw = _ask_claude(prompt, model="claude-haiku-4-5-20251001", timeout=240)
     def _parse(x):
         if not x: return None
         try: return _json_n2.loads(x)
@@ -1244,7 +1293,7 @@ inputs; do not invent figures, names, or decisions that are not present."""
                 resp = _Groq(api_key=groq_key).chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4000, temperature=0.2)
+                    max_tokens=8000, temperature=0.2)
                 data = _parse(resp.choices[0].message.content.strip())
             except Exception:
                 data = None
@@ -1289,6 +1338,25 @@ def _build_minutes_docx_v2(meeting_ref: str, mtg: dict, narrative: dict, actions
         tl.add_run(f"Started {_start} EAT" + (f", ended {_end} EAT" if _end else "")
                    + f"  |  {mtg.get('venue') or 'Google Meet'}").italic = True
     doc.add_paragraph()
+
+    # Meeting metadata table (matches the house template)
+    _time_val = (f"{_start} EAT" + (f"  |  {_end} EAT" if _end else "")) if _start else ""
+    _meta_rows = [
+        ("Date", day_date),
+        ("Time", _time_val),
+        ("Venue", mtg.get("venue") or "Google Meet"),
+        ("Chair", narrative.get("chair") or ""),
+        ("Secretary", narrative.get("secretary") or ""),
+    ]
+    _meta_rows = [(k, v) for k, v in _meta_rows if v]
+    if _meta_rows:
+        mtbl = doc.add_table(rows=len(_meta_rows), cols=2); mtbl.style = "Table Grid"
+        for _i, (_k, _v) in enumerate(_meta_rows):
+            mtbl.rows[_i].cells[0].text = _k
+            mtbl.rows[_i].cells[1].text = _v
+            for _run in mtbl.rows[_i].cells[0].paragraphs[0].runs:
+                _run.bold = True
+        doc.add_paragraph()
 
     # Attendance
     att = narrative.get("attendance") or {}
@@ -1413,12 +1481,12 @@ async def meetings_minutes_draft(meeting_id: int, request: Request):
     if not _os.path.exists(path):
         raise _HE(status_code=404, detail="Draft not found — run Process + Confirm first")
 
-    rows = _dbq("SELECT ref FROM meetings WHERE id=%s", (meeting_id,))
-    safe_ref = (rows[0]["ref"] if rows else f"meeting_{meeting_id}").replace(" ", "_").replace("/", "_")
+    rows = _dbq("SELECT date FROM meetings WHERE id=%s", (meeting_id,))
+    fname = _minutes_filename(rows[0]["date"]) if rows else f"KIMFAM_Meeting_Minutes_{meeting_id}.docx"
     return _FR(
         path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=f"KimFam_{safe_ref}_Minutes.docx",
+        filename=fname,
     )
 
 
