@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
@@ -516,6 +517,11 @@ export default function MeetingsPage() {
           {t('meetings.title')} ({meetings.length})
         </h2>
         <div className="flex items-center gap-2">
+          <Link to="/actions"
+            className="text-xs px-3 py-1.5 rounded-full font-medium"
+            style={{ background: '#14532d33', color: '#86efac', border: '1px solid #16683455', textDecoration: 'none' }}>
+            ✅ Action Points
+          </Link>
           <button onClick={() => setShowAnalytics(true)}
             className="text-xs px-3 py-1.5 rounded-full font-medium"
             style={{ background: '#0f766e33', color: '#5eead4', border: '1px solid #0f766e55' }}>
