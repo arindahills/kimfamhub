@@ -413,9 +413,11 @@ def check_meeting_reminders():
             break
 
 
-# JOB 4b: Meeting reminder — 1 hour before start_time_eat
-# Polls every 30 min. Fires when now is within the 55–85 min window before start.
-# Uses cache DB to ensure only one reminder per meeting ref per day.
+# JOB 4b: Meeting reminder — roughly 1 hour before start_time_eat
+# Polls every 10 min on a FIXED clock (cron */10), so app restarts/deploys do not
+# push the next run forward. Catch-up tolerant: fires on the first poll that finds
+# the meeting within 75 min of start and not yet reminded (dedup guarantees once),
+# so a single missed poll can never lose the reminder.
 # ─────────────────────────────────────────────────────────────────────────────
 def check_meeting_today():
     log.info("Scheduler: checking meeting reminders (1-hour-before)")
@@ -450,8 +452,9 @@ def check_meeting_today():
             fallback = datetime.combine(today, __import__("datetime").time(16, 30)).replace(tzinfo=KAMPALA)
             mins_until = (fallback - now).total_seconds() / 60
 
-        # Fire if we're in the 55–85 minute window before start
-        if not (55 <= mins_until <= 85):
+        # Fire on the first poll within 75 min before start (catch-up tolerant).
+        # The dedup record below guarantees it only sends once per meeting per day.
+        if not (0 < mins_until <= 75):
             continue
 
         # Dedup: only send once per ref per calendar day
@@ -528,10 +531,15 @@ def start():
     # Daily jobs at 08:00 Kampala
     _scheduler.add_job(check_action_deadlines, "cron", hour=8, minute=0,
                        id="deadline_check", replace_existing=True)
+    # Day-before reminder: 08:00 Kampala. misfire_grace_time lets it still fire if
+    # the app was briefly down (e.g. a deploy) right at 08:00.
     _scheduler.add_job(check_meeting_reminders, "cron", hour=8, minute=0,
-                       id="meeting_reminder", replace_existing=True)
-    _scheduler.add_job(check_meeting_today, "interval", minutes=30,
-                       id="meeting_today", replace_existing=True)
+                       id="meeting_reminder", replace_existing=True, misfire_grace_time=3600)
+    # 1-hour-before reminder: fixed-clock cron every 10 min (restart-resilient,
+    # unlike interval which resets on each restart). Catch-up logic in the job
+    # handles any single missed poll.
+    _scheduler.add_job(check_meeting_today, "cron", minute="*/10",
+                       id="meeting_today", replace_existing=True, misfire_grace_time=300)
     _scheduler.add_job(check_loan_due, "cron", hour=8, minute=5,
                        id="loan_due", replace_existing=True)
     # Monthly on 5th at 08:00
@@ -539,6 +547,12 @@ def start():
                        id="monthly_reminder", replace_existing=True)
     _scheduler.start()
     log.info("KimFam scheduler started (%s mode)", "STAGING" if IS_STAGING else "PROD")
+    # Run the 1-hour meeting check once now, so a restart (e.g. a deploy) right
+    # inside a reminder window still catches it instead of waiting for the next poll.
+    try:
+        check_meeting_today()
+    except Exception as e:
+        log.warning("startup meeting check failed: %s", e)
 
 def stop():
     if _scheduler:
