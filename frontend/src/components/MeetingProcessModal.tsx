@@ -62,7 +62,9 @@ interface Props {
   onConfirmed: () => void
 }
 
-const INDIVIDUAL_MEMBERS = ['Hillary', 'Hellen', 'Alex', 'Solomon', 'Viola', 'Max', 'James']
+// The 13 KimFam members (mirrors notifications.MEMBER_PHONES). 'James' was a
+// stray non-member; Simon, Israel, Esther, Janet, Lawi, Priscilla, Merab were missing.
+const INDIVIDUAL_MEMBERS = ['Hillary', 'Hellen', 'Alex', 'Israel', 'Simon', 'Esther', 'Janet', 'Lawi', 'Max', 'Priscilla', 'Solomon', 'Viola', 'Merab']
 const PRIORITIES = ['high', 'medium', 'low']
 const PRIORITY_COLOR: Record<string, string> = { high: '#f87171', medium: '#fbbf24', low: '#64748b' }
 const PROJECTS = [
