@@ -1241,10 +1241,12 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     is_stg = _os.getenv("KIMFAM_ENV", "prod") == "staging"
     recipient = "256775102684" if is_stg else "254716595631-1631997730@g.us"  # Hillary vs KIM FAM PROJECTS
     env_tag = " [STAGING TEST]" if is_stg else ""
+    from notifications import SIGNOFF as _SIGNOFF
     msg = (
         f"*KimFam Hub{env_tag}* — Meeting minutes ready\n\n"
         f"*{mtg['ref']}* ({mtg['date']})\n\n"
         f"Minutes have been published. Open KimFam Hub to read and download."
+        + _SIGNOFF
     )
     try:
         import requests as _req
@@ -1561,14 +1563,20 @@ async def create_meeting(request: Request):
     try:
         import notifications as _notif_cm
         _t = (start_time or "")[:5]
+        _agenda_block = ""
+        if key_topics:
+            _items = [i.strip() for i in key_topics.split(";") if i.strip()]
+            if _items:
+                _agenda_block = "\n*Agenda:*\n" + "\n".join(f"• {i}" for i in _items) + "\n"
         _msg = (
             f"📅 *New KimFam Meeting Scheduled*\n\n"
             f"*{ref}*\n"
             f"*Date:* {date_str}\n"
             + (f"*Time:* {_t} EAT\n" if _t else "")
             + (f"*Venue:* {venue}\n" if venue else "")
-            + (f"\n*Agenda:*\n{key_topics}\n" if key_topics else "")
+            + _agenda_block
             + f"\nFull agenda and details on kimfamhub.com. See you there."
+            + _notif_cm.SIGNOFF
         )
         _phones = [p for p in _notif_cm.MEMBER_PHONES.values() if p]
         _notif_cm._broadcast(_phones, _msg)

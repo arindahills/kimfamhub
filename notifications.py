@@ -23,6 +23,9 @@ HILLARY_PHONE = "256775102684"
 # Hellen (Treasurer) — prod only
 HELLEN_PHONE = "254716595631"
 
+# Standard sign-off appended to every automated KimFam WhatsApp message.
+SIGNOFF = "\n\n— _KimFam AI_ 🤖"
+
 
 def _send(recipient: str, message: str):
     """Fire-and-forget single WhatsApp message. Swallows errors so notifications

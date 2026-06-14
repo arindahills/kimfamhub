@@ -19,7 +19,7 @@ import notifications as _notif
 log = logging.getLogger(__name__)
 
 KAMPALA = ZoneInfo("Africa/Kampala")
-_SIG = "\n\n_(via KimFam Hub)_"
+_SIG = _notif.SIGNOFF   # "— KimFam AI 🤖" — every automated message is signed
 IS_STAGING = os.environ.get("KIMFAM_ENV", "prod") == "staging"
 
 # ── Cache DB (reuse kimfam.db) ─────────────────────────────────────────────
