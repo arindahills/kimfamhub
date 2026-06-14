@@ -454,6 +454,73 @@ async def carry_over_action(request: Request):
         raise _HE(status_code=500, detail="Carry-over failed")
 
 
+async def _ai_complete(prompt: str, claude_timeout: int = 150) -> str:
+    """One AI completion. Claude CLI is PRIMARY (for prompts it can handle in time);
+    DeepSeek is the high-capacity fallback for oversized prompts or Claude failures;
+    Groq (truncated) is the last resort. Never raises — returns '' if all fail."""
+    import logging as _lg_ai, asyncio as _aio
+    raw = ""
+    if len(prompt) <= 24000:
+        try:
+            env = dict(_os.environ); env["HOME"] = "/root"
+            proc = await _aio.create_subprocess_exec(
+                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env)
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=claude_timeout)
+            if proc.returncode == 0:
+                raw = stdout.decode().strip()
+        except Exception:
+            pass
+    if not raw:
+        dk = _os.getenv("DEEPSEEK_API_KEY", "")
+        if dk:
+            try:
+                from openai import OpenAI as _OAI
+                r = _OAI(api_key=dk, base_url="https://api.deepseek.com").chat.completions.create(
+                    model="deepseek-chat", messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000, temperature=0.1)
+                raw = (r.choices[0].message.content or "").strip()
+            except Exception as e:
+                _lg_ai.getLogger("main").error(f"DeepSeek complete failed: {e}")
+    if not raw:
+        gk = _os.getenv("GROQ_API_KEY", "")
+        if gk:
+            try:
+                from groq import Groq as _Groq
+                gp = prompt if len(prompt) <= 26000 else prompt[:26000] + "\n\n[Truncated to fit.]"
+                r = _Groq(api_key=gk).chat.completions.create(
+                    model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": gp}],
+                    max_tokens=2000, temperature=0.1)
+                raw = (r.choices[0].message.content or "").strip()
+            except Exception as e:
+                _lg_ai.getLogger("main").error(f"Groq complete failed: {e}")
+    return raw
+
+
+async def _condense_transcript(transcript: str) -> str:
+    """A long meeting (e.g. a 3-hour Tactiq transcript) won't fit one AI call.
+    Split it into chunks, have Claude extract the substance of each chunk, and
+    stitch the results into a dense record that DOES fit the final extraction.
+    Keeps Claude as the engine for transcripts of any length."""
+    if len(transcript) <= 18000:
+        return transcript
+    size = 16000
+    chunks = [transcript[i:i + size] for i in range(0, len(transcript), size)]
+    parts = []
+    for idx, ch in enumerate(chunks, 1):
+        cp = (
+            f"This is part {idx} of {len(chunks)} of a KimFam Investment Club meeting transcript. "
+            f"Extract, as concise bullet points and losing nothing material: every DECISION made; "
+            f"every ACTION assigned (who is responsible and any deadline); key figures and amounts "
+            f"in UGX; and the important points of each discussion. No preamble, bullets only. "
+            f"No em-dashes or en-dashes.\n\nTRANSCRIPT PART {idx} OF {len(chunks)}:\n{ch}"
+        )
+        out = await _ai_complete(cp, claude_timeout=90)
+        parts.append(f"--- Notes from part {idx} ---\n{out or '(could not process this part)'}")
+    return ("[This is a condensed record of a long meeting, assembled from the full transcript "
+            "in sections.]\n\n" + "\n\n".join(parts))
+
+
 @app.post("/api/meetings/{meeting_id}/process")
 async def process_meeting(meeting_id: int, request: Request,
     audio_file: "UploadFile | None" = None,
@@ -544,7 +611,12 @@ async def process_meeting(meeting_id: int, request: Request,
             for label, text in transcript_parts
         )
 
-    # Persist the transcript so the meeting retrospective can analyse it later
+    # Long meetings (e.g. a 3-hour Tactiq transcript) are condensed chunk-by-chunk
+    # so the final extraction (and the narrative minutes) fit a single AI call.
+    if transcript_parts and len(transcript) > 18000:
+        transcript = await _condense_transcript(transcript)
+
+    # Persist the (condensed) transcript for the retrospective + narrative minutes
     if transcript_parts:
         try:
             from db import execute as _exec_tx
@@ -689,63 +761,10 @@ Rules:
 - Deadlines must be absolute dates (YYYY-MM-DD). If relative ("next week"), compute from meeting date {mtg['date']}.
 """
 
-    # ── 4. Call Claude CLI → Groq fallback ───────────────────────────────────
-    raw_json = ""
-    import logging as _lg_ai
-    # Claude CLI tends to time out beyond roughly this prompt size; for an oversized
-    # transcript we skip the doomed Claude attempt and go straight to the high-capacity
-    # fallback instead of making the user wait for a timeout.
-    _oversized = len(prompt) > 24000
-
-    # 1. Claude CLI — PRIMARY for everything it can handle. Generous timeout.
-    if not _oversized:
-        try:
-            import asyncio as _aio
-            env = dict(_os.environ); env["HOME"] = "/root"
-            proc = await _aio.create_subprocess_exec(
-                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
-                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env
-            )
-            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=150)
-            if proc.returncode == 0:
-                raw_json = stdout.decode().strip()
-        except Exception:
-            pass
-
-    # 2. DeepSeek — fallback only (paid, high capacity) for when Claude can't
-    #    handle a very long transcript in time.
-    if not raw_json:
-        deepseek_key = _os.getenv("DEEPSEEK_API_KEY", "")
-        if deepseek_key:
-            try:
-                from openai import OpenAI as _OAI_ds
-                _ds = _OAI_ds(api_key=deepseek_key, base_url="https://api.deepseek.com")
-                resp = _ds.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4000, temperature=0.1,
-                )
-                raw_json = (resp.choices[0].message.content or "").strip()
-            except Exception as _de:
-                _lg_ai.getLogger("main").error(f"DeepSeek extract failed: {_de}")
-
-    # 3. Groq — last resort, free tier ~12k TPM. Truncate a long transcript so it fits,
-    #    and never let a provider error crash the request (was causing a 500).
-    if not raw_json:
-        groq_key = _os.getenv("GROQ_API_KEY", "")
-        if groq_key:
-            try:
-                from groq import Groq as _Groq
-                _gprompt = prompt if len(prompt) <= 26000 else (
-                    prompt[:26000] + "\n\n[Transcript truncated to fit; summarise what is present above.]")
-                resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": _gprompt}],
-                    max_tokens=2000, temperature=0.1,
-                )
-                raw_json = (resp.choices[0].message.content or "").strip()
-            except Exception as _ge:
-                _lg_ai.getLogger("main").error(f"Groq extract failed: {_ge}")
+    # ── 4. Extract via the AI chain (Claude primary → DeepSeek → Groq). The
+    #       transcript was already condensed above if it was long, so this prompt
+    #       fits Claude. ──────────────────────────────────────────────────────────
+    raw_json = await _ai_complete(prompt, claude_timeout=150)
 
     if not raw_json:
         raise _HE(status_code=503, detail="AI extraction is busy right now — please tap Extract again in a moment.")
