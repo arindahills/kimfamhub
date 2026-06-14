@@ -653,6 +653,19 @@ async def process_meeting(meeting_id: int, request: Request,
         except Exception as e:
             raise _HE(status_code=502, detail=f"Transcription failed: {e}")
 
+    # Fallback: if the form carried no transcript/audio (e.g. the paste box was
+    # cleared, or a recording was lost), use a transcript already saved on this
+    # meeting — group auto-capture or an earlier attempt may have stored it. This
+    # stops a cleared text box from silently downgrading the minutes to notes-only.
+    if not transcript_parts:
+        try:
+            _saved = _dbq("SELECT transcript FROM meetings WHERE id=%s", (meeting_id,))
+            _saved_tx = (_saved[0]["transcript"] or "").strip() if _saved else ""
+            if len(_saved_tx) > 200:
+                transcript_parts.append(("Saved transcript", _saved_tx))
+        except Exception:
+            pass
+
     if not transcript_parts and not sec_notes:
         raise _HE(status_code=400, detail="No content provided — supply audio, a transcript, or your notes")
 
@@ -670,7 +683,9 @@ async def process_meeting(meeting_id: int, request: Request,
 
     # Long meetings (e.g. a 3-hour Tactiq transcript) are condensed chunk-by-chunk
     # so the final extraction (and the narrative minutes) fit a single AI call.
-    if transcript_parts and len(transcript) > 18000:
+    # Skip if this is already a condensed record (e.g. reused from a prior run).
+    _already_condensed = transcript.startswith("[This is a condensed record")
+    if transcript_parts and len(transcript) > 18000 and not _already_condensed:
         transcript = await _condense_transcript(transcript)
 
     # Persist the (condensed) transcript for the retrospective + narrative minutes
@@ -1386,6 +1401,7 @@ async def meetings_minutes_draft(meeting_id: int, request: Request):
     """Serve the generated draft .docx for admin review (before publish)."""
     from fastapi import HTTPException as _HE
     from fastapi.responses import FileResponse as _FR
+    from db import query as _dbq
     import os as _os
 
     token = _get_tok(request)
@@ -1438,6 +1454,7 @@ async def meetings_minutes_draft_replace(meeting_id: int, request: Request):
 async def meetings_minutes_edit(meeting_id: int, request: Request):
     """Apply a plain-English edit instruction to the minutes via Claude, regenerate .docx."""
     from fastapi import HTTPException as _HE
+    from db import query as _dbq
     import os as _os, json as _json3, re as _re4
 
     token = _get_tok(request)
