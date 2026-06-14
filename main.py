@@ -692,24 +692,13 @@ Rules:
     # ── 4. Call Claude CLI → Groq fallback ───────────────────────────────────
     raw_json = ""
     import logging as _lg_ai
+    # Claude CLI tends to time out beyond roughly this prompt size; for an oversized
+    # transcript we skip the doomed Claude attempt and go straight to the high-capacity
+    # fallback instead of making the user wait for a timeout.
+    _oversized = len(prompt) > 24000
 
-    # 1. DeepSeek — paid, high capacity, handles long full-meeting transcripts.
-    deepseek_key = _os.getenv("DEEPSEEK_API_KEY", "")
-    if deepseek_key:
-        try:
-            from openai import OpenAI as _OAI_ds
-            _ds = _OAI_ds(api_key=deepseek_key, base_url="https://api.deepseek.com")
-            resp = _ds.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000, temperature=0.1,
-            )
-            raw_json = (resp.choices[0].message.content or "").strip()
-        except Exception as _de:
-            _lg_ai.getLogger("main").error(f"DeepSeek extract failed: {_de}")
-
-    # 2. Claude CLI — works for smaller prompts; may time out on a very long transcript.
-    if not raw_json:
+    # 1. Claude CLI — PRIMARY for everything it can handle. Generous timeout.
+    if not _oversized:
         try:
             import asyncio as _aio
             env = dict(_os.environ); env["HOME"] = "/root"
@@ -717,13 +706,30 @@ Rules:
                 "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
                 stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env
             )
-            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=150)
             if proc.returncode == 0:
                 raw_json = stdout.decode().strip()
         except Exception:
             pass
 
-    # 3. Groq — free tier ~12k TPM. Truncate a long transcript so it still fits,
+    # 2. DeepSeek — fallback only (paid, high capacity) for when Claude can't
+    #    handle a very long transcript in time.
+    if not raw_json:
+        deepseek_key = _os.getenv("DEEPSEEK_API_KEY", "")
+        if deepseek_key:
+            try:
+                from openai import OpenAI as _OAI_ds
+                _ds = _OAI_ds(api_key=deepseek_key, base_url="https://api.deepseek.com")
+                resp = _ds.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000, temperature=0.1,
+                )
+                raw_json = (resp.choices[0].message.content or "").strip()
+            except Exception as _de:
+                _lg_ai.getLogger("main").error(f"DeepSeek extract failed: {_de}")
+
+    # 3. Groq — last resort, free tier ~12k TPM. Truncate a long transcript so it fits,
     #    and never let a provider error crash the request (was causing a 500).
     if not raw_json:
         groq_key = _os.getenv("GROQ_API_KEY", "")
