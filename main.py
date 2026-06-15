@@ -1730,7 +1730,14 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     # KIMFAM_Meeting_Minutes_June_7_2026.docx
     import r2_storage as _r2_pub
     _fname    = _minutes_filename(mtg["date"])
-    r2_key    = f"minutes/{_fname}"
+    # Place published minutes in the KimFam sub-group for their year, matching the
+    # documents sub-grouping (e.g. minutes/KimFam (2026)/...).
+    try:
+        _yr = str(mtg["date"])[:4]
+    except Exception:
+        _yr = ""
+    _sub = f"KimFam ({_yr})" if _yr.isdigit() else "KimFam"
+    r2_key    = f"minutes/{_sub}/{_fname}"
     minutes_url = None
     if _r2_pub.is_configured():
         try:
@@ -1771,7 +1778,7 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     try:
         import shutil as _sh, subprocess as _sp, sys as _sys
         _app_dir = _os.path.dirname(__file__)
-        _minutes_dir = _os.path.join(_app_dir, "docs", "minutes")
+        _minutes_dir = _os.path.join(_app_dir, "docs", "minutes", _sub)
         _os.makedirs(_minutes_dir, exist_ok=True)
         _sh.copy2(draft_path, _os.path.join(_minutes_dir, _fname))
         _sp.Popen(
@@ -1977,11 +1984,13 @@ def _minutes_by_date() -> dict:
     else:
         folder = DOCS_DIR / "minutes"
         if folder.exists():
-            for f in folder.glob("*.*"):
-                if f.suffix.lower() not in (".docx", ".pdf"):
+            for f in folder.rglob("*"):
+                if not f.is_file() or f.suffix.lower() not in (".docx", ".pdf"):
+                    continue
+                if ".bak." in f.name:
                     continue
                 dt = _extract_date(f)
-                result[dt.date()] = f"/docs/minutes/{f.name}"
+                result[dt.date()] = f"/docs/minutes/{f.relative_to(folder).as_posix()}"
     return result
 
 def _parse_meeting_date(raw: str):
@@ -2937,56 +2946,72 @@ def _friendly_name(path: Path) -> str:
 
 _DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
 
+_DOC_CATS = ["minutes", "governance", "projects", "financial", "receipts"]
+
+
+def _docs_build_cat(cat: str, groups: dict) -> dict:
+    """Turn {group_label: [file dicts]} into the nested category payload, with
+    files sorted by the date in their name (newest first) and groups alphabetised."""
+    def _sort_files(files):
+        def k(x):
+            dt = _date_from_name(Path(x["rel"]).stem)
+            return (0, -dt.timestamp()) if dt is not None else (1, 0.0)
+        return sorted(files, key=k)
+    out_groups = []
+    for glabel in sorted(groups.keys()):
+        files = _sort_files(groups[glabel])
+        out_groups.append({
+            "label": glabel,
+            "files": [
+                {"name": _friendly_name(Path(f["rel"])), "file": f["rel"], "url": f"/docs/{cat}/{f['rel']}"}
+                for f in files
+            ],
+        })
+    total = sum(len(g["files"]) for g in out_groups)
+    return {"label": CATEGORY_LABELS[cat], "count": total, "groups": out_groups}
+
+
 @app.get("/api/docs")
 def get_docs():
+    """Nested documents: category -> sub-groups (one folder deep) -> files.
+    Files directly under a category (no sub-folder) fall into a 'General' group."""
     result = {}
     if _r2.is_configured():
-        # R2 is the source of truth when configured
-        for cat in ["minutes", "governance", "projects", "financial", "receipts"]:
+        for cat in _DOC_CATS:
             try:
                 objects = _r2.list_folder(cat + "/")
             except Exception:
                 objects = []
-            files = []
+            groups: dict[str, list] = {}
             for obj in objects:
                 key = obj["key"]
-                fname = key.split("/", 1)[-1]
-                if not fname:
+                rel = key[len(cat) + 1:] if key.startswith(cat + "/") else key
+                if not rel:
                     continue
-                if Path(fname).suffix.lower() not in _DOC_SUFFIXES:
+                parts = rel.split("/", 1)
+                group, fname = (parts[0], parts[1]) if len(parts) == 2 else ("General", parts[0])
+                base = fname.rsplit("/", 1)[-1]
+                if Path(base).suffix.lower() not in _DOC_SUFFIXES or ".bak." in base:
                     continue
-                if ".bak." in fname:
-                    continue
-                files.append({"fname": fname, "mtime": obj["last_modified"]})
-            # Sort by the date IN the filename (e.g. "June 7 2026"), newest first — not by
-            # R2 upload time, which has no relation to the meeting/document date. Files with
-            # no parseable date fall to the bottom (stable order preserved).
-            def _r2_sort_key(x):
-                dt = _date_from_name(Path(x["fname"]).stem)
-                return (0, -dt.timestamp()) if dt is not None else (1, 0.0)
-            files.sort(key=_r2_sort_key)
-            result[cat] = {
-                "label": CATEGORY_LABELS[cat],
-                "files": [
-                    {"name": _friendly_name(Path(f["fname"])), "file": f["fname"], "url": f"/docs/{cat}/{f['fname']}"}
-                    for f in files
-                ],
-            }
+                groups.setdefault(group, []).append({"rel": rel, "mtime": obj["last_modified"]})
+            result[cat] = _docs_build_cat(cat, groups)
     else:
         # Fallback: local disk (staging / no-R2 environments)
-        for cat in ["minutes", "governance", "projects", "financial", "receipts"]:
+        for cat in _DOC_CATS:
             folder = DOCS_DIR / cat
             if not folder.exists():
                 continue
-            files = [f for f in folder.glob("*.*") if f.suffix.lower() in _DOC_SUFFIXES]
-            files.sort(key=_extract_date, reverse=True)
-            result[cat] = {
-                "label": CATEGORY_LABELS[cat],
-                "files": [
-                    {"name": _friendly_name(f), "file": f.name, "url": f"/docs/{cat}/{f.name}"}
-                    for f in files
-                ],
-            }
+            groups = {}
+            for f in folder.rglob("*"):
+                if not f.is_file() or f.suffix.lower() not in _DOC_SUFFIXES:
+                    continue
+                if f.name.startswith("~") or ".bak." in f.name:
+                    continue
+                rel = f.relative_to(folder).as_posix()
+                parts = rel.split("/", 1)
+                group = parts[0] if len(parts) == 2 else "General"
+                groups.setdefault(group, []).append({"rel": rel, "mtime": f.stat().st_mtime})
+            result[cat] = _docs_build_cat(cat, groups)
     return result
 
 @app.get("/api/docs/search")
@@ -2999,16 +3024,18 @@ def search_docs(query: str = ""):
     all_docs = get_docs()
 
     for cat, cat_data in all_docs.items():
-        for doc in cat_data.get("files", []):
-            # Search in both filename and friendly name
-            if query_lower in doc["file"].lower() or query_lower in doc["name"].lower():
-                results.append({
-                    "category": cat,
-                    "categoryLabel": cat_data["label"],
-                    "name": doc["name"],
-                    "file": doc["file"],
-                    "url": doc["url"]
-                })
+        for group in cat_data.get("groups", []):
+            for doc in group.get("files", []):
+                # Search in both filename and friendly name
+                if query_lower in doc["file"].lower() or query_lower in doc["name"].lower():
+                    results.append({
+                        "category": cat,
+                        "categoryLabel": cat_data["label"],
+                        "group": group["label"],
+                        "name": doc["name"],
+                        "file": doc["file"],
+                        "url": doc["url"]
+                    })
 
     return {"query": query, "count": len(results), "results": results}
 
@@ -3764,19 +3791,10 @@ def _r2_bytes(category: str, filename: str) -> bytes | None:
     except Exception:
         return None
 
-@app.get("/docs/{category}/{filename}")
-def serve_doc(category: str, filename: str):
-    path = DOCS_DIR / category / filename
-    if path.exists() and path.is_file():
-        mime = MIME.get(path.suffix.lower(), "application/octet-stream")
-        return FileResponse(str(path), media_type=mime,
-                            headers={"Content-Disposition": f"attachment; filename={filename}"})
-    r = _r2_redirect(category, filename)
-    if r:
-        return r
-    raise HTTPException(status_code=404)
-
-@app.get("/docs/{category}/{filename}/view")
+# NOTE: the /view route MUST be declared before the download route below, because
+# both use the greedy {filename:path} converter (to allow sub-group sub-paths like
+# "Chicken/Proposal.docx"); whichever is registered first wins for ".../view".
+@app.get("/docs/{category}/{filename:path}/view")
 def view_doc(category: str, filename: str):
     path = DOCS_DIR / category / filename
     suffix = Path(filename).suffix.lower()
@@ -3811,6 +3829,21 @@ def view_doc(category: str, filename: str):
         return Response(content=file_bytes, media_type="application/pdf")
     else:
         raise HTTPException(status_code=415, detail="Preview not supported for this file type")
+
+
+@app.get("/docs/{category}/{filename:path}")
+def serve_doc(category: str, filename: str):
+    # filename may include a sub-group path, e.g. "Chicken/Proposal.docx".
+    path = DOCS_DIR / category / filename
+    base = Path(filename).name
+    if path.exists() and path.is_file():
+        mime = MIME.get(path.suffix.lower(), "application/octet-stream")
+        return FileResponse(str(path), media_type=mime,
+                            headers={"Content-Disposition": f"attachment; filename=\"{base}\""})
+    r = _r2_redirect(category, filename)
+    if r:
+        return r
+    raise HTTPException(status_code=404)
 
 
 # ── Profile Picture Upload ─────────────────────────────────────────────────────
