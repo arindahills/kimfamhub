@@ -2375,6 +2375,33 @@ async def upload_meeting_recording(meeting_id: int, request: Request):
     return {"ok": True, "path": path}
 
 
+@app.post("/api/meetings/{meeting_id}/recording/chunk")
+async def append_meeting_recording_chunk(meeting_id: int, request: Request):
+    """Append one streamed audio chunk to the meeting recording.
+
+    The conductor uploads a chunk every ~15 seconds while the meeting runs, so the
+    audio is persisted progressively. This is what makes recording survive a closed
+    or Chrome-discarded tab (the old flow buffered the whole meeting in the tab's
+    memory and uploaded only at End, so any tab hiccup lost everything). seq=0
+    starts a fresh file (truncate); later chunks append in order. MediaRecorder's
+    first timeslice carries the webm header, so the concatenation is decodable."""
+    from fastapi import HTTPException as _HE
+    import os as _os
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Auth required")
+    form = await request.form()
+    chunk = form.get("chunk")
+    seq = str(form.get("seq", "")).strip()
+    if not chunk or not hasattr(chunk, "read"):
+        raise _HE(status_code=400, detail="chunk required")
+    data = await chunk.read()
+    path = f"/tmp/kimfam_recording_{meeting_id}.webm"
+    mode = "wb" if seq == "0" else "ab"
+    with open(path, mode) as f:
+        f.write(data)
+    return {"ok": True, "bytes": len(data), "seq": seq}
+
+
 @app.post("/api/meetings/{meeting_id}/conductor/start")
 async def conductor_start(meeting_id: int, request: Request):
     """Start the meeting — sets item 0, records start time."""

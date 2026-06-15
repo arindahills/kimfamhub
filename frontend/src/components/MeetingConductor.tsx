@@ -173,11 +173,12 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
 
   // ── Audio recorder — starts automatically when admin clicks Start Meeting ───
   const [recording, setRecording]     = useState(false)
-  const [uploading, setUploading]     = useState(false)
+  const [uploading]                   = useState(false)  // reserved; streaming has no single upload step
   const [uploadedAudio, setUploadedAudio] = useState(false)
   const [recError, setRecError]       = useState('')
   const mediaRef   = useRef<MediaRecorder | null>(null)
-  const chunksRef  = useRef<Blob[]>([])
+  const seqRef     = useRef(0)                       // streamed-chunk sequence number
+  const uploadChainRef = useRef<Promise<unknown>>(Promise.resolve())  // keep chunk uploads ordered
 
   // ── Live secretary notes — typed throughout the meeting ─────────────────────
   const [notes, setNotes]           = useState('')
@@ -275,25 +276,28 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   }
 
   // Upload a recording blob directly (called automatically when recording stops)
-  const uploadBlob = async (blob: Blob) => {
-    setUploading(true)
-    try {
-      const fd = new FormData()
-      fd.append('audio_file', blob, 'meeting_recording.webm')
-      const res = await fetch(`/api/meetings/${meetingId}/recording`, {
-        method: 'POST', credentials: 'include', body: fd,
-      })
-      if (res.ok) { setUploadedAudio(true); toast.success('Meeting recording saved') }
-      else toast.error('Recording upload failed — you can add an audio file when processing')
-    } catch { toast.error('Recording upload failed — check your connection') }
-    finally { setUploading(false) }
+  // Upload one streamed chunk. Calls are chained so they land on the server in
+  // order (the server appends them). A failed chunk is skipped so recording
+  // continues; worst case is a small gap, not total loss.
+  const uploadChunk = (blob: Blob, seq: number) => {
+    uploadChainRef.current = uploadChainRef.current.then(async () => {
+      try {
+        const fd = new FormData()
+        fd.append('chunk', blob, `chunk_${seq}.webm`)
+        fd.append('seq', String(seq))
+        const res = await fetch(`/api/meetings/${meetingId}/recording/chunk`, {
+          method: 'POST', credentials: 'include', body: fd,
+        })
+        if (res.ok && seq === 0) setUploadedAudio(true)
+      } catch { /* keep recording; the next chunk may still land */ }
+    })
+    return uploadChainRef.current
   }
 
   const startRecording = async () => {
     try {
       // Mono + low bitrate: speech transcription doesn't need more, and it keeps
-      // even multi-hour meetings small enough to upload and to transcribe (Groq
-      // Whisper caps at 25MB). ~24kbps mono ≈ 11MB/hour.
+      // even multi-hour meetings small (~24kbps mono ≈ 11MB/hour).
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
@@ -303,30 +307,49 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       } catch {
         mr = new MediaRecorder(stream)  // fall back if options unsupported
       }
-      chunksRef.current = []
-      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-        stream.getTracks().forEach(t => t.stop())
-        // Auto-upload immediately so the Process modal already has the recording
-        uploadBlob(blob)
+      seqRef.current = 0
+      // Stream a chunk every 15s. Each ondataavailable is uploaded immediately, so
+      // the recording is persisted as the meeting runs and survives a closed or
+      // Chrome-discarded tab (the old flow buffered everything in the tab and only
+      // uploaded at End, which is how a 3-hour recording was lost).
+      mr.ondataavailable = e => {
+        if (e.data && e.data.size > 0) {
+          const seq = seqRef.current++
+          uploadChunk(e.data, seq)
+        }
       }
-      mr.start()
+      mr.onstop = () => { stream.getTracks().forEach(t => t.stop()) }
+      mr.start(15000)
       mediaRef.current = mr
       setRecording(true)
       setRecError('')
     } catch {
       // Mic blocked/unavailable — the meeting still runs but NO audio is captured.
-      // Make this loud so nobody assumes a recording exists.
       setRecError('Microphone is blocked, so this meeting is NOT being recorded. Allow microphone access in your browser and reopen the conductor, or rely on a Tactiq transcript / your typed notes for the minutes.')
       toast.error('Microphone blocked — this meeting is NOT being recorded')
     }
   }
 
   const stopRecording = () => {
+    try { mediaRef.current?.requestData() } catch { /* flush last partial chunk */ }
     mediaRef.current?.stop()
     setRecording(false)
   }
+
+  // Resilience: when the tab is hidden or about to close, flush the current
+  // buffer so at most a few seconds of audio can ever be lost.
+  useEffect(() => {
+    const flush = () => {
+      try { if (mediaRef.current && mediaRef.current.state === 'recording') mediaRef.current.requestData() } catch { /* noop */ }
+    }
+    const onVis = () => { if (document.hidden) flush() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('beforeunload', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('beforeunload', flush)
+    }
+  }, [])
 
   // ── Polling ──────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
