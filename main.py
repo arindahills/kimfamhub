@@ -2957,8 +2957,12 @@ def _docs_build_cat(cat: str, groups: dict) -> dict:
             dt = _date_from_name(Path(x["rel"]).stem)
             return (0, -dt.timestamp()) if dt is not None else (1, 0.0)
         return sorted(files, key=k)
+    def _group_key(label):
+        # Groups carrying a year sort newest-first; the rest alphabetically after.
+        m = re.search(r"(19|20)\d{2}", label)
+        return (0, -int(m.group(0)), label) if m else (1, 0, label)
     out_groups = []
-    for glabel in sorted(groups.keys()):
+    for glabel in sorted(groups.keys(), key=_group_key):
         files = _sort_files(groups[glabel])
         out_groups.append({
             "label": glabel,
