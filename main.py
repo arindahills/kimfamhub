@@ -2935,7 +2935,7 @@ def _friendly_name(path: Path) -> str:
         n = n.replace(p, "").strip()
     return n if n else path.stem
 
-_DOC_SUFFIXES = {".docx", ".pdf"}
+_DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
 
 @app.get("/api/docs")
 def get_docs():
