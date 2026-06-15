@@ -48,6 +48,7 @@ jobs:
             --exclude='static/expenditures/' --exclude='static/project-pics/' \
             --exclude='docs/minutes/' --exclude='docs/financial/' \
             --exclude='docs/receipts/' --exclude='docs/projects/' \
+            --exclude='docs/governance/' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$STAGING_DIR/
 
@@ -274,6 +275,7 @@ jobs:
             --exclude='static/expenditures/' --exclude='static/project-pics/' \
             --exclude='docs/minutes/' --exclude='docs/financial/' \
             --exclude='docs/receipts/' --exclude='docs/projects/' \
+            --exclude='docs/governance/' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             ./ $HETZNER_USER@$HETZNER_HOST:$PROD_DIR/
 
