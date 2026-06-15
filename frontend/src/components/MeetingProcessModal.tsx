@@ -141,6 +141,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       return
     }
     setError(''); setProcessing(true)
+    const tid = toast.loading('Transcribing and extracting from the full transcript… a long meeting can take a few minutes')
     try {
       const fd = new FormData()
       if (audioFile) fd.append('audio_file', audioFile)
@@ -177,9 +178,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       }
       setEdited(normalised)
       setStage('review')
-      toast.success('Actions and decisions extracted')
+      toast.update(tid, 'Actions and decisions extracted', 'success')
     } catch (e: any) {
-      setError(e.message); toast.error(e.message)
+      setError(e.message); toast.update(tid, e.message, 'error')
     } finally {
       setProcessing(false)
     }
@@ -188,6 +189,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
   const confirm = async () => {
     if (!result || !edited) return
     setConfirming(true); setError('')
+    const tid = toast.loading('Saving actions and writing the minutes from the full transcript… this can take a few minutes')
     try {
       const res  = await fetch(`/api/meetings/${meetingId}/confirm`, {
         method: 'POST', credentials: 'include',
@@ -199,9 +201,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       setConfirmResult(data)
       setMinutesData(data.minutes_data ?? null)
       setStage('doc')
-      toast.success('Minutes confirmed — actions saved')
+      toast.update(tid, 'Minutes confirmed — actions saved', 'success')
     } catch (e: any) {
-      setError(e.message); toast.error(`Confirm failed: ${e.message}`)
+      setError(e.message); toast.update(tid, `Confirm failed: ${e.message}`, 'error')
     } finally {
       setConfirming(false)
     }
@@ -211,6 +213,7 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
     const instr = editInstruction.trim()
     if (!instr) return
     setApplying(true); setError('')
+    const tid = toast.loading('Applying your change to the minutes…')
     try {
       const res  = await fetch(`/api/meetings/${meetingId}/minutes/edit`, {
         method: 'POST', credentials: 'include',
@@ -221,9 +224,9 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       if (!res.ok) throw new Error(data.detail || 'Edit failed')
       setMinutesData(data.minutes_data)
       setEditInstruction('')
-      toast.success('Edit applied')
+      toast.update(tid, 'Edit applied', 'success')
     } catch (e: any) {
-      setError(e.message); toast.error(`Edit failed: ${e.message}`)
+      setError(e.message); toast.update(tid, `Edit failed: ${e.message}`, 'error')
     } finally {
       setApplying(false)
     }
@@ -231,16 +234,17 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
 
   const publish = async () => {
     setPublishing(true); setError('')
+    const tid = toast.loading('Publishing minutes and notifying the group…')
     try {
       const res  = await fetch(`/api/meetings/${meetingId}/publish`, {
         method: 'POST', credentials: 'include',
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Publish failed')
-      toast.success('Minutes published and notification sent')
+      toast.update(tid, 'Minutes published and notification sent', 'success')
       onConfirmed()
     } catch (e: any) {
-      setError(e.message); toast.error(`Publish failed: ${e.message}`)
+      setError(e.message); toast.update(tid, `Publish failed: ${e.message}`, 'error')
     } finally {
       setPublishing(false)
     }

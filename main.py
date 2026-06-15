@@ -1,4 +1,21 @@
 import os
+import logging as _logging, sys as _sys
+
+# ── Logging setup ────────────────────────────────────────────────────────────
+# Previously there was NO logging config, so the app's getLogger("main").error()
+# calls had no consistent handler/format and failures were effectively invisible.
+# Attach a formatted stdout handler (captured by journald) to the app loggers.
+_log_handler = _logging.StreamHandler(_sys.stdout)
+_log_handler.setFormatter(_logging.Formatter(
+    "%(asctime)s %(levelname)s [%(name)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+for _ln in ("main", "kimfam", "pitch", "scheduler", "notifications"):
+    _l = _logging.getLogger(_ln)
+    _l.setLevel(_logging.INFO)
+    if not _l.handlers:
+        _l.addHandler(_log_handler)
+    _l.propagate = False
+log = _logging.getLogger("kimfam")
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +40,26 @@ async def lifespan(app):
         _scheduler_mod.stop()
 
 app = FastAPI(lifespan=lifespan, docs_url="/api/_swagger", redoc_url=None)
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    """Surface API failures and slow operations in the logs (errors used to vanish
+    into swallowed excepts). Logs any 4xx/5xx and any API call over 3s."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        log.exception("Unhandled error on %s %s", request.method, request.url.path)
+        raise
+    dt_ms = (_t.time() - t0) * 1000
+    path = request.url.path
+    if path.startswith("/api/") and (resp.status_code >= 400 or dt_ms > 3000):
+        log.info("%s %s -> %s (%.0fms)", request.method, path, resp.status_code, dt_ms)
+    return resp
+
+
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # React frontend assets (built output from frontend/dist/assets)
