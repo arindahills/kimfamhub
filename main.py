@@ -1220,6 +1220,32 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
                      WHERE date < %s ORDER BY date DESC LIMIT 1""", (r["date"],))
     prev_txt = (f"{prev[0]['ref']} ({prev[0]['date']}): {(prev[0]['key_decisions'] or '')[:400]}"
                 if prev else "None")
+    prev_ref = prev[0]["ref"] if prev else None
+
+    # Status-of-prior-actions roll-up (restores the table the older minutes carried,
+    # e.g. "Status of KIM 006 and Prior Actions"). Covers the previous meeting's
+    # actions plus anything still open from before, with its current outcome.
+    prior_status = []
+    try:
+        _ps_rows = _dbq_n("""
+            SELECT a.ref, a.description, a.assignee, a.assignees, a.status
+            FROM actions a
+            WHERE (a.related_meeting = %s
+                   OR (a.status IN ('open','in_progress','blocked') AND a.meeting_id < %s))
+              AND a.meeting_id <> %s
+            ORDER BY a.ref
+        """, (prev_ref, meeting_id, meeting_id))
+        _outcome = {"done": "Closed", "cancelled": "Cancelled", "carried_over": "Carried over",
+                    "in_progress": "In progress", "blocked": "Blocked", "open": "Open"}
+        for _pr in _ps_rows:
+            _resp = (", ".join(_pr["assignees"]) if _pr.get("assignees")
+                     else (_pr.get("assignee") or ""))
+            prior_status.append({
+                "ref": _pr["ref"], "description": _pr["description"],
+                "responsible": _resp, "outcome": _outcome.get(_pr["status"], _pr["status"]),
+            })
+    except Exception:
+        prior_status = []
 
     prompt = f"""You are the Secretary writing the official, detailed minutes for KimFam
 Investment Club meeting {r['ref']} held {r['date']}, working from the full meeting
@@ -1301,6 +1327,7 @@ exhaustive about what they do support."""
         return None
     data["_start_eat"] = _fmt_eat(r["conductor_started_at"])
     data["_end_eat"]   = _fmt_eat(r["conductor_ended_at"])
+    data["prior_actions_status"] = prior_status
     return data
 
 
@@ -1408,6 +1435,22 @@ def _build_minutes_docx_v2(meeting_ref: str, mtg: dict, narrative: dict, actions
             rc[2].text = ", ".join(asgn) if isinstance(asgn, list) else str(asgn)
             rc[3].text = str(a.get("deadline") or "")
             rc[4].text = (a.get("priority") or "medium").capitalize()
+
+    # Status of prior actions (roll-up table, restores the older minutes format)
+    prior = narrative.get("prior_actions_status") or []
+    if prior:
+        doc.add_heading("STATUS OF PRIOR ACTIONS", 1)
+        ptbl = doc.add_table(rows=1, cols=4); ptbl.style = "Table Grid"
+        for ci, hdr3 in enumerate(["Action ID", "Description", "Responsible", "Outcome"]):
+            cell = ptbl.rows[0].cells[ci]; cell.text = hdr3
+            for para in cell.paragraphs:
+                for run in para.runs: run.bold = True
+        for a in prior:
+            rc = ptbl.add_row().cells
+            rc[0].text = a.get("ref", "")
+            rc[1].text = a.get("description", "")
+            rc[2].text = a.get("responsible", "")
+            rc[3].text = a.get("outcome", "")
 
     # Decisions
     if narrative.get("decisions"):
