@@ -69,6 +69,37 @@ def extract_text(path: Path) -> str:
     elif suffix == ".pdf":
         with pdfplumber.open(path) as pdf:
             return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    elif suffix == ".pptx":
+        # Presentations: pull every text frame + table cell, slide by slide.
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        out = []
+        for i, slide in enumerate(prs.slides, 1):
+            out.append(f"[Slide {i}]")
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        t = "".join(r.text for r in para.runs).strip()
+                        if t:
+                            out.append(t)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        if any(cells):
+                            out.append(" | ".join(cells))
+        return "\n".join(out)
+    elif suffix == ".xlsx":
+        # Spreadsheets: flatten each sheet to "sheet | row values" lines.
+        from openpyxl import load_workbook
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+        out = []
+        for ws in wb.worksheets:
+            out.append(f"[Sheet: {ws.title}]")
+            for row in ws.iter_rows(values_only=True):
+                vals = [str(c) for c in row if c is not None]
+                if vals:
+                    out.append(" | ".join(vals))
+        return "\n".join(out)
     return ""
 
 
@@ -143,8 +174,13 @@ def run():
 
     manifest = load_manifest()
 
-    # Find all .docx and .pdf in docs/
-    source_files = list(DOCS_DIR.rglob("*.docx")) + list(DOCS_DIR.rglob("*.pdf"))
+    # Find all supported documents in docs/ (docx, pdf, pptx, xlsx). Skip Office
+    # lock/temp files (~$...) which would crash the readers.
+    source_files = [
+        p for ext in ("*.docx", "*.pdf", "*.pptx", "*.xlsx")
+        for p in DOCS_DIR.rglob(ext)
+        if not p.name.startswith("~")
+    ]
     on_disk = {str(p.relative_to(BASE_DIR)) for p in source_files}
 
     files_processed = 0
