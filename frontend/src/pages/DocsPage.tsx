@@ -29,8 +29,10 @@ const CAT_ICONS: Record<string, string> = {
   receipts: '🧾',
 }
 
+// Brand-coloured book emoji map to the Office apps: Word=blue, Excel=green,
+// PowerPoint=orange, PDF=red.
 const EXT_ICONS: Record<string, string> = {
-  docx: '📄', doc: '📄', pdf: '📕', pptx: '📊', ppt: '📊', xlsx: '📈', xls: '📈', default: '📄',
+  docx: '📘', doc: '📘', xlsx: '📗', xls: '📗', pptx: '📙', ppt: '📙', pdf: '📕', default: '📄',
 }
 
 function ext(filename: string) {
@@ -45,7 +47,16 @@ function fileBase(p: string) {
 export default function DocsPage() {
   const { t } = useTranslation()
   const [openCat, setOpenCat] = useState<string | null>('minutes')
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const toggleGroup = (cat: string, label: string) => {
+    const key = `${cat}::${label}`
+    setOpenGroups(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
 
   const { data, isLoading } = useQuery<DocsData>({
     queryKey: ['docs'],
@@ -108,19 +119,26 @@ export default function DocsPage() {
                 {(cat.groups || []).length === 0 && (
                   <p className="text-xs px-4 py-3" style={{ color: 'var(--text-muted)' }}>No documents yet.</p>
                 )}
-                {(cat.groups || []).map(group => (
+                {(cat.groups || []).map(group => {
+                  const groupOpen = openGroups.has(`${key}::${group.label}`) || q !== ''
+                  return (
                   <div key={group.label}>
-                    {/* sub-group header */}
-                    <div className="flex items-center gap-2 px-4 py-2"
+                    {/* sub-group header (collapsible) */}
+                    <button
+                      onClick={() => toggleGroup(key, group.label)}
+                      className="w-full flex items-center justify-between px-4 py-2"
                       style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border)' }}>
-                      <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: '#7c93b3', letterSpacing: '0.04em' }}>
-                        {group.label}
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: '#1e293b', color: '#64748b' }}>
-                        {group.files.length}
-                      </span>
-                    </div>
-                    {group.files.map((f, i) => (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: '#7c93b3', letterSpacing: '0.04em' }}>
+                          {group.label}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: '#1e293b', color: '#64748b' }}>
+                          {group.files.length}
+                        </span>
+                      </div>
+                      <span style={{ color: '#475569', fontSize: 11, transform: groupOpen ? 'rotate(90deg)' : 'none', display: 'inline-block', transition: 'transform 0.15s' }}>▶</span>
+                    </button>
+                    {groupOpen && group.files.map((f, i) => (
                       <div key={f.file} className="flex items-center justify-between px-4 py-3"
                         style={{ paddingLeft: '1.5rem', borderBottom: i < group.files.length - 1 ? '1px solid var(--border)' : 'none' }}>
                         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -140,7 +158,7 @@ export default function DocsPage() {
                       </div>
                     ))}
                   </div>
-                ))}
+                )})}
               </div>
             )}
           </div>

@@ -2949,14 +2949,42 @@ _DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
 _DOC_CATS = ["minutes", "governance", "projects", "financial", "receipts"]
 
 
+def _doc_date_key(stem: str) -> tuple:
+    """Best-effort (year, month, day) from a document name, handling the many
+    formats in this repo: 'June 7 2026', '2026-03-21', '6.23.2024', '21.03.2026',
+    '28 02 2025', '9th Feb.2023', or a bare year. Returns (0,0,0) if none found,
+    so undated files sort to the bottom."""
+    dt = _date_from_name(stem)
+    if dt is not None:
+        return (dt.year, dt.month, dt.day)
+    s = stem.lower().replace("_", " ")
+    m = re.search(r'(\d{4})[-.](\d{1,2})[-.](\d{1,2})', s)          # ISO yyyy-mm-dd
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.search(r'(\d{1,2})[.\s](\d{1,2})[.\s](\d{4})', s)         # d.m.y or m.d.y
+    if m:
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if a > 12:   day, mon = a, b
+        elif b > 12: day, mon = b, a
+        else:        day, mon = a, b   # ambiguous; year dominates the sort anyway
+        return (y, mon, day)
+    m = re.search(r'(20\d\d|19\d\d)', s)                            # bare year
+    if m:
+        return (int(m.group(1)), 0, 0)
+    return (0, 0, 0)
+
+
 def _docs_build_cat(cat: str, groups: dict) -> dict:
     """Turn {group_label: [file dicts]} into the nested category payload, with
-    files sorted by the date in their name (newest first) and groups alphabetised."""
+    files sorted newest-first (non-archive before archive on a tie) and year
+    groups newest-first."""
     def _sort_files(files):
         def k(x):
-            dt = _date_from_name(Path(x["rel"]).stem)
-            return (0, -dt.timestamp()) if dt is not None else (1, 0.0)
-        return sorted(files, key=k)
+            stem = Path(x["rel"]).stem
+            y, mo, d = _doc_date_key(stem)
+            not_archive = 0 if "archive" in stem.lower() else 1
+            return (y, mo, d, not_archive)
+        return sorted(files, key=k, reverse=True)
     def _group_key(label):
         # Groups carrying a year sort newest-first; the rest alphabetically after.
         m = re.search(r"(19|20)\d{2}", label)
@@ -3831,6 +3859,55 @@ def view_doc(category: str, filename: str):
     elif suffix == ".pdf":
         from fastapi.responses import Response
         return Response(content=file_bytes, media_type="application/pdf")
+    elif suffix == ".pptx":
+        import io, html as _html
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(file_bytes))
+        body = []
+        for i, slide in enumerate(prs.slides, 1):
+            lines = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        txt = "".join(r.text for r in para.runs).strip()
+                        if txt:
+                            lines.append(f"<p>{_html.escape(txt)}</p>")
+                if shape.has_table:
+                    rows = []
+                    for row in shape.table.rows:
+                        cells = "".join(f"<td>{_html.escape(c.text.strip())}</td>" for c in row.cells)
+                        rows.append(f"<tr>{cells}</tr>")
+                    lines.append(f"<table>{''.join(rows)}</table>")
+            body.append(f"<section class='slide'><div class='num'>Slide {i}</div>{''.join(lines)}</section>")
+        html = ("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'><style>"
+                "body{font-family:Inter,Arial,sans-serif;max-width:820px;margin:0 auto;padding:16px;background:#0f1729;color:#e2e8f0}"
+                ".slide{background:#fff;color:#1a1a1a;border-radius:10px;padding:20px;margin:14px 0;box-shadow:0 4px 16px rgba(0,0,0,.4)}"
+                ".num{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}"
+                "table{border-collapse:collapse;width:100%;margin:.6em 0}td{border:1px solid #ccc;padding:6px 10px;font-size:14px}"
+                "p{margin:.4em 0}</style></head><body>" + "".join(body) + "</body></html>")
+        return HTMLResp(content=html)
+    elif suffix == ".xlsx":
+        import io, html as _html
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        body = []
+        for ws in wb.worksheets:
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                if not any(c is not None for c in row):
+                    continue
+                cells = "".join(f"<td>{_html.escape('' if c is None else str(c))}</td>" for c in row)
+                rows.append(f"<tr>{cells}</tr>")
+            body.append(f"<section class='sheet'><div class='num'>Sheet: {_html.escape(ws.title)}</div><table>{''.join(rows)}</table></section>")
+        html = ("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'><style>"
+                "body{font-family:Inter,Arial,sans-serif;margin:0 auto;padding:16px;background:#0f1729;color:#e2e8f0}"
+                ".sheet{background:#fff;color:#1a1a1a;border-radius:10px;padding:16px;margin:14px 0;overflow-x:auto}"
+                ".num{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}"
+                "table{border-collapse:collapse}td{border:1px solid #d0d0d0;padding:4px 8px;font-size:13px;white-space:nowrap}"
+                "</style></head><body>" + "".join(body) + "</body></html>")
+        return HTMLResp(content=html)
     else:
         raise HTTPException(status_code=415, detail="Preview not supported for this file type")
 
