@@ -3341,6 +3341,52 @@ async def _score_proposal(text: str) -> dict | None:
     }
 
 
+# ── Reusable SSE progress wrapper for long AI tasks ────────────────────────────
+# Emits {type:step} stage messages (keeping the connection alive past idle cutoffs)
+# while a Claude scoring call runs, then persists and emits {type:result}. Any AI
+# request that takes >a few seconds should stream through this pattern so the user
+# sees what it's doing (like Ask KimFam) and the browser never "fails to fetch".
+_AI_SCORE_STAGES = [
+    "Weighing Background, Objective and Scope...",
+    "Checking Resources, Budget and Timeline...",
+    "Assessing Risk Management...",
+    "Evaluating Financial Appraisal (Payback, ROI, NPV)...",
+    "Judging Benefits and strategic fit...",
+    "Determining the support requested and readiness...",
+    "Finalising the scorecard...",
+]
+
+
+async def _ai_score_stream(text: str, persist, kind: str = "proposal"):
+    import asyncio as _aio
+    yield _sse({"type": "step", "msg": "Reading the proposal..."})
+    yield _sse({"type": "step", "msg": "Loading the project-management framework and reward guidelines..."})
+    yield _sse({"type": "step", "msg": "Scoring against the 9 Key Areas with Claude (about a minute)..."})
+    task = _aio.create_task(_score_proposal(text))
+    i = 0
+    while not task.done():
+        await _aio.sleep(6)
+        if not task.done():
+            yield _sse({"type": "step", "msg": _AI_SCORE_STAGES[i % len(_AI_SCORE_STAGES)]})
+            i += 1
+    try:
+        sc = task.result()
+    except Exception as _e:
+        log.error(f"{kind} score stream failed: {_e}")
+        sc = None
+    if not sc:
+        yield _sse({"type": "error", "msg": "Scoring is busy right now. Please try again in a moment."})
+        return
+    try:
+        result = persist(sc)
+    except Exception as _e:
+        log.error(f"{kind} persist failed: {_e}")
+        yield _sse({"type": "error", "msg": "Scored it, but could not save. Please retry."})
+        return
+    yield _sse({"type": "step", "msg": f"Done: {sc['overall_score']} / 100 ({sc['verdict']})"})
+    yield _sse({"type": "result", "proposal": result})
+
+
 def _proposal_row(r: dict) -> dict:
     import json as _json
     def _j(v):
@@ -3450,30 +3496,37 @@ async def create_proposal(request: Request):
     except Exception as _e:
         log.error(f"proposal file store failed: {_e}")
 
-    sc = await _score_proposal(text)
-    cols = ("title, owner, submitted_by, source_path, version, is_current")
-    if sc:
-        _exec(f"""INSERT INTO proposals
-            ({cols}, overall_score, verdict, scores, strengths, gaps, improvements,
-             support_requested, readiness, summary, scored)
-            VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)""",
-            (title, owner, submitter, source_path, new_version,
-             sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
-             _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
-             _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
-             _json.dumps(sc.get("readiness", {})), sc["summary"]))
-    else:
-        _exec(f"""INSERT INTO proposals ({cols}, scored)
-                 VALUES (%s,%s,%s,%s,%s,TRUE,FALSE)""",
-              (title, owner, submitter, source_path, new_version))
-    row = _dbq("SELECT * FROM proposals WHERE source_path=%s ORDER BY id DESC LIMIT 1", (source_path,))
-    new_id = row[0]["id"] if row else None
-    # A brand-new thread points at itself.
-    if new_id and thread is None:
-        _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (new_id, new_id))
-    elif new_id:
-        _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (thread, new_id))
-    return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (new_id,))[0]) if new_id else {"ok": True}
+    # Stream progress (SSE) so the long Claude scoring keeps the connection alive and
+    # the user sees what it's doing, like Ask KimFam. Uses _ai_score_stream (reusable).
+    from fastapi.responses import StreamingResponse
+
+    def _persist(sc):
+        cols = "title, owner, submitted_by, source_path, version, is_current"
+        if sc:
+            _exec(f"""INSERT INTO proposals
+                ({cols}, overall_score, verdict, scores, strengths, gaps, improvements,
+                 support_requested, readiness, summary, scored)
+                VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)""",
+                (title, owner, submitter, source_path, new_version,
+                 sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
+                 _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
+                 _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
+                 _json.dumps(sc.get("readiness", {})), sc["summary"]))
+        else:
+            _exec(f"""INSERT INTO proposals ({cols}, scored)
+                     VALUES (%s,%s,%s,%s,%s,TRUE,FALSE)""",
+                  (title, owner, submitter, source_path, new_version))
+        row = _dbq("SELECT * FROM proposals WHERE source_path=%s ORDER BY id DESC LIMIT 1", (source_path,))
+        nid = row[0]["id"] if row else None
+        if nid:
+            _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (thread or nid, nid))
+        return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (nid,))[0]) if nid else {"ok": True}
+
+    return StreamingResponse(
+        _ai_score_stream(text, _persist, kind="proposal"),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/api/proposals/{pid}/score")
@@ -3503,17 +3556,23 @@ async def rescore_proposal(pid: int, request: Request):
     if raw is None:
         raise _HE(status_code=404, detail="Proposal file not found to score")
     text = _extract_doc_text(_os.path.basename(sp), raw)
-    sc = await _score_proposal(text)
-    if not sc:
-        raise _HE(status_code=503, detail="Scoring is busy, try again")
-    _exec("""UPDATE proposals SET overall_score=%s, verdict=%s, scores=%s, strengths=%s,
-             gaps=%s, improvements=%s, support_requested=%s, readiness=%s, summary=%s,
-             scored=TRUE WHERE id=%s""",
-          (sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
-           _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
-           _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
-           _json.dumps(sc.get("readiness", {})), sc["summary"], pid))
-    return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (pid,))[0])
+    from fastapi.responses import StreamingResponse
+
+    def _persist(sc):
+        _exec("""UPDATE proposals SET overall_score=%s, verdict=%s, scores=%s, strengths=%s,
+                 gaps=%s, improvements=%s, support_requested=%s, readiness=%s, summary=%s,
+                 scored=TRUE WHERE id=%s""",
+              (sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
+               _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
+               _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
+               _json.dumps(sc.get("readiness", {})), sc["summary"], pid))
+        return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (pid,))[0])
+
+    return StreamingResponse(
+        _ai_score_stream(text, _persist, kind="proposal-rescore"),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 import time

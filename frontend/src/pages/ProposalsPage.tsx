@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToast } from '../components/Toast'
 import { BusyButton, Spinner } from '../components/Spinner'
+import { streamAi } from '../lib/aiStream'
 
 interface Criterion { name: string; weight: number; score: number; rationale: string }
 interface Readiness { status?: string; assessment?: string; blocking?: string[] }
@@ -19,6 +20,12 @@ const OWNERS = [
   'Dad', 'Mum', 'Hillary', 'Hellen', 'Alex', 'Israel', 'Simon', 'Esther',
   'Janet', 'Lawi', 'Max', 'Priscilla', 'Solomon', 'Viola',
 ]
+
+function isNew(createdAt: string): boolean {
+  if (!createdAt) return false
+  const t = Date.parse(createdAt.replace(' ', 'T'))
+  return !!t && (Date.now() - t) < 72 * 3600 * 1000  // within 3 days
+}
 
 function verdictColor(v: string | null): { bg: string; fg: string } {
   switch (v) {
@@ -48,15 +55,15 @@ export default function ProposalsPage() {
     if (!file) { toast.error('Choose a proposal file first'); return }
     if (!owner) { toast.error('Choose whose proposal this is'); return }
     setBusy(true)
-    const tid = toast.loading('Scoring the proposal against the KimFam framework with Claude… a moment')
+    const tid = toast.loading('Uploading the proposal…')
     try {
       const fd = new FormData()
       fd.append('file', file)
       fd.append('title', title || file.name.replace(/\.[^.]+$/, ''))
       fd.append('owner', owner)
-      const res = await fetch('/api/proposals', { method: 'POST', credentials: 'include', body: fd })
-      const d = await res.json()
-      if (!res.ok) throw new Error(d.detail || 'Upload failed')
+      const ev = await streamAi('/api/proposals', { method: 'POST', body: fd },
+        msg => toast.update(tid, msg, 'loading'))
+      const d = ev.proposal
       toast.update(tid, `Scored: ${d.overall_score ?? '?'} / 100 (${d.verdict})`, 'success')
       setFile(null); setTitle(''); setOwner('')
       setOpenId(d.id)
@@ -70,9 +77,9 @@ export default function ProposalsPage() {
     setScoringId(id)
     const tid = toast.loading('Scoring with Claude…')
     try {
-      const res = await fetch(`/api/proposals/${id}/score`, { method: 'POST', credentials: 'include' })
-      const d = await res.json()
-      if (!res.ok) throw new Error(d.detail || 'Scoring failed')
+      const ev = await streamAi(`/api/proposals/${id}/score`, { method: 'POST' },
+        msg => toast.update(tid, msg, 'loading'))
+      const d = ev.proposal
       toast.update(tid, `Scored: ${d.overall_score} / 100 (${d.verdict})`, 'success')
       setOpenId(id)
       qc.invalidateQueries({ queryKey: ['proposals'] })
@@ -85,6 +92,14 @@ export default function ProposalsPage() {
 
   return (
     <div className="max-w-2xl md:max-w-4xl mx-auto space-y-3 pb-10">
+      <style>{`
+        @keyframes kf-proposal-glow {
+          0%,100% { box-shadow: 0 0 0 1px #7c3aed55, 0 0 8px #7c3aed33; }
+          50%     { box-shadow: 0 0 0 1px #a78bfa88, 0 0 18px #7c3aed66; }
+        }
+        .kf-proposal-new { animation: kf-proposal-glow 2.2s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .kf-proposal-new { animation: none; box-shadow: 0 0 0 1px #7c3aed55; } }
+      `}</style>
       {/* Submit */}
       <div className="rounded-xl p-4 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
         <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>Submit a proposal</div>
@@ -122,13 +137,16 @@ export default function ProposalsPage() {
       ) : proposals.map(p => {
         const vc = verdictColor(p.verdict)
         const isOpen = openId === p.id
+        const fresh = isNew(p.created_at)
         return (
-          <div key={p.id} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div key={p.id} className={`rounded-xl overflow-hidden${fresh ? ' kf-proposal-new' : ''}`}
+            style={{ background: 'var(--bg-card)', border: `1px solid ${fresh ? '#7c3aed66' : 'var(--border)'}` }}>
             <button onClick={() => setOpenId(isOpen ? null : p.id)} className="w-full flex items-center justify-between px-4 py-3 gap-3">
               <div className="flex-1 min-w-0 text-left">
                 <div className="text-sm font-semibold truncate flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
-                  {p.title}
-                  {p.version > 1 && <span className="text-[9px] px-1 py-0.5 rounded" style={{ background: '#1e293b', color: '#94a3b8' }}>v{p.version}</span>}
+                  {fresh && <span className="kf-new-badge text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ background: '#7c3aed', color: '#fff', letterSpacing: '0.05em' }}>NEW</span>}
+                  <span className="truncate">{p.title}</span>
+                  {p.version > 1 && <span className="text-[9px] px-1 py-0.5 rounded shrink-0" style={{ background: '#1e293b', color: '#94a3b8' }}>v{p.version}</span>}
                 </div>
                 <div className="text-[11px]" style={{ color: '#7c93b3' }}>{p.owner} · submitted by {p.submitted_by}</div>
               </div>
