@@ -3549,19 +3549,25 @@ def proposal_areas(request: Request):
     if not _auth_verify(_get_tok(request)):
         raise _HE(status_code=401, detail="Login required")
     paths = set()
+    # The legacy "Proposals" bucket is being deprecated — don't offer it (or _versions)
+    # as a filing destination; proposals belong under their real project area.
+    def _skip(segs):
+        return (not segs) or segs[0].lower() == "proposals" or "_versions" in segs
     try:
         import r2_storage as _r2p
         if _r2p.is_configured():
             for obj in _r2p.list_folder("projects/"):
                 rel = obj["key"][len("projects/"):]
-                segs = [s for s in rel.split("/")[:-1] if s and s != "_versions"]
+                segs = [s for s in rel.split("/")[:-1] if s]
+                if _skip(segs):
+                    continue
                 for i in range(len(segs)):
                     paths.add("/".join(segs[: i + 1]))
         else:
             base = DOCS_DIR / "projects"
             if base.exists():
                 for f in base.rglob("*"):
-                    if f.is_dir() and f.name != "_versions" and "_versions" not in f.relative_to(base).parts:
+                    if f.is_dir() and not _skip(list(f.relative_to(base).parts)):
                         paths.add(f.relative_to(base).as_posix())
     except Exception as _e:
         log.error(f"proposal areas failed: {_e}")
