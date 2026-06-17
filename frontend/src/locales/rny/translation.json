@@ -9,9 +9,12 @@
     "equity": "Engabu",
     "loans": "Enyingye",
     "meetings": "Entegyeka",
-    "docs": "Ebikwate", "expenditure": "Ebikoozesebwa", "engagement": "Okweshongora",
+    "docs": "Ebikwate",
+    "expenditure": "Ebikoozesebwa",
+    "engagement": "Okweshongora",
     "ask": "Buuza KimFam",
-    "admin": "Entekateeka"
+    "admin": "Entekateeka",
+    "proposals": "Ebyeteekateeko"
   },
   "common": {
     "loading": "Eririkira...",
@@ -137,7 +140,8 @@
     "initialObligation": "Ekiteekwa ky'Embera",
     "initialBalance": "Emirari y'Embera",
     "allClear": "Nikyamalirire",
-    "owed": "Ekirikusanirwa", "credit": "ekirikukuza",
+    "owed": "Ekirikusanirwa",
+    "credit": "ekirikukuza",
     "dataUnavailable": "Ebikwate by'abagwi ntibiripatikani",
     "dataUnavailableSub": "Ebikwate by'abagwi ntibiripatikani kati. Itswe ry'ebyamafaranga riimenyesibwe.",
     "viewFamilyProfile": "Laga ebikwate by'eka",

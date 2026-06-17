@@ -7,6 +7,7 @@ workspace {
             frontend = container "React SPA" "Vite + React 19 + TS + Tailwind v4. Renders all screens; mobile bottom-sheet modals; design system per docs/design-system.md." "TypeScript / React" {
                 designSystem = component "Design System"   "ui/ primitives (Button, Card, Dialog/sheet, Tabs, Badge) + tokens in index.css. shadcn/Radix style."
                 projectsUI   = component "Projects UI"      "Cards, Audit/Analysis/Portfolio modals, Team Interest accordion, Express Interest sheet"
+                proposalsUI  = component "Proposals UI"      "Submit + AI scorecard (criteria bars, support-readiness), versioned per project owner"
                 i18n         = component "i18n"             "react-i18next — en / sw / rny"
                 query        = component "Data Layer"       "TanStack Query against the FastAPI JSON API"
             }
@@ -16,6 +17,8 @@ workspace {
                 financeApi  = component "Finance API"       "Contributions, loans, equity, projects, balances"
                 projectApi  = component "Projects API"       "/api/projects/* — detail, audit, narrative, interests; /api/portfolio/* ranking + new ventures"
                 adminApi    = component "Admin API"         "Member management, config, documents"
+                docsApi     = component "Documents API"      "/api/docs — nested category/sub-group repo over R2; serve/preview docx/pdf/pptx/xlsx"
+                proposalsApi = component "Proposals API"     "/api/proposals — upload, Claude-only AI scoring vs the Project Proposal Template + reward guidelines, support-readiness, versioning/archiving"
                 scheduler   = component "APScheduler"       "Meeting reminders, notification jobs (fcntl lock)"
                 chromadb    = component "ChromaDB"          "Local vector store for RAG over governance docs"
             }
@@ -51,6 +54,10 @@ workspace {
         askApi   -> groq      "Final fallback"
         askApi   -> chromadb  "Embedding search (local sentence-transformers)"
         projectApi -> claudeCli "Audit/narrative/portfolio AI"
+        proposalsApi -> claudeCli "Proposal scoring (Claude only; framework docs as context)"
+        proposalsApi -> cloudflare "Stores proposal files (projects/Proposals/<title>/v<n>)"
+        proposalsApi -> pg "proposals table (scores, versions, readiness)"
+        docsApi  -> cloudflare "Lists/serves the document repo"
         ci       -> hetzner   "rsync + systemctl restart (staging, then prod on main)"
         ci       -> claudeCli "Self-heal step on test failure"
         designLoop -> frontend "Screenshots staging"

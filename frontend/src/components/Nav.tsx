@@ -20,6 +20,7 @@ const TABS = [
   { to: '/finances',    icon: '💰', key: 'finances',    tour: 'nav-finances'    },
   { to: '/members',     icon: '👨‍👩‍👧‍👦', key: 'members',    tour: 'nav-members'    },
   { to: '/projects',    icon: '🌾', key: 'projects',    tour: 'nav-projects'    },
+  { to: '/proposals',   icon: '📑', key: 'proposals',   tour: 'nav-proposals'   },
   { to: '/equity',      icon: '⚖️', key: 'equity',      tour: 'nav-equity'      },
   { to: '/loans',       icon: '🏦', key: 'loans',       tour: 'nav-loans'       },
   { to: '/meetings',    icon: '📋', key: 'meetings',    tour: 'nav-meetings'    },

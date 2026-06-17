@@ -3132,6 +3132,390 @@ def search_docs_semantic(query: str = ""):
         log.warning(f"Semantic search error: {e}")
         return {"query": query, "count": 0, "results": [], "error": str(e)}
 
+
+# ── Proposals: AI scoring against the KimFam project-proposal template ──────────
+# Criteria mirror EXACTLY the "Project Proposal Template — Key Areas to Address"
+# in Hillary's Project Management deck: Background, Objective, Scope, Stakeholders,
+# Resources, Timeline, Risk Management, Financial Appraisal, Benefits.
+PROPOSAL_CRITERIA = [
+    ("Background & Introduction", 10),
+    ("Objective", 12),
+    ("Scope", 8),
+    ("Stakeholders", 8),
+    ("Resources & Budget", 12),
+    ("Timeline / Milestones", 10),
+    ("Risk Management", 10),
+    ("Financial Appraisal (Payback, ROI, NPV)", 20),
+    ("Benefits (Quantitative & Qualitative)", 10),
+]
+
+
+def _extract_doc_text(fname: str, raw: bytes) -> str:
+    """Extract plain text from an uploaded proposal (docx/pdf/pptx/xlsx/txt)."""
+    import io as _io
+    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    try:
+        if ext == "docx":
+            import docx as _docx
+            d = _docx.Document(_io.BytesIO(raw))
+            return "\n".join(p.text for p in d.paragraphs if p.text.strip())
+        if ext == "pdf":
+            import pdfplumber as _pp
+            with _pp.open(_io.BytesIO(raw)) as pdf:
+                return "\n".join(pg.extract_text() or "" for pg in pdf.pages)
+        if ext == "pptx":
+            from pptx import Presentation as _Pr
+            prs = _Pr(_io.BytesIO(raw)); out = []
+            for s in prs.slides:
+                for sh in s.shapes:
+                    if sh.has_text_frame:
+                        for p in sh.text_frame.paragraphs:
+                            t = "".join(r.text for r in p.runs).strip()
+                            if t:
+                                out.append(t)
+                    if getattr(sh, "has_table", False):
+                        for row in sh.table.rows:
+                            cs = [c.text.strip() for c in row.cells]
+                            if any(cs):
+                                out.append(" | ".join(cs))
+            return "\n".join(out)
+        if ext in ("xlsx", "xls"):
+            from openpyxl import load_workbook as _lw
+            wb = _lw(_io.BytesIO(raw), read_only=True, data_only=True); out = []
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    vals = [str(c) for c in row if c is not None]
+                    if vals:
+                        out.append(" | ".join(vals))
+            return "\n".join(out)
+        return raw.decode("utf-8", errors="replace")
+    except Exception as _e:
+        log.error(f"proposal extract failed for {fname}: {_e}")
+        return ""
+
+
+def _re_docs_safe(name: str) -> str:
+    import re as _r
+    return (_r.sub(r'[\\/:*?"<>|]+', " ", name).strip()[:80]) or "Proposal"
+
+
+def _ensure_proposals_table():
+    from db import execute as _exec
+    _exec("""CREATE TABLE IF NOT EXISTS proposals (
+        id            SERIAL PRIMARY KEY,
+        title         TEXT NOT NULL,
+        owner         TEXT NOT NULL,
+        submitted_by  TEXT NOT NULL,
+        source_path   TEXT,
+        overall_score NUMERIC,
+        verdict       TEXT,
+        scores        JSONB,
+        strengths     JSONB,
+        gaps          JSONB,
+        improvements  JSONB,
+        summary       TEXT,
+        support_requested TEXT,
+        readiness     JSONB,
+        thread_id     INTEGER,
+        version       INTEGER DEFAULT 1,
+        is_current    BOOLEAN DEFAULT TRUE,
+        scored        BOOLEAN DEFAULT FALSE,
+        created_at    TIMESTAMPTZ DEFAULT now()
+    )""")
+    # Additive columns for tables created before these fields existed.
+    for col, ddl in [
+        ("support_requested", "TEXT"), ("readiness", "JSONB"),
+        ("thread_id", "INTEGER"), ("version", "INTEGER DEFAULT 1"),
+        ("is_current", "BOOLEAN DEFAULT TRUE"),
+    ]:
+        try:
+            _exec(f"ALTER TABLE proposals ADD COLUMN IF NOT EXISTS {col} {ddl}")
+        except Exception:
+            pass
+
+
+def _verdict_for(score: float) -> str:
+    if score >= 80: return "Strong"
+    if score >= 65: return "Viable with conditions"
+    if score >= 50: return "Needs work"
+    return "Not ready"
+
+
+_PROPOSAL_FRAMEWORK_CACHE = {"text": None}
+
+
+def _proposal_framework_context() -> str:
+    """Load and cache the framework docs the scorer must reason against:
+    the project-management deck and the investment & reward guidelines."""
+    if _PROPOSAL_FRAMEWORK_CACHE["text"] is not None:
+        return _PROPOSAL_FRAMEWORK_CACHE["text"]
+    import os as _os, glob as _glob
+    docs = _os.path.join(_os.path.dirname(__file__), "docs")
+    parts = []
+    patterns = [
+        (f"{docs}/projects/**/*project management*", "PROJECT MANAGEMENT FRAMEWORK"),
+        (f"{docs}/governance/**/*reward*", "INVESTMENT & REWARD GUIDELINES"),
+    ]
+    for pat, label in patterns:
+        for fp in _glob.glob(pat, recursive=True):
+            if fp.lower().endswith((".docx", ".pdf", ".pptx")):
+                try:
+                    txt = _extract_doc_text(_os.path.basename(fp), open(fp, "rb").read())
+                    if txt.strip():
+                        parts.append(f"--- {label} ({_os.path.basename(fp)}) ---\n{txt[:9000]}")
+                        break
+                except Exception as _e:
+                    log.error(f"framework load failed {fp}: {_e}")
+    ctx = "\n\n".join(parts)
+    _PROPOSAL_FRAMEWORK_CACHE["text"] = ctx
+    return ctx
+
+
+async def _score_proposal(text: str) -> dict | None:
+    """Score proposal text against PROPOSAL_CRITERIA using CLAUDE ONLY (no DeepSeek
+    or Groq fallback), grounded in the club's project-management deck and reward
+    guidelines. The weighted total is computed server-side."""
+    import json as _json, re as _re
+    if len(text) > 18000:
+        text = text[:18000] + "\n\n[Truncated for scoring.]"
+    crit_lines = "\n".join(f"- {n} (weight {w})" for n, w in PROPOSAL_CRITERIA)
+    framework = _proposal_framework_context()
+    prompt = (
+        "You are evaluating a KimFam Investment Club project proposal. Judge it strictly "
+        "against the club's own framework provided below (its project-management approach and "
+        "its investment & reward guidelines). Score each criterion 1 (poor) to 5 (excellent), "
+        "justify briefly using only what the proposal actually says, and reflect the club's "
+        "guidelines (e.g. ROI, recoupment and reward sharing) in the Financial Appraisal score. "
+        "No em-dashes or en-dashes.\n\n"
+        "=== CLUB FRAMEWORK (authoritative) ===\n" + (framework or "(framework unavailable)") +
+        "\n\n=== SCORING CRITERIA (these are the club's official Project Proposal Template, the "
+        "'Key Areas to Address') ===\n" + crit_lines +
+        "\n\nAlso identify the SUPPORT the proposer is requesting from the family (money, "
+        "approval, labour, expertise, etc.) and judge whether the proposal is in shape for the "
+        "family to actually grant that support, listing what must still be provided before it can be.\n"
+        "\n\nReturn ONLY valid JSON (no markdown):\n"
+        '{"criteria":[{"name":"<exact criterion name>","score":1-5,"rationale":"..."}],'
+        '"strengths":["..."],"gaps":["..."],"improvements":["..."],'
+        '"support_requested":"what the proposer asks the family for",'
+        '"readiness":{"status":"ready|partly|not_ready","assessment":"can the family grant the '
+        'support yet, and why","blocking":["what must be provided before the support can be granted"]},'
+        '"summary":"one short paragraph"}'
+        "\n\n=== PROPOSAL TO SCORE ===\n" + (text or "(empty)")
+    )
+    # Claude only, per the family's instruction (it holds the framework context).
+    raw = await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=220)
+    if not raw:
+        return None
+    raw = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = _re.sub(r"\s*```$", "", raw)
+    try:
+        data = _json.loads(raw)
+    except Exception:
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if not m:
+            return None
+        try:
+            data = _json.loads(m.group())
+        except Exception:
+            return None
+    weights = {n: w for n, w in PROPOSAL_CRITERIA}
+    total = 0.0
+    norm = []
+    for c in (data.get("criteria") or []):
+        name = c.get("name", "")
+        w = weights.get(name, 0)
+        try:
+            sc = max(1, min(5, int(round(float(c.get("score", 0))))))
+        except Exception:
+            sc = 0
+        if w and sc:
+            total += (sc / 5.0) * w
+        norm.append({"name": name, "weight": w, "score": sc, "rationale": c.get("rationale", "")})
+    total = round(total, 1)
+    return {
+        "criteria": norm, "overall_score": total, "verdict": _verdict_for(total),
+        "strengths": data.get("strengths") or [], "gaps": data.get("gaps") or [],
+        "improvements": data.get("improvements") or [], "summary": data.get("summary") or "",
+        "support_requested": data.get("support_requested") or "",
+        "readiness": data.get("readiness") or {},
+    }
+
+
+def _proposal_row(r: dict) -> dict:
+    import json as _json
+    def _j(v):
+        return v if isinstance(v, (list, dict)) else (_json.loads(v) if v else [])
+    rd = r.get("readiness")
+    rd = rd if isinstance(rd, dict) else (_json.loads(rd) if rd else {})
+    return {
+        "id": r["id"], "title": r["title"], "owner": r["owner"],
+        "submitted_by": r["submitted_by"],
+        "file_url": (f"/docs/{r['source_path']}" if r.get("source_path") else None),
+        "overall_score": float(r["overall_score"]) if r.get("overall_score") is not None else None,
+        "verdict": r.get("verdict"), "scored": r.get("scored", False),
+        "criteria": _j(r.get("scores")), "strengths": _j(r.get("strengths")),
+        "gaps": _j(r.get("gaps")), "improvements": _j(r.get("improvements")),
+        "support_requested": r.get("support_requested") or "", "readiness": rd,
+        "version": r.get("version", 1), "is_current": r.get("is_current", True),
+        "thread_id": r.get("thread_id"),
+        "summary": r.get("summary"), "created_at": str(r.get("created_at") or ""),
+    }
+
+
+@app.get("/api/proposals")
+def list_proposals(request: Request):
+    from db import query as _dbq
+    if not _auth_verify(_get_tok(request)):
+        from fastapi import HTTPException as _HE
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    rows = _dbq("SELECT * FROM proposals ORDER BY created_at DESC")
+    return {"proposals": [_proposal_row(r) for r in rows]}
+
+
+@app.get("/api/proposals/{pid}")
+def get_proposal(pid: int, request: Request):
+    from db import query as _dbq
+    from fastapi import HTTPException as _HE
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    rows = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
+    if not rows:
+        raise _HE(status_code=404, detail="Proposal not found")
+    return _proposal_row(rows[0])
+
+
+@app.post("/api/proposals")
+async def create_proposal(request: Request):
+    """Upload a proposal (any member), store it, and AI-score it."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    import json as _json, os as _os
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Login required")
+    submitter = payload.get("sub", "member")
+    form = await request.form()
+    f = form.get("file")
+    title = (form.get("title") or "").strip()
+    owner = (form.get("owner") or "").strip()
+    if not f or not hasattr(f, "filename"):
+        raise _HE(status_code=400, detail="A proposal file is required")
+    if not owner:
+        raise _HE(status_code=400, detail="Please choose whose proposal this is (owner)")
+    raw = await f.read()
+    fname = f.filename or "proposal"
+    if not title:
+        title = _os.path.splitext(fname)[0]
+    text = _extract_doc_text(fname, raw)
+    if len(text.strip()) < 40:
+        raise _HE(status_code=400, detail="Could not read text from that file")
+
+    _ensure_proposals_table()
+    # ── Versioning: a new upload for the same owner+title supersedes the prior
+    #    current version (which is archived) so we track refinement progress. An
+    #    explicit ?supersedes=<id> wins over the owner+title match.
+    supersedes = (form.get("supersedes") or "").strip()
+    prior = None
+    if supersedes.isdigit():
+        rows = _dbq("SELECT * FROM proposals WHERE id=%s", (int(supersedes),))
+        prior = rows[0] if rows else None
+    if not prior:
+        rows = _dbq("""SELECT * FROM proposals WHERE owner=%s AND lower(title)=lower(%s)
+                       AND is_current=TRUE ORDER BY id DESC LIMIT 1""", (owner, title))
+        prior = rows[0] if rows else None
+    if prior:
+        new_version = (prior.get("version") or 1) + 1
+        thread = prior.get("thread_id") or prior["id"]
+        _exec("UPDATE proposals SET is_current=FALSE WHERE thread_id=%s OR id=%s",
+              (thread, thread))
+    else:
+        new_version = 1
+        thread = None
+
+    # Store the file, versioned per title so archived versions are preserved.
+    safe_title = _re_docs_safe(title)
+    source_path = f"projects/Proposals/{safe_title}/v{new_version} - {fname}"
+    try:
+        import r2_storage as _r2p
+        if _r2p.is_configured():
+            tmpp = f"/tmp/_proposal_{_os.getpid()}_{fname}"
+            with open(tmpp, "wb") as _w: _w.write(raw)
+            _r2p.upload(tmpp, source_path)
+            _os.remove(tmpp)
+        _ddir = _os.path.join(_os.path.dirname(__file__), "docs", "projects", "Proposals", safe_title)
+        _os.makedirs(_ddir, exist_ok=True)
+        with open(_os.path.join(_ddir, f"v{new_version} - {fname}"), "wb") as _w: _w.write(raw)
+    except Exception as _e:
+        log.error(f"proposal file store failed: {_e}")
+
+    sc = await _score_proposal(text)
+    cols = ("title, owner, submitted_by, source_path, version, is_current")
+    if sc:
+        _exec(f"""INSERT INTO proposals
+            ({cols}, overall_score, verdict, scores, strengths, gaps, improvements,
+             support_requested, readiness, summary, scored)
+            VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)""",
+            (title, owner, submitter, source_path, new_version,
+             sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
+             _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
+             _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
+             _json.dumps(sc.get("readiness", {})), sc["summary"]))
+    else:
+        _exec(f"""INSERT INTO proposals ({cols}, scored)
+                 VALUES (%s,%s,%s,%s,%s,TRUE,FALSE)""",
+              (title, owner, submitter, source_path, new_version))
+    row = _dbq("SELECT * FROM proposals WHERE source_path=%s ORDER BY id DESC LIMIT 1", (source_path,))
+    new_id = row[0]["id"] if row else None
+    # A brand-new thread points at itself.
+    if new_id and thread is None:
+        _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (new_id, new_id))
+    elif new_id:
+        _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (thread, new_id))
+    return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (new_id,))[0]) if new_id else {"ok": True}
+
+
+@app.post("/api/proposals/{pid}/score")
+async def rescore_proposal(pid: int, request: Request):
+    """(Re)score an existing proposal record from its stored file."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    import json as _json, os as _os
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    rows = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
+    if not rows:
+        raise _HE(status_code=404, detail="Proposal not found")
+    sp = rows[0].get("source_path")
+    raw = None
+    local = _os.path.join(_os.path.dirname(__file__), "docs", sp) if sp else None
+    if local and _os.path.exists(local):
+        raw = open(local, "rb").read()
+    elif sp:
+        try:
+            import r2_storage as _r2p
+            cat, fn = sp.split("/", 1)
+            raw = _r2_bytes(cat, fn)
+        except Exception:
+            raw = None
+    if raw is None:
+        raise _HE(status_code=404, detail="Proposal file not found to score")
+    text = _extract_doc_text(_os.path.basename(sp), raw)
+    sc = await _score_proposal(text)
+    if not sc:
+        raise _HE(status_code=503, detail="Scoring is busy, try again")
+    _exec("""UPDATE proposals SET overall_score=%s, verdict=%s, scores=%s, strengths=%s,
+             gaps=%s, improvements=%s, support_requested=%s, readiness=%s, summary=%s,
+             scored=TRUE WHERE id=%s""",
+          (sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
+           _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
+           _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
+           _json.dumps(sc.get("readiness", {})), sc["summary"], pid))
+    return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (pid,))[0])
+
+
 import time
 
 # In-memory doc cache: {"text": str, "ts": float}
