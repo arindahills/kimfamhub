@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToast } from '../components/Toast'
 import { BusyButton, Spinner } from '../components/Spinner'
 import { streamAi } from '../lib/aiStream'
+import { useAuth } from '../context/AuthContext'
 
 interface Criterion { name: string; weight: number; score: number; rationale: string }
 interface Readiness { status?: string; assessment?: string; blocking?: string[] }
@@ -398,6 +399,8 @@ interface Comment { id: number; author: string; body: string; action_ref: string
 function ProposalComments({ proposalId }: { proposalId: number }) {
   const toast = useToast()
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const { data } = useQuery<{ comments: Comment[] }>({
@@ -445,7 +448,9 @@ function ProposalComments({ proposalId }: { proposalId: number }) {
                 <span style={{ color: '#64748b' }}>{fmtDate(c.created_at)}</span>
                 {c.action_ref
                   ? <span className="text-[9px] px-1 py-0.5 rounded" style={{ background: '#0f3d22', color: '#86efac' }}>→ {c.action_ref}</span>
-                  : <button onClick={() => makeAction(c.id)} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: '#1e293b', color: '#fcd34d' }}>Make action</button>}
+                  : isAdmin
+                    ? <button onClick={() => makeAction(c.id)} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: '#1e293b', color: '#fcd34d' }}>Make action</button>
+                    : null}
               </span>
             </div>
             <div>{c.body}</div>

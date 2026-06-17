@@ -3838,8 +3838,8 @@ def proposal_comment_to_action(pid: int, cid: int, request: Request):
     from db import query as _dbq, execute as _exec
     import re as _re2
     payload = _auth_verify(_get_tok(request))
-    if not payload:
-        raise _HE(status_code=401, detail="Login required")
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Only admins can turn a comment into an action")
     _ensure_proposals_table()
     c = _dbq("SELECT * FROM proposal_comments WHERE id=%s", (cid,))
     p = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
