@@ -191,6 +191,19 @@ body {
   animation: ask-wiggle 3s ease-in-out infinite, ask-glow 1.5s ease-in-out infinite;
 }
 
+/* "NEW" badge for a brand-new nav menu item (e.g. Proposals) */
+@keyframes nav-new-glow {
+  0%, 100% { box-shadow: 0 0 2px rgba(124,58,237,.5); }
+  50%      { box-shadow: 0 0 9px rgba(124,58,237,.95), 0 0 14px rgba(167,139,250,.6); }
+}
+.kf-nav-new {
+  display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 5px;
+  font-size: 9px; font-weight: 700; letter-spacing: .05em;
+  background: #7c3aed; color: #fff;
+  animation: nav-new-glow 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .kf-nav-new { animation: none; } }
+
 /* Typewriter caret */
 @keyframes caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .tw-caret { animation: caret-blink 1s step-end infinite; }

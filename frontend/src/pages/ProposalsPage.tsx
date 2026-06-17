@@ -12,6 +12,7 @@ interface Proposal {
   scored: boolean; criteria: Criterion[]; strengths: string[]; gaps: string[]
   improvements: string[]; summary: string | null; created_at: string
   support_requested: string; readiness: Readiness; version: number; is_current: boolean
+  uploaded_at: string
 }
 
 const OWNERS = [
@@ -21,10 +22,11 @@ const OWNERS = [
   'Janet', 'Lawi', 'Max', 'Priscilla', 'Solomon', 'Viola',
 ]
 
-function isNew(createdAt: string): boolean {
-  if (!createdAt) return false
-  const t = Date.parse(createdAt.replace(' ', 'T'))
-  return !!t && (Date.now() - t) < 72 * 3600 * 1000  // within 3 days
+function fmtDate(s: string): string {
+  if (!s) return ''
+  const t = Date.parse(s.replace(' ', 'T'))
+  if (!t) return ''
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 function verdictColor(v: string | null): { bg: string; fg: string } {
@@ -92,14 +94,6 @@ export default function ProposalsPage() {
 
   return (
     <div className="max-w-2xl md:max-w-4xl mx-auto space-y-3 pb-10">
-      <style>{`
-        @keyframes kf-proposal-glow {
-          0%,100% { box-shadow: 0 0 0 1px #7c3aed55, 0 0 8px #7c3aed33; }
-          50%     { box-shadow: 0 0 0 1px #a78bfa88, 0 0 18px #7c3aed66; }
-        }
-        .kf-proposal-new { animation: kf-proposal-glow 2.2s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .kf-proposal-new { animation: none; box-shadow: 0 0 0 1px #7c3aed55; } }
-      `}</style>
       {/* Submit */}
       <div className="rounded-xl p-4 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
         <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>Submit a proposal</div>
@@ -137,18 +131,17 @@ export default function ProposalsPage() {
       ) : proposals.map(p => {
         const vc = verdictColor(p.verdict)
         const isOpen = openId === p.id
-        const fresh = isNew(p.created_at)
         return (
-          <div key={p.id} className={`rounded-xl overflow-hidden${fresh ? ' kf-proposal-new' : ''}`}
-            style={{ background: 'var(--bg-card)', border: `1px solid ${fresh ? '#7c3aed66' : 'var(--border)'}` }}>
+          <div key={p.id} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
             <button onClick={() => setOpenId(isOpen ? null : p.id)} className="w-full flex items-center justify-between px-4 py-3 gap-3">
               <div className="flex-1 min-w-0 text-left">
                 <div className="text-sm font-semibold truncate flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
-                  {fresh && <span className="kf-new-badge text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ background: '#7c3aed', color: '#fff', letterSpacing: '0.05em' }}>NEW</span>}
                   <span className="truncate">{p.title}</span>
                   {p.version > 1 && <span className="text-[9px] px-1 py-0.5 rounded shrink-0" style={{ background: '#1e293b', color: '#94a3b8' }}>v{p.version}</span>}
                 </div>
-                <div className="text-[11px]" style={{ color: '#7c93b3' }}>{p.owner} · submitted by {p.submitted_by}</div>
+                <div className="text-[11px]" style={{ color: '#7c93b3' }}>
+                  {p.owner} · submitted by {p.submitted_by}{p.uploaded_at ? ` · ${fmtDate(p.uploaded_at)}` : ''}
+                </div>
               </div>
               {p.scored ? (
                 <div className="flex items-center gap-2 shrink-0">

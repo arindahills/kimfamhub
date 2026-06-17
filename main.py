@@ -3199,6 +3199,32 @@ def _re_docs_safe(name: str) -> str:
     return (_r.sub(r'[\\/:*?"<>|]+', " ", name).strip()[:80]) or "Proposal"
 
 
+def _doc_modified_date(fname: str, raw: bytes):
+    """The document's own last-modified date (docx/pptx core properties, pdf ModDate).
+    Used as the 'uploaded' date for pre-existing proposals so the card shows when the
+    document was actually last edited, not when it was imported. Returns datetime or None."""
+    import io as _io
+    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    try:
+        if ext == "docx":
+            import docx as _docx
+            return _docx.Document(_io.BytesIO(raw)).core_properties.modified
+        if ext == "pptx":
+            from pptx import Presentation as _Pr
+            return _Pr(_io.BytesIO(raw)).core_properties.modified
+        if ext == "pdf":
+            import pdfplumber as _pp, datetime as _dt
+            with _pp.open(_io.BytesIO(raw)) as pdf:
+                md = (pdf.metadata or {}).get("ModDate") or (pdf.metadata or {}).get("CreationDate")
+            if md:
+                m = __import__("re").search(r"D:(\d{4})(\d{2})(\d{2})", str(md))
+                if m:
+                    return _dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        return None
+    return None
+
+
 def _ensure_proposals_table():
     from db import execute as _exec
     _exec("""CREATE TABLE IF NOT EXISTS proposals (
@@ -3220,13 +3246,16 @@ def _ensure_proposals_table():
         version       INTEGER DEFAULT 1,
         is_current    BOOLEAN DEFAULT TRUE,
         scored        BOOLEAN DEFAULT FALSE,
+        file_hash     TEXT,
+        uploaded_at   TIMESTAMPTZ DEFAULT now(),
         created_at    TIMESTAMPTZ DEFAULT now()
     )""")
     # Additive columns for tables created before these fields existed.
     for col, ddl in [
         ("support_requested", "TEXT"), ("readiness", "JSONB"),
         ("thread_id", "INTEGER"), ("version", "INTEGER DEFAULT 1"),
-        ("is_current", "BOOLEAN DEFAULT TRUE"),
+        ("is_current", "BOOLEAN DEFAULT TRUE"), ("uploaded_at", "TIMESTAMPTZ DEFAULT now()"),
+        ("file_hash", "TEXT"),
     ]:
         try:
             _exec(f"ALTER TABLE proposals ADD COLUMN IF NOT EXISTS {col} {ddl}")
@@ -3405,6 +3434,7 @@ def _proposal_row(r: dict) -> dict:
         "version": r.get("version", 1), "is_current": r.get("is_current", True),
         "thread_id": r.get("thread_id"),
         "summary": r.get("summary"), "created_at": str(r.get("created_at") or ""),
+        "uploaded_at": str(r.get("uploaded_at") or r.get("created_at") or ""),
     }
 
 
@@ -3459,6 +3489,17 @@ async def create_proposal(request: Request):
         raise _HE(status_code=400, detail="Could not read text from that file")
 
     _ensure_proposals_table()
+    # ── Exact-duplicate guard: a content hash (over the file bytes, so it survives a
+    #    rename but changes on any edit). Block re-uploading a byte-identical file.
+    import hashlib as _hl
+    file_hash = _hl.sha256(raw).hexdigest()
+    dup = _dbq("""SELECT title, owner FROM proposals WHERE file_hash=%s AND is_current=TRUE
+                  LIMIT 1""", (file_hash,))
+    if dup:
+        raise _HE(status_code=409,
+                  detail=f"This exact file is already uploaded as '{dup[0]['title']}' "
+                         f"({dup[0]['owner']}). Edit the document before re-uploading a new version.")
+
     # ── Versioning: a new upload for the same owner+title supersedes the prior
     #    current version (which is archived) so we track refinement progress. An
     #    explicit ?supersedes=<id> wins over the owner+title match.
@@ -3501,21 +3542,21 @@ async def create_proposal(request: Request):
     from fastapi.responses import StreamingResponse
 
     def _persist(sc):
-        cols = "title, owner, submitted_by, source_path, version, is_current"
+        cols = "title, owner, submitted_by, source_path, version, is_current, file_hash"
         if sc:
             _exec(f"""INSERT INTO proposals
                 ({cols}, overall_score, verdict, scores, strengths, gaps, improvements,
                  support_requested, readiness, summary, scored)
-                VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)""",
-                (title, owner, submitter, source_path, new_version,
+                VALUES (%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)""",
+                (title, owner, submitter, source_path, new_version, file_hash,
                  sc["overall_score"], sc["verdict"], _json.dumps(sc["criteria"]),
                  _json.dumps(sc["strengths"]), _json.dumps(sc["gaps"]),
                  _json.dumps(sc["improvements"]), sc.get("support_requested", ""),
                  _json.dumps(sc.get("readiness", {})), sc["summary"]))
         else:
             _exec(f"""INSERT INTO proposals ({cols}, scored)
-                     VALUES (%s,%s,%s,%s,%s,TRUE,FALSE)""",
-                  (title, owner, submitter, source_path, new_version))
+                     VALUES (%s,%s,%s,%s,%s,TRUE,%s,FALSE)""",
+                  (title, owner, submitter, source_path, new_version, file_hash))
         row = _dbq("SELECT * FROM proposals WHERE source_path=%s ORDER BY id DESC LIMIT 1", (source_path,))
         nid = row[0]["id"] if row else None
         if nid:

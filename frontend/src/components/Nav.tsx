@@ -100,7 +100,7 @@ export default function Nav() {
             })}
           >
             <span style={{ fontSize: 16, width: 22, textAlign: 'center' }}>{tab.icon}</span>
-            <span>{t(`nav.${tab.key}`)}</span>
+            <span>{t(`nav.${tab.key}`)}{tab.key === 'proposals' && <span className="kf-nav-new">NEW</span>}</span>
           </NavLink>
         ))}
       </nav>
@@ -173,7 +173,7 @@ export default function Nav() {
             })}
           >
             <span style={{ fontSize: 18, width: 24, textAlign: 'center' }}>{tab.icon}</span>
-            <span>{t(`nav.${tab.key}`)}</span>
+            <span>{t(`nav.${tab.key}`)}{tab.key === 'proposals' && <span className="kf-nav-new">NEW</span>}</span>
           </NavLink>
         ))}
       </nav>

@@ -8,8 +8,9 @@ export async function streamAi(
   onStep?: (msg: string) => void,
 ): Promise<any> {
   const res = await fetch(url, { credentials: 'include', ...init })
-  if (!res.body) {
-    // Non-streaming fallback (e.g. an error returned as JSON).
+  const ct = res.headers.get('content-type') || ''
+  // Errors (e.g. 409 duplicate, 400) and any non-stream response come back as JSON.
+  if (!res.body || !ct.includes('text/event-stream')) {
     const d = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(d.detail || 'Request failed')
     return d
