@@ -3597,7 +3597,18 @@ async def create_proposal(request: Request):
         nid = row[0]["id"] if row else None
         if nid:
             _exec("UPDATE proposals SET thread_id=%s WHERE id=%s", (thread or nid, nid))
-        return _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (nid,))[0]) if nid else {"ok": True}
+        result = _proposal_row(_dbq("SELECT * FROM proposals WHERE id=%s", (nid,))[0]) if nid else {"ok": True}
+        # Personal WhatsApp confirmation to the owner (and submitter). Not the group.
+        try:
+            import notifications as _ntf
+            on_behalf = submitter.lower() not in owner.lower()
+            _ntf.notify_proposal_submitted(
+                title, owner, submitter,
+                (sc["overall_score"] if sc else None), (sc["verdict"] if sc else None),
+                result.get("file_url"), on_behalf=on_behalf)
+        except Exception as _ne:
+            log.error(f"proposal submit notify failed: {_ne}")
+        return result
 
     return StreamingResponse(
         _ai_score_stream(text, _persist, kind="proposal"),
@@ -3650,6 +3661,31 @@ async def rescore_proposal(pid: int, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@app.post("/api/proposals/{pid}/share")
+def share_proposal(pid: int, request: Request):
+    """Deliberately announce a proposal to the family group (ready for review)."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    rows = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
+    if not rows:
+        raise _HE(status_code=404, detail="Proposal not found")
+    p = rows[0]
+    link = f"/docs/{p['source_path']}" if p.get("source_path") else None
+    try:
+        import notifications as _ntf
+        _ntf.notify_proposal_ready(
+            p["title"], p["owner"], p["submitted_by"],
+            float(p["overall_score"]) if p.get("overall_score") is not None else None,
+            p.get("verdict"), link)
+    except Exception as _ne:
+        log.error(f"proposal share failed: {_ne}")
+        raise _HE(status_code=502, detail="Could not send the group message. Try again.")
+    return {"ok": True, "message": "Shared to the family group."}
 
 
 import time

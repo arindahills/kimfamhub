@@ -109,6 +109,18 @@ export default function ProposalsPage() {
     } finally { setScoringId(null) }
   }
 
+  const share = async (id: number) => {
+    const tid = toast.loading('Sharing to the family group…')
+    try {
+      const res = await fetch(`/api/proposals/${id}/share`, { method: 'POST', credentials: 'include' })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.detail || 'Share failed')
+      toast.update(tid, d.message || 'Shared to the family group', 'success')
+    } catch (e: any) {
+      toast.update(tid, e.message, 'error')
+    }
+  }
+
   const proposals = data?.proposals || []
 
   return (
@@ -244,6 +256,10 @@ export default function ProposalsPage() {
                       {scoringId === p.id && <Spinner size={11} color="#fff" />} Score with AI
                     </button>
                   )}
+                  <button onClick={() => share(p.id)}
+                    className="text-[11px] px-2 py-1 rounded" style={{ background: '#0f3d22', color: '#86efac' }}>
+                    Share to family group
+                  </button>
                 </div>
 
                 {p.scored && (

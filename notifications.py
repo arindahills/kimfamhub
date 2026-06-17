@@ -178,3 +178,73 @@ def notify_payment_rejected(
     if sub_phone and sub_phone not in phones:
         phones.append(sub_phone)
     _broadcast(phones, msg)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Proposals
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _proposal_owner_phones(owner: str) -> list[str]:
+    """Phones for a proposal owner: a family name -> its members; a member name ->
+    that member; club-wide/unknown -> empty (caller falls back to the submitter)."""
+    o = (owner or "").strip()
+    name = o[4:].strip() if o.lower().startswith("the ") else o
+    fam = _phones_for_family(name)
+    if fam:
+        return list(fam)
+    if name in MEMBER_PHONES and MEMBER_PHONES[name]:
+        return [MEMBER_PHONES[name]]
+    return []
+
+
+def _proposal_url(link: str | None) -> str:
+    if not link:
+        return ""
+    if link.startswith("http"):
+        return link
+    host = "https://staging.kimfamhub.com" if IS_STAGING else "https://kimfamhub.com"
+    return host + link
+
+
+def notify_proposal_submitted(title, owner, submitter, score, verdict, link, on_behalf=False):
+    """Personal confirmation to the proposal owner (and the submitter), NOT the group.
+    Staging-safe: only Hillary is messaged on staging."""
+    env = " [STAGING]" if IS_STAGING else ""
+    url = _proposal_url(link)
+    behalf = f" by {submitter} on your behalf" if on_behalf else ""
+    score_line = f"\nAI score: {score}/100 ({verdict})." if score is not None else ""
+    msg = (
+        f"📑 *KimFam Proposal Submitted{env}*\n"
+        f"*{title}*\n"
+        f"*Owner:* {owner}\n"
+        f"Submitted{behalf}.{score_line}\n"
+        f"{('View: ' + url) if url else ''}\n"
+        f"_To refine it, upload a new version on the Proposals tab._"
+        + SIGNOFF
+    )
+    if IS_STAGING:
+        _send(HILLARY_PHONE, msg)
+        return
+    phones = _proposal_owner_phones(owner)
+    sp = MEMBER_PHONES.get(submitter)
+    if sp and sp not in phones:
+        phones.append(sp)
+    for p in phones:
+        _send(p, msg)
+
+
+def notify_proposal_ready(title, owner, submitter, score, verdict, link):
+    """Deliberate announcement to the family group that a proposal is ready for review."""
+    env = " [STAGING]" if IS_STAGING else ""
+    url = _proposal_url(link)
+    score_line = f"\n*AI readiness score:* {score}/100 ({verdict})" if score is not None else ""
+    msg = (
+        f"📑 *KimFam Proposal Ready for Review{env}*\n"
+        f"*{title}*\n"
+        f"*Owner:* {owner}  |  *Submitted by:* {submitter}"
+        f"{score_line}\n"
+        f"{('View the proposal: ' + url) if url else ''}\n"
+        f"_Please review and share your input._"
+        + SIGNOFF
+    )
+    _broadcast([], msg)   # individuals=[] -> group only (staging routes to Hillary + test group)
