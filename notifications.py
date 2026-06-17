@@ -198,12 +198,16 @@ def _proposal_owner_phones(owner: str) -> list[str]:
 
 
 def _proposal_url(link: str | None) -> str:
+    """Tappable link to the proposal's readable view. URL-encodes the path so spaces
+    (which WhatsApp truncates the hyperlink at) become %20 and the link resolves."""
     if not link:
         return ""
     if link.startswith("http"):
         return link
+    from urllib.parse import quote
+    path = link if link.endswith("/view") else (link + "/view")   # render in-browser
     host = "https://staging.kimfamhub.com" if IS_STAGING else "https://kimfamhub.com"
-    return host + link
+    return host + quote(path, safe="/")
 
 
 def notify_proposal_submitted(title, owner, submitter, score, verdict, link, on_behalf=False):
