@@ -6,14 +6,16 @@ import { streamAi } from '../lib/aiStream'
 
 interface Criterion { name: string; weight: number; score: number; rationale: string }
 interface Readiness { status?: string; assessment?: string; blocking?: string[] }
+interface Version { id: number; version: number; overall_score: number | null; verdict: string | null; scored: boolean; uploaded_at: string; file_url: string | null }
 interface Proposal {
   id: number; title: string; owner: string; submitted_by: string
   file_url: string | null; overall_score: number | null; verdict: string | null
   scored: boolean; criteria: Criterion[]; strengths: string[]; gaps: string[]
   improvements: string[]; summary: string | null; created_at: string
   support_requested: string; readiness: Readiness; version: number; is_current: boolean
-  uploaded_at: string
+  uploaded_at: string; history: Version[]
 }
+interface Matrix { criteria: { name: string; weight: number }[]; total: number; verdict_bands: { min: number; label: string }[]; scale: string }
 
 const OWNERS = [
   'KimFam (club-wide)',
@@ -47,27 +49,44 @@ export default function ProposalsPage() {
   const [busy, setBusy] = useState(false)
   const [openId, setOpenId] = useState<number | null>(null)
   const [scoringId, setScoringId] = useState<number | null>(null)
+  const [mode, setMode] = useState<'new' | 'revision'>('new')
+  const [reviseId, setReviseId] = useState('')
+  const [showMatrix, setShowMatrix] = useState(false)
 
   const { data, isLoading } = useQuery<{ proposals: Proposal[] }>({
     queryKey: ['proposals'],
     queryFn: () => fetch('/api/proposals', { credentials: 'include' }).then(r => r.json()),
   })
+  const { data: matrix } = useQuery<Matrix>({
+    queryKey: ['proposals-matrix'],
+    queryFn: () => fetch('/api/proposals/matrix', { credentials: 'include' }).then(r => r.json()),
+  })
+
+  const reviseTarget = (data?.proposals || []).find(p => String(p.id) === reviseId)
 
   const submit = async () => {
     if (!file) { toast.error('Choose a proposal file first'); return }
-    if (!owner) { toast.error('Choose whose proposal this is'); return }
+    if (mode === 'revision' && !reviseId) { toast.error('Choose which proposal this revises'); return }
+    if (mode === 'new' && !owner) { toast.error('Choose whose proposal this is'); return }
     setBusy(true)
-    const tid = toast.loading('Uploading the proposal…')
+    const tid = toast.loading(mode === 'revision' ? 'Uploading the revision…' : 'Uploading the proposal…')
     try {
       const fd = new FormData()
       fd.append('file', file)
-      fd.append('title', title || file.name.replace(/\.[^.]+$/, ''))
-      fd.append('owner', owner)
+      if (mode === 'revision' && reviseTarget) {
+        fd.append('title', reviseTarget.title)
+        fd.append('owner', reviseTarget.owner)
+        fd.append('supersedes', String(reviseTarget.id))
+      } else {
+        fd.append('title', title || file.name.replace(/\.[^.]+$/, ''))
+        fd.append('owner', owner)
+      }
       const ev = await streamAi('/api/proposals', { method: 'POST', body: fd },
         msg => toast.update(tid, msg, 'loading'))
       const d = ev.proposal
-      toast.update(tid, `Scored: ${d.overall_score ?? '?'} / 100 (${d.verdict})`, 'success')
-      setFile(null); setTitle(''); setOwner('')
+      const tag = d.version > 1 ? ` (v${d.version})` : ''
+      toast.update(tid, `Scored${tag}: ${d.overall_score ?? '?'} / 100 (${d.verdict})`, 'success')
+      setFile(null); setTitle(''); setOwner(''); setMode('new'); setReviseId('')
       setOpenId(d.id)
       qc.invalidateQueries({ queryKey: ['proposals'] })
     } catch (e: any) {
@@ -96,32 +115,86 @@ export default function ProposalsPage() {
     <div className="max-w-2xl md:max-w-4xl mx-auto space-y-3 pb-10">
       {/* Submit */}
       <div className="rounded-xl p-4 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
-        <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>Submit a proposal</div>
+        <div className="flex items-center justify-between">
+          <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>Submit a proposal</div>
+          <button onClick={() => setShowMatrix(true)} className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e293b', color: '#93c5fd' }}>
+            How scoring works
+          </button>
+        </div>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Upload a project proposal (Word, PDF, or PowerPoint). It is scored by Claude against the
-          KimFam project-management framework and reward guidelines.
+          Scored by Claude against the KimFam project-management framework and reward guidelines.
         </p>
+        {/* New vs revision */}
+        <div className="flex gap-2">
+          {(['new', 'revision'] as const).map(m => (
+            <button key={m} onClick={() => setMode(m)}
+              className="flex-1 text-xs py-1.5 rounded-lg font-semibold capitalize"
+              style={{ background: mode === m ? '#7c3aed' : '#0d1829', color: mode === m ? '#fff' : '#94a3b8', border: '1px solid var(--border)' }}>
+              {m === 'new' ? 'New proposal' : 'Revision of existing'}
+            </button>
+          ))}
+        </div>
         <label className="block w-full text-center text-sm px-3 py-3 rounded-lg cursor-pointer"
           style={{ background: '#0d1829', border: '1px dashed #334155', color: file ? '#cbd5e1' : '#64748b' }}>
           {file ? file.name : 'Tap to choose a proposal file'}
           <input type="file" accept=".docx,.pdf,.pptx,.doc,.ppt" hidden
             onChange={e => { const f = e.target.files?.[0] || null; setFile(f); if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, '')) }} />
         </label>
-        <input type="text" placeholder="Proposal title" value={title} onChange={e => setTitle(e.target.value)}
-          className="w-full text-sm px-3 py-2 rounded-lg"
-          style={{ background: '#0d1829', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
-        <select value={owner} onChange={e => setOwner(e.target.value)}
-          className="w-full text-sm px-3 py-2 rounded-lg"
-          style={{ background: '#0d1829', border: '1px solid var(--border)', color: owner ? 'var(--text-primary)' : '#64748b' }}>
-          <option value="">Whose proposal is this? (owner)</option>
-          {OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
+        {mode === 'new' ? (
+          <>
+            <input type="text" placeholder="Proposal title" value={title} onChange={e => setTitle(e.target.value)}
+              className="w-full text-sm px-3 py-2 rounded-lg"
+              style={{ background: '#0d1829', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+            <select value={owner} onChange={e => setOwner(e.target.value)}
+              className="w-full text-sm px-3 py-2 rounded-lg"
+              style={{ background: '#0d1829', border: '1px solid var(--border)', color: owner ? 'var(--text-primary)' : '#64748b' }}>
+              <option value="">Whose proposal is this? (owner)</option>
+              {OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </>
+        ) : (
+          <>
+            <select value={reviseId} onChange={e => setReviseId(e.target.value)}
+              className="w-full text-sm px-3 py-2 rounded-lg"
+              style={{ background: '#0d1829', border: '1px solid var(--border)', color: reviseId ? 'var(--text-primary)' : '#64748b' }}>
+              <option value="">Which proposal does this revise?</option>
+              {proposals.map(p => <option key={p.id} value={p.id}>{p.title} ({p.owner}) — currently v{p.version}</option>)}
+            </select>
+            {reviseTarget && <p className="text-[11px]" style={{ color: '#7c93b3' }}>Will become v{reviseTarget.version + 1} of "{reviseTarget.title}", the current version is archived.</p>}
+          </>
+        )}
         <BusyButton busy={busy} busyLabel="Scoring…" onClick={submit}
           className="w-full text-sm py-2.5 rounded-lg font-semibold"
           style={{ background: '#7c3aed', color: '#fff', border: 'none' }}>
-          Submit & score →
+          {mode === 'revision' ? 'Upload revision & score →' : 'Submit & score →'}
         </BusyButton>
       </div>
+
+      {/* Scoring matrix modal */}
+      {showMatrix && matrix && (
+        <div onClick={() => setShowMatrix(false)} style={{ position: 'fixed', inset: 0, zIndex: 9998, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} className="rounded-xl p-4 space-y-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', maxWidth: 460, width: '100%', maxHeight: '85vh', overflowY: 'auto' }}>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>How proposals are scored</div>
+              <button onClick={() => setShowMatrix(false)} style={{ color: '#64748b' }}>✕</button>
+            </div>
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{matrix.scale}</p>
+            {matrix.criteria.map(c => (
+              <div key={c.name}>
+                <div className="flex justify-between text-[11px]" style={{ color: '#cbd5e1' }}>
+                  <span>{c.name}</span><span style={{ color: '#93c5fd' }}>{c.weight}%</span>
+                </div>
+                <div style={{ height: 5, background: '#1e293b', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${(c.weight / matrix.total) * 100}%`, height: '100%', background: '#7c3aed' }} />
+                </div>
+              </div>
+            ))}
+            <div className="text-[11px] pt-1" style={{ color: '#7c93b3' }}>
+              Verdict: {matrix.verdict_bands.map(b => `${b.label} (${b.min}+)`).join(' · ')}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* List */}
       {isLoading ? (
@@ -141,6 +214,9 @@ export default function ProposalsPage() {
                 </div>
                 <div className="text-[11px]" style={{ color: '#7c93b3' }}>
                   {p.owner} · submitted by {p.submitted_by}{p.uploaded_at ? ` · ${fmtDate(p.uploaded_at)}` : ''}
+                </div>
+                <div className="text-[10px] mt-0.5" style={{ color: '#7c3aed' }}>
+                  {isOpen ? '▾ scorecard' : '▸ Tap to view scorecard'}{(p.history?.length ?? 0) > 1 ? ` · ${p.history.length} versions` : ''}
                 </div>
               </div>
               {p.scored ? (
@@ -217,6 +293,29 @@ export default function ProposalsPage() {
                     {p.gaps?.length > 0 && <ScoreList title="Gaps" items={p.gaps} color="#fcd34d" />}
                     {p.improvements?.length > 0 && <ScoreList title="Suggested improvements" items={p.improvements} color="#93c5fd" />}
                   </>
+                )}
+
+                {/* Version history (revisions grouped together, oldest→newest progress) */}
+                {(p.history?.length ?? 0) > 1 && (
+                  <div className="rounded-lg p-2.5" style={{ background: '#0d1829', border: '1px solid var(--border)' }}>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: '#7c93b3' }}>Version history</div>
+                    {[...p.history].reverse().map((v, i, arr) => {
+                      const prev = i > 0 ? arr[i - 1] : null
+                      const delta = (prev && prev.overall_score != null && v.overall_score != null) ? Math.round((v.overall_score - prev.overall_score) * 10) / 10 : null
+                      return (
+                        <div key={v.id} className="flex items-center justify-between text-[11px] py-0.5">
+                          <span style={{ color: v.id === p.id ? '#cbd5e1' : '#64748b' }}>
+                            v{v.version}{v.id === p.id ? ' (current)' : ''} · {fmtDate(v.uploaded_at)}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            {delta != null && <span style={{ color: delta >= 0 ? '#86efac' : '#fca5a5' }}>{delta >= 0 ? '+' : ''}{delta}</span>}
+                            <span style={{ color: '#cbd5e1' }}>{v.overall_score ?? '–'}/100</span>
+                            {v.file_url && <a href={`${v.file_url}/view`} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>view</a>}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
             )}

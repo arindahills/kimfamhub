@@ -3438,6 +3438,25 @@ def _proposal_row(r: dict) -> dict:
     }
 
 
+@app.get("/api/proposals/matrix")
+def proposals_matrix(request: Request):
+    """The scoring rubric: each Key Area and the % it contributes, plus verdict bands."""
+    from fastapi import HTTPException as _HE
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    return {
+        "criteria": [{"name": n, "weight": w} for n, w in PROPOSAL_CRITERIA],
+        "total": sum(w for _, w in PROPOSAL_CRITERIA),
+        "verdict_bands": [
+            {"min": 80, "label": "Strong"},
+            {"min": 65, "label": "Viable with conditions"},
+            {"min": 50, "label": "Needs work"},
+            {"min": 0, "label": "Not ready"},
+        ],
+        "scale": "Each Key Area is scored 1 to 5, weighted to its percentage, and summed to a score out of 100.",
+    }
+
+
 @app.get("/api/proposals")
 def list_proposals(request: Request):
     from db import query as _dbq
@@ -3445,8 +3464,25 @@ def list_proposals(request: Request):
         from fastapi import HTTPException as _HE
         raise _HE(status_code=401, detail="Login required")
     _ensure_proposals_table()
-    rows = _dbq("SELECT * FROM proposals ORDER BY created_at DESC")
-    return {"proposals": [_proposal_row(r) for r in rows]}
+    # One entry per proposal thread (the current version), each carrying its version
+    # history so revisions group together and progress is easy to follow.
+    current = _dbq("SELECT * FROM proposals WHERE is_current=TRUE ORDER BY uploaded_at DESC NULLS LAST, created_at DESC")
+    out = []
+    for r in current:
+        row = _proposal_row(r)
+        thread = r.get("thread_id") or r["id"]
+        vers = _dbq("""SELECT id, version, overall_score, verdict, scored, uploaded_at, source_path
+                       FROM proposals WHERE thread_id=%s OR id=%s ORDER BY version DESC""",
+                    (thread, thread))
+        row["history"] = [{
+            "id": v["id"], "version": v["version"],
+            "overall_score": float(v["overall_score"]) if v.get("overall_score") is not None else None,
+            "verdict": v.get("verdict"), "scored": v.get("scored", False),
+            "uploaded_at": str(v.get("uploaded_at") or ""),
+            "file_url": (f"/docs/{v['source_path']}" if v.get("source_path") else None),
+        } for v in vers]
+        out.append(row)
+    return {"proposals": out}
 
 
 @app.get("/api/proposals/{pid}")
