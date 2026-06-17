@@ -146,11 +146,11 @@ export default function DocsPage() {
                           <span className="text-sm truncate" style={{ color: '#cbd5e1' }}>{f.name}</span>
                         </div>
                         <div className="flex gap-2 shrink-0 ml-2">
-                          <a href={`${f.url}/view`} target="_blank" rel="noreferrer"
+                          <a href={`${encodeURI(f.url)}/view`} target="_blank" rel="noreferrer"
                             className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e3a5f', color: '#93c5fd' }}>
                             View
                           </a>
-                          <a href={f.url} download
+                          <a href={encodeURI(f.url)} download
                             className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e293b', color: '#64748b' }}>
                             ↓
                           </a>

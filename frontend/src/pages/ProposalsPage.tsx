@@ -246,8 +246,8 @@ export default function ProposalsPage() {
                 <div className="flex gap-2 pt-3">
                   {p.file_url && (
                     <>
-                      <a href={`${p.file_url}/view`} target="_blank" rel="noreferrer" className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e3a5f', color: '#93c5fd' }}>View doc</a>
-                      <a href={p.file_url} download className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e293b', color: '#64748b' }}>↓ Download</a>
+                      <a href={`${encodeURI(p.file_url)}/view`} target="_blank" rel="noreferrer" className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e3a5f', color: '#93c5fd' }}>View doc</a>
+                      <a href={encodeURI(p.file_url)} download className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e293b', color: '#64748b' }}>↓ Download</a>
                     </>
                   )}
                   {!p.scored && (
@@ -326,7 +326,7 @@ export default function ProposalsPage() {
                           <span className="flex items-center gap-2">
                             {delta != null && <span style={{ color: delta >= 0 ? '#86efac' : '#fca5a5' }}>{delta >= 0 ? '+' : ''}{delta}</span>}
                             <span style={{ color: '#cbd5e1' }}>{v.overall_score ?? '–'}/100</span>
-                            {v.file_url && <a href={`${v.file_url}/view`} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>view</a>}
+                            {v.file_url && <a href={`${encodeURI(v.file_url)}/view`} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>view</a>}
                           </span>
                         </div>
                       )
