@@ -294,14 +294,14 @@ export default function ProposalsPage() {
                     <div className="space-y-1.5">
                       {p.criteria.map(c => (
                         <div key={c.name}>
-                          <div className="flex justify-between text-[11px]" style={{ color: '#94a3b8' }}>
-                            <span>{c.name} <span style={{ color: '#475569' }}>({c.weight})</span></span>
-                            <span style={{ color: '#cbd5e1' }}>{c.score}/5</span>
+                          <div className="flex justify-between text-[11px]" style={{ color: '#e2e8f0' }}>
+                            <span>{c.name} <span style={{ color: '#94a3b8' }}>({c.weight})</span></span>
+                            <span style={{ color: '#f1f5f9' }}>{c.score}/5</span>
                           </div>
                           <div style={{ height: 5, background: '#1e293b', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{ width: `${(c.score / 5) * 100}%`, height: '100%', background: c.score >= 4 ? '#16a34a' : c.score >= 3 ? '#3b82f6' : c.score >= 2 ? '#d97706' : '#dc2626' }} />
                           </div>
-                          {c.rationale && <div className="text-[10px] mt-0.5" style={{ color: '#64748b' }}>{c.rationale}</div>}
+                          {c.rationale && <div className="text-[10px] mt-0.5" style={{ color: '#cbd5e1' }}>{c.rationale}</div>}
                         </div>
                       ))}
                     </div>
