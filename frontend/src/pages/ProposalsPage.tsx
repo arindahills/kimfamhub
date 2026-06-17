@@ -371,6 +371,8 @@ export default function ProposalsPage() {
                     })}
                   </div>
                 )}
+
+                <ProposalComments proposalId={p.id} />
               </div>
             )}
           </div>
@@ -387,6 +389,76 @@ function ScoreList({ title, items, color }: { title: string; items: string[]; co
       <ul className="space-y-0.5">
         {items.map((s, i) => <li key={i} className="text-[11px] flex gap-1.5" style={{ color: '#cbd5e1' }}><span style={{ color }}>•</span><span>{s}</span></li>)}
       </ul>
+    </div>
+  )
+}
+
+interface Comment { id: number; author: string; body: string; action_ref: string | null; created_at: string }
+
+function ProposalComments({ proposalId }: { proposalId: number }) {
+  const toast = useToast()
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const { data } = useQuery<{ comments: Comment[] }>({
+    queryKey: ['proposal-comments', proposalId],
+    queryFn: () => fetch(`/api/proposals/${proposalId}/comments`, { credentials: 'include' }).then(r => r.json()),
+  })
+  const comments = data?.comments || []
+
+  const post = async () => {
+    if (!text.trim()) return
+    setBusy(true)
+    try {
+      const r = await fetch(`/api/proposals/${proposalId}/comments`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: text.trim() }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
+      setText('')
+      qc.invalidateQueries({ queryKey: ['proposal-comments', proposalId] })
+    } catch (e: any) { toast.error(e.message) } finally { setBusy(false) }
+  }
+
+  const makeAction = async (cid: number) => {
+    const tid = toast.loading('Creating action…')
+    try {
+      const r = await fetch(`/api/proposals/${proposalId}/comments/${cid}/to-action`, { method: 'POST', credentials: 'include' })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail || 'Failed')
+      toast.update(tid, `Action ${d.action_id} created`, 'success')
+      qc.invalidateQueries({ queryKey: ['proposal-comments', proposalId] })
+      qc.invalidateQueries({ queryKey: ['actions'] })
+    } catch (e: any) { toast.update(tid, e.message, 'error') }
+  }
+
+  return (
+    <div className="rounded-lg p-2.5" style={{ background: '#0d1829', border: '1px solid var(--border)' }}>
+      <div className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: '#7c93b3' }}>Comments</div>
+      <div className="space-y-2 mb-2">
+        {comments.length === 0 && <div className="text-[11px]" style={{ color: '#64748b' }}>No comments yet. Be the first to give feedback.</div>}
+        {comments.map(c => (
+          <div key={c.id} className="text-[11px]" style={{ color: '#cbd5e1' }}>
+            <div className="flex items-center justify-between gap-2">
+              <span style={{ color: '#93c5fd' }}>{c.author}</span>
+              <span className="flex items-center gap-2 shrink-0">
+                <span style={{ color: '#64748b' }}>{fmtDate(c.created_at)}</span>
+                {c.action_ref
+                  ? <span className="text-[9px] px-1 py-0.5 rounded" style={{ background: '#0f3d22', color: '#86efac' }}>→ {c.action_ref}</span>
+                  : <button onClick={() => makeAction(c.id)} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: '#1e293b', color: '#fcd34d' }}>Make action</button>}
+              </span>
+            </div>
+            <div>{c.body}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input value={text} onChange={e => setText(e.target.value)} placeholder="Add a comment…"
+          onKeyDown={e => { if (e.key === 'Enter') post() }}
+          className="flex-1 text-[11px] px-2 py-1.5 rounded"
+          style={{ background: '#0a1420', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+        <button onClick={post} disabled={busy || !text.trim()} className="text-[11px] px-3 py-1.5 rounded font-semibold" style={{ background: '#7c3aed', color: '#fff', opacity: busy || !text.trim() ? 0.6 : 1 }}>Post</button>
+      </div>
     </div>
   )
 }

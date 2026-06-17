@@ -3265,6 +3265,15 @@ def _ensure_proposals_table():
             _exec(f"ALTER TABLE proposals ADD COLUMN IF NOT EXISTS {col} {ddl}")
         except Exception:
             pass
+    _exec("""CREATE TABLE IF NOT EXISTS proposal_comments (
+        id          SERIAL PRIMARY KEY,
+        thread_id   INTEGER,
+        proposal_id INTEGER,
+        author      TEXT,
+        body        TEXT,
+        action_ref  TEXT,
+        created_at  TIMESTAMPTZ DEFAULT now()
+    )""")
 
 
 def _verdict_for(score: float) -> str:
@@ -3768,6 +3777,89 @@ def share_proposal(pid: int, request: Request):
         log.error(f"proposal share failed: {_ne}")
         raise _HE(status_code=502, detail="Could not send the group message. Try again.")
     return {"ok": True, "message": "Shared to the family group."}
+
+
+@app.get("/api/proposals/{pid}/comments")
+def list_proposal_comments(pid: int, request: Request):
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    p = _dbq("SELECT thread_id, id FROM proposals WHERE id=%s", (pid,))
+    if not p:
+        raise _HE(status_code=404, detail="Proposal not found")
+    thread = p[0].get("thread_id") or p[0]["id"]
+    rows = _dbq("SELECT * FROM proposal_comments WHERE thread_id=%s ORDER BY created_at", (thread,))
+    return {"comments": [{
+        "id": r["id"], "author": r["author"], "body": r["body"],
+        "action_ref": r.get("action_ref"), "created_at": str(r.get("created_at") or ""),
+    } for r in rows]}
+
+
+@app.post("/api/proposals/{pid}/comments")
+async def add_proposal_comment(pid: int, request: Request):
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Login required")
+    body = await request.json()
+    text = (body.get("body") or "").strip()
+    if not text:
+        raise _HE(status_code=400, detail="Comment is empty")
+    _ensure_proposals_table()
+    p = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
+    if not p:
+        raise _HE(status_code=404, detail="Proposal not found")
+    thread = p[0].get("thread_id") or p[0]["id"]
+    author = payload.get("sub", "member")
+    _exec("INSERT INTO proposal_comments (thread_id, proposal_id, author, body) VALUES (%s,%s,%s,%s)",
+          (thread, pid, author, text))
+    try:
+        import notifications as _ntf
+        link = f"/docs/{p[0]['source_path']}" if p[0].get("source_path") else None
+        _ntf.notify_proposal_comment(p[0]["title"], p[0]["owner"], author, text, link)
+    except Exception as _ne:
+        log.error(f"proposal comment notify failed: {_ne}")
+    return {"ok": True}
+
+
+@app.post("/api/proposals/{pid}/comments/{cid}/to-action")
+def proposal_comment_to_action(pid: int, cid: int, request: Request):
+    """Promote a proposal comment into a tracked action under the next meeting."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    import re as _re2
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Login required")
+    _ensure_proposals_table()
+    c = _dbq("SELECT * FROM proposal_comments WHERE id=%s", (cid,))
+    p = _dbq("SELECT * FROM proposals WHERE id=%s", (pid,))
+    if not c or not p:
+        raise _HE(status_code=404, detail="Comment or proposal not found")
+    if c[0].get("action_ref"):
+        return {"ok": True, "action_id": c[0]["action_ref"]}
+    author = payload.get("sub", "admin")
+    target_id, target_ref = _next_or_create_meeting()
+    m = _re2.match(r"KIM\s+(\d+)/(\d{4})", target_ref or "")
+    if m:
+        num = int(m.group(1)); yr = m.group(2)[-2:]
+        i = (_dbq("SELECT COUNT(*) AS c FROM actions WHERE meeting_id=%s", (target_id,))[0]["c"]) + 1
+        new_ref = f"KIM/{num:02d}/{yr}-{i}"
+        while _dbq("SELECT ref FROM actions WHERE ref=%s", (new_ref,)):
+            i += 1; new_ref = f"KIM/{num:02d}/{yr}-{i}"
+    else:
+        new_ref = f"{target_ref}-c{cid}"
+    desc = f"[Proposal: {p[0]['title']}] {c[0]['body']}"
+    _exec("""INSERT INTO actions
+               (ref, description, assignee, assignees, meeting_id, related_meeting,
+                status, priority, deadline, parent_ref, project_id, created_by)
+             VALUES (%s,%s,%s,%s,%s,%s,'open','medium',NULL,NULL,NULL,%s)""",
+          (new_ref, desc, p[0]["owner"], [p[0]["owner"]], target_id, target_ref, author))
+    _exec("UPDATE proposal_comments SET action_ref=%s WHERE id=%s", (new_ref, cid))
+    return {"ok": True, "action_id": new_ref}
 
 
 import time

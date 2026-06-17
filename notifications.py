@@ -252,3 +252,23 @@ def notify_proposal_ready(title, owner, submitter, score, verdict, link):
         + SIGNOFF
     )
     _broadcast([], msg)   # individuals=[] -> group only (staging routes to Hillary + test group)
+
+
+def notify_proposal_comment(title, owner, commenter, body, link):
+    """Personal note to the proposal owner (+ submitter) that a new comment was posted.
+    Not the group. Staging-safe: only Hillary on staging."""
+    env = " [STAGING]" if IS_STAGING else ""
+    url = _proposal_url(link)
+    snippet = body if len(body) <= 220 else body[:220] + "…"
+    msg = (
+        f"💬 *New comment on a KimFam proposal{env}*\n"
+        f"*{title}*\n"
+        f"{commenter}: {snippet}\n"
+        f"{('View: ' + url) if url else ''}"
+        + SIGNOFF
+    )
+    if IS_STAGING:
+        _send(HILLARY_PHONE, msg)
+        return
+    for p in _proposal_owner_phones(owner):
+        _send(p, msg)
