@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToast } from '../components/Toast'
 import { BusyButton, Spinner } from '../components/Spinner'
@@ -52,10 +52,16 @@ export default function ProposalsPage() {
   const [mode, setMode] = useState<'new' | 'revision'>('new')
   const [reviseId, setReviseId] = useState('')
   const [showMatrix, setShowMatrix] = useState(false)
+  const [area, setArea] = useState('')        // project folder it is filed under
+  const [newArea, setNewArea] = useState('')
 
   const { data, isLoading } = useQuery<{ proposals: Proposal[] }>({
     queryKey: ['proposals'],
     queryFn: () => fetch('/api/proposals', { credentials: 'include' }).then(r => r.json()),
+  })
+  const { data: areasData } = useQuery<{ areas: string[] }>({
+    queryKey: ['proposal-areas'],
+    queryFn: () => fetch('/api/proposals/areas', { credentials: 'include' }).then(r => r.json()),
   })
   const { data: matrix } = useQuery<Matrix>({
     queryKey: ['proposals-matrix'],
@@ -63,16 +69,27 @@ export default function ProposalsPage() {
   })
 
   const reviseTarget = (data?.proposals || []).find(p => String(p.id) === reviseId)
+  const fileUnder = (area === '__new__' ? newArea : area).trim().replace(/^\/+|\/+$/g, '')
+
+  // In revision mode, default the filing area to wherever the target currently lives.
+  useEffect(() => {
+    if (mode === 'revision' && reviseTarget?.file_url) {
+      const m = reviseTarget.file_url.match(/^\/docs\/projects\/(.+)\/[^/]+$/)
+      if (m) { setArea('__new__'); setNewArea(m[1]) }
+    }
+  }, [reviseId, mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     if (!file) { toast.error('Choose a proposal file first'); return }
     if (mode === 'revision' && !reviseId) { toast.error('Choose which proposal this revises'); return }
     if (mode === 'new' && !owner) { toast.error('Choose whose proposal this is'); return }
+    if (!fileUnder) { toast.error('Choose where to file it (project area)'); return }
     setBusy(true)
     const tid = toast.loading(mode === 'revision' ? 'Uploading the revision…' : 'Uploading the proposal…')
     try {
       const fd = new FormData()
       fd.append('file', file)
+      fd.append('file_under', fileUnder)
       if (mode === 'revision' && reviseTarget) {
         fd.append('title', reviseTarget.title)
         fd.append('owner', reviseTarget.owner)
@@ -86,9 +103,10 @@ export default function ProposalsPage() {
       const d = ev.proposal
       const tag = d.version > 1 ? ` (v${d.version})` : ''
       toast.update(tid, `Scored${tag}: ${d.overall_score ?? '?'} / 100 (${d.verdict})`, 'success')
-      setFile(null); setTitle(''); setOwner(''); setMode('new'); setReviseId('')
+      setFile(null); setTitle(''); setOwner(''); setMode('new'); setReviseId(''); setArea(''); setNewArea('')
       setOpenId(d.id)
       qc.invalidateQueries({ queryKey: ['proposals'] })
+      qc.invalidateQueries({ queryKey: ['proposal-areas'] })
     } catch (e: any) {
       toast.update(tid, e.message, 'error')
     } finally { setBusy(false) }
@@ -152,6 +170,26 @@ export default function ProposalsPage() {
           <input type="file" accept=".docx,.pdf,.pptx,.doc,.ppt" hidden
             onChange={e => { const f = e.target.files?.[0] || null; setFile(f); if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, '')) }} />
         </label>
+
+        {/* File under (project area) — mirrors the real Documents folder tree */}
+        <div className="space-y-1.5">
+          <div className="text-[11px]" style={{ color: '#7c93b3' }}>File under (project area)</div>
+          <select value={area} onChange={e => setArea(e.target.value)}
+            className="w-full text-sm px-3 py-2 rounded-lg"
+            style={{ background: '#0d1829', border: '1px solid var(--border)', color: area ? 'var(--text-primary)' : '#64748b' }}>
+            <option value="">Choose an existing project area…</option>
+            {(areasData?.areas || []).map(a => <option key={a} value={a}>{a}</option>)}
+            <option value="__new__">+ Add a new area / deeper path…</option>
+          </select>
+          {area === '__new__' && (
+            <input type="text" value={newArea} onChange={e => setNewArea(e.target.value)}
+              placeholder="e.g. Real estates/kakoba land/Boys quarters"
+              className="w-full text-sm px-3 py-2 rounded-lg"
+              style={{ background: '#0d1829', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+          )}
+          {fileUnder && <div className="text-[10px]" style={{ color: '#64748b' }}>Documents → Projects → {fileUnder.replace(/\//g, ' → ')}</div>}
+        </div>
+
         {mode === 'new' ? (
           <>
             <input type="text" placeholder="Proposal title" value={title} onChange={e => setTitle(e.target.value)}

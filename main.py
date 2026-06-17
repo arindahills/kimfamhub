@@ -3020,6 +3020,8 @@ def get_docs():
                 rel = key[len(cat) + 1:] if key.startswith(cat + "/") else key
                 if not rel:
                     continue
+                if "_versions" in rel.split("/"):   # archived proposal versions stay hidden
+                    continue
                 parts = rel.split("/", 1)
                 group, fname = (parts[0], parts[1]) if len(parts) == 2 else ("General", parts[0])
                 base = fname.rsplit("/", 1)[-1]
@@ -3040,6 +3042,8 @@ def get_docs():
                 if f.name.startswith("~") or ".bak." in f.name:
                     continue
                 rel = f.relative_to(folder).as_posix()
+                if "_versions" in rel.split("/"):   # archived proposal versions stay hidden
+                    continue
                 parts = rel.split("/", 1)
                 group = parts[0] if len(parts) == 2 else "General"
                 groups.setdefault(group, []).append({"rel": rel, "mtime": f.stat().st_mtime})
@@ -3485,6 +3489,76 @@ def list_proposals(request: Request):
     return {"proposals": out}
 
 
+def _archive_prior_proposal_file(prior: dict):
+    """Move a superseded proposal's document into a hidden `_versions` folder beside it,
+    so the Documents repo only ever shows the current version under its real project area.
+    The proposal row's source_path is updated so its version-history link still resolves."""
+    import os as _os
+    sp = prior.get("source_path")
+    if not sp or "/_versions/" in sp:
+        return
+    parts = sp.rsplit("/", 1)
+    parent = parts[0] if len(parts) == 2 else "projects"
+    fname = parts[-1]
+    archive = f"{parent}/_versions/v{prior.get('version', 1)} - {fname}"
+    if archive == sp:
+        return
+    try:
+        from db import execute as _exec2
+        import r2_storage as _r2p
+        here = _os.path.dirname(__file__)
+        local_src = _os.path.join(here, "docs", sp)
+        local_dst = _os.path.join(here, "docs", archive)
+        raw = None
+        if _os.path.exists(local_src):
+            _os.makedirs(_os.path.dirname(local_dst), exist_ok=True)
+            with open(local_src, "rb") as _r: raw = _r.read()
+            _os.replace(local_src, local_dst)
+        if _r2p.is_configured():
+            if raw is None:
+                try:
+                    cat, fn = sp.split("/", 1)
+                    raw = _r2_bytes(cat, fn)
+                except Exception:
+                    raw = None
+            if raw is not None:
+                tmpp = f"/tmp/_arch_{_os.getpid()}"
+                with open(tmpp, "wb") as _w: _w.write(raw)
+                _r2p.upload(tmpp, archive)
+                _os.remove(tmpp)
+                try: _r2p.delete(sp)
+                except Exception: pass
+        _exec2("UPDATE proposals SET source_path=%s WHERE id=%s", (archive, prior["id"]))
+    except Exception as _e:
+        log.error(f"archive prior proposal file failed: {_e}")
+
+
+@app.get("/api/proposals/areas")
+def proposal_areas(request: Request):
+    """Existing folder paths under projects/ (for the upload 'file under' picker)."""
+    from fastapi import HTTPException as _HE
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    paths = set()
+    try:
+        import r2_storage as _r2p
+        if _r2p.is_configured():
+            for obj in _r2p.list_folder("projects/"):
+                rel = obj["key"][len("projects/"):]
+                segs = [s for s in rel.split("/")[:-1] if s and s != "_versions"]
+                for i in range(len(segs)):
+                    paths.add("/".join(segs[: i + 1]))
+        else:
+            base = DOCS_DIR / "projects"
+            if base.exists():
+                for f in base.rglob("*"):
+                    if f.is_dir() and f.name != "_versions" and "_versions" not in f.relative_to(base).parts:
+                        paths.add(f.relative_to(base).as_posix())
+    except Exception as _e:
+        log.error(f"proposal areas failed: {_e}")
+    return {"areas": sorted(paths)}
+
+
 @app.get("/api/proposals/{pid}")
 def get_proposal(pid: int, request: Request):
     from db import query as _dbq
@@ -3548,18 +3622,26 @@ async def create_proposal(request: Request):
         rows = _dbq("""SELECT * FROM proposals WHERE owner=%s AND lower(title)=lower(%s)
                        AND is_current=TRUE ORDER BY id DESC LIMIT 1""", (owner, title))
         prior = rows[0] if rows else None
+    # Where the document is filed in the Documents repo: under its real project area
+    # (e.g. "Real estates/kakoba land/Boys quarters"), mirroring the folder tree — NOT a
+    # generic Proposals bucket. Sanitize each path segment; keep the slashes.
+    file_under = (form.get("file_under") or "").strip()
+    area = "/".join(_re_docs_safe(p) for p in file_under.split("/") if p.strip()) or "Proposals"
+
     if prior:
         new_version = (prior.get("version") or 1) + 1
         thread = prior.get("thread_id") or prior["id"]
         _exec("UPDATE proposals SET is_current=FALSE WHERE thread_id=%s OR id=%s",
               (thread, thread))
+        # Tuck the prior current document into a hidden _versions folder so Documents
+        # only ever shows the current version under the real project area.
+        _archive_prior_proposal_file(prior)
     else:
         new_version = 1
         thread = None
 
-    # Store the file, versioned per title so archived versions are preserved.
-    safe_title = _re_docs_safe(title)
-    source_path = f"projects/Proposals/{safe_title}/v{new_version} - {fname}"
+    # Current version lives under its real project area, visible in Documents.
+    source_path = f"projects/{area}/{fname}"
     try:
         import r2_storage as _r2p
         if _r2p.is_configured():
@@ -3567,9 +3649,9 @@ async def create_proposal(request: Request):
             with open(tmpp, "wb") as _w: _w.write(raw)
             _r2p.upload(tmpp, source_path)
             _os.remove(tmpp)
-        _ddir = _os.path.join(_os.path.dirname(__file__), "docs", "projects", "Proposals", safe_title)
+        _ddir = _os.path.join(_os.path.dirname(__file__), "docs", *(["projects"] + area.split("/")))
         _os.makedirs(_ddir, exist_ok=True)
-        with open(_os.path.join(_ddir, f"v{new_version} - {fname}"), "wb") as _w: _w.write(raw)
+        with open(_os.path.join(_ddir, fname), "wb") as _w: _w.write(raw)
     except Exception as _e:
         log.error(f"proposal file store failed: {_e}")
 
