@@ -6777,13 +6777,19 @@ DATA GAPS:
 SENSITIVITY ANALYSIS:
 {_json.dumps(audit.get("what_would_change",[]), indent=2)}
 
-Write a board-quality analysis with these sections. Be specific, cite the numbers, be honest about what is projected vs confirmed. Do not use em-dashes. Use plain English a family with mixed business literacy can follow. Maximum 350 words.
+MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project Management deck — evaluate this project AGAINST it):
+- KPI categories to track: Project Progress (percentage of completion; milestone achievement); Budget Management (cost variance: planned vs actual; budget utilization: spent vs remaining); Quality (adherence to project requirements; stakeholder satisfaction); Risk Management (risk occurrence; mitigation effectiveness).
+- Prescribed tracking tools: Trello (project management), Wave Accounting (expense tracking, budgeting, financial reporting), Google Sheets (supplementary analysis), Google Docs / Keep (documentation and notes), Google Calendar (scheduling), and dashboards for visual KPI representation.
+
+Write a board-quality analysis with these sections. Be specific, cite the numbers, be honest about what is projected vs confirmed. Do not use em-dashes. Use plain English a family with mixed business literacy can follow. Maximum 450 words.
 
 EXECUTIVE SUMMARY (2-3 sentences: what is this project, current state, headline metric)
 
 KEY STRENGTHS (3 bullet points max)
 
 KEY RISKS (3 bullet points max, most critical first)
+
+M&E ALIGNMENT (assess the project against the Monitoring & Evaluation framework above. For each KPI category — Progress, Budget, Quality, Risk — say in one line whether it is being tracked and on course, or is a gap. Then note any prescribed tracking tool not yet in use. 4-5 bullet points.)
 
 WHAT THE FAMILY SHOULD DO NEXT (2-3 specific actions, numbered)
 
