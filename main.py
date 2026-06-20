@@ -6834,48 +6834,62 @@ BOARD RECOMMENDATION (one line: Proceed / Monitor / Hold / Urgent Action Needed 
 
 SURPRISING INSIGHT (one paragraph: something non-obvious the data reveals that the family probably has not considered)"""
 
-    import os as _os
+    import os as _os, asyncio as _aio
+    from fastapi.responses import StreamingResponse
 
-    # Try Claude first (authenticated via Claude Code CLI on this server)
-    narrative_text = _ask_claude(prompt, model="sonnet", timeout=120)
-    provider_used = "Claude Sonnet" if narrative_text else ""
-
-    # Fallback chain: Gemini → Groq
-    if not narrative_text:
-        gemini_key = _os.getenv("GEMINI_API_KEY","")
-        if gemini_key:
+    def _work():
+        # Claude first; fall back Gemini -> Groq. Blocking; runs in a worker thread.
+        txt = _ask_claude(prompt, model="sonnet", timeout=170)
+        prov = "Claude Sonnet" if txt else ""
+        if not txt and _os.getenv("GEMINI_API_KEY",""):
             try:
                 from google import genai as _genai
-                resp = _genai.Client(api_key=gemini_key).models.generate_content(
+                resp = _genai.Client(api_key=_os.getenv("GEMINI_API_KEY")).models.generate_content(
                     model="gemini-2.0-flash", contents=prompt)
-                narrative_text = resp.text; provider_used = "Gemini"
-            except: pass
-
-    if not narrative_text:
-        groq_key = _os.getenv("GROQ_API_KEY","")
-        if groq_key:
+                txt = resp.text; prov = "Gemini"
+            except Exception: pass
+        if not txt and _os.getenv("GROQ_API_KEY",""):
             try:
                 from groq import Groq as _Groq
-                resp = _Groq(api_key=groq_key).chat.completions.create(
+                resp = _Groq(api_key=_os.getenv("GROQ_API_KEY")).chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role":"user","content":prompt}], max_tokens=800)
-                narrative_text = resp.choices[0].message.content; provider_used = "Groq"
-            except: pass
-
-    if not narrative_text:
-        narrative_text = "AI analysis unavailable. Please try again."; provider_used = "none"
-
-    return {
-        "project_id": project_id,
-        "project": audit.get("project"),
-        "narrative": narrative_text,
-        "provider": provider_used,
-        "based_on": {
-            "assumptions_count": len(audit.get("assumptions",[])),
-            "formulas_count": len(audit.get("formula_derivations",[])),
-            "data_gaps_count": len(audit.get("data_gaps",[])),
+                txt = resp.choices[0].message.content; prov = "Groq"
+            except Exception: pass
+        if not txt:
+            txt = "AI analysis unavailable. Please try again."; prov = "none"
+        return {
+            "type": "result",
+            "project_id": project_id, "project": audit.get("project"),
+            "narrative": txt, "provider": prov,
+            "based_on": {
+                "assumptions_count": len(audit.get("assumptions",[])),
+                "formulas_count": len(audit.get("formula_derivations",[])),
+                "data_gaps_count": len(audit.get("data_gaps",[])),
+            },
         }
-    }
+
+    _STAGES = ["Loading project data...", "Checking the M&E framework...",
+               "Comparing against the approved proposal and reward guidelines...",
+               "Writing the board analysis with Claude (about a minute)...",
+               "Almost done, finalising the analysis..."]
+
+    async def _gen():
+        yield _sse({"type": "step", "msg": "Loading project data..."})
+        task = _aio.create_task(_aio.to_thread(_work))
+        i = 0
+        while not task.done():
+            await _aio.sleep(6)
+            if not task.done():
+                yield _sse({"type": "step", "msg": _STAGES[min(i, len(_STAGES) - 1)]}); i += 1
+        try:
+            yield _sse(task.result())
+        except Exception as _e:
+            log.error(f"narrative stream failed: {_e}")
+            yield _sse({"type": "error", "msg": "Analysis is busy right now. Please try again."})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
 

@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { streamAi } from '@/lib/aiStream'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -78,13 +80,14 @@ function parseNarrative(text: string): { key: string; body: string }[] {
 }
 
 function AiBrief({ projectId }: { projectId: string }) {
+  const [step, setStep] = useState('Analysing the project, this can take up to a minute…')
   const narrative = useMutation<Narrative>({
     mutationFn: () =>
-      fetch(`/api/projects/${projectId}/narrative`, { method: 'POST', credentials: 'include' }).then(r => r.json()),
+      streamAi(`/api/projects/${projectId}/narrative`, { method: 'POST' }, msg => setStep(msg)),
   })
 
   if (narrative.isPending) {
-    return <LoadingRow label="Analysing the project, this can take up to a minute…" />
+    return <LoadingRow label={step} />
   }
 
   if (!narrative.data) {
