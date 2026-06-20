@@ -535,7 +535,12 @@ def _nth_weekday(y, month, weekday, n):   # weekday: Mon=0 .. Sun=6
     return d0 + timedelta(days=(weekday - d0.weekday()) % 7 + 7 * (n - 1))
 
 def _holidays_for(d):
-    """Return [(key, label, emoji, scope)] for date d. scope: group|fathers|mothers."""
+    """Return [(key, label, emoji, scope)] for date d. scope: group|fathers|mothers.
+
+    POLICY (KimFam is a Christian family): only Christian holidays (Christmas, Easter),
+    civic/national Uganda public holidays, and family days (Father's/Mother's Day) are
+    allowed here. Do NOT add pagan or other-religion holidays (no Halloween, Valentine's,
+    solstices, Eid, Diwali, etc.). See memory feedback-kimfam-christian-family."""
     y, out = d.year, []
     fixed = {
         (1, 1):  ("new_year", "Happy New Year", "🎉"),
