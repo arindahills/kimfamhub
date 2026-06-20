@@ -6796,6 +6796,34 @@ async def project_audit(project_id: str, request: Request):
     return _build_audit_data(project_id)
 
 
+# The deck's M&E detail lives in SmartArt the text extractor can't read, so the framework
+# is kept in an editable file (me_framework.md) the evaluator reads, NOT hardcoded. Edit the
+# file (or point KIMFAM_ME_FRAMEWORK_PATH at a server file for no-deploy edits); the built-in
+# default below is the fallback if the file is missing. (#5)
+_ME_FRAMEWORK_DEFAULT = (
+    "MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project "
+    "Management deck — evaluate this project AGAINST it):\n"
+    "- KPI categories to track: Project Progress (percentage of completion; milestone "
+    "achievement); Budget Management (cost variance: planned vs actual; budget utilization: "
+    "spent vs remaining); Quality (adherence to project requirements; stakeholder "
+    "satisfaction); Risk Management (risk occurrence; mitigation effectiveness).\n"
+    "- Prescribed tracking tools: Trello, Wave Accounting, Google Sheets, Google Docs / Keep, "
+    "Google Calendar, and dashboards for visual KPI representation."
+)
+
+def _me_framework_text() -> str:
+    import os as _os
+    path = _os.environ.get("KIMFAM_ME_FRAMEWORK_PATH") or _os.path.join(_os.path.dirname(__file__), "me_framework.md")
+    try:
+        if _os.path.exists(path):
+            t = open(path, encoding="utf-8").read().strip()
+            if t:
+                return t
+    except Exception as _e:
+        log.error(f"M&E framework read failed: {_e}")
+    return _ME_FRAMEWORK_DEFAULT
+
+
 @app.post("/api/projects/{project_id}/narrative")
 async def project_narrative(project_id: str, request: Request):
     from fastapi import HTTPException as _HE
@@ -6804,6 +6832,7 @@ async def project_narrative(project_id: str, request: Request):
     if not ok: raise _HE(status_code=401, detail="Auth required")
 
     audit = _build_audit_data(project_id)
+    me_framework = _me_framework_text()
 
     # P2 (#2): link the live project to its approved proposal + the reward guidelines, so the
     # review also checks delivery-vs-promise and reward-guideline compliance.
@@ -6850,9 +6879,7 @@ DATA GAPS:
 SENSITIVITY ANALYSIS:
 {_json.dumps(audit.get("what_would_change",[]), indent=2)}
 
-MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project Management deck — evaluate this project AGAINST it):
-- KPI categories to track: Project Progress (percentage of completion; milestone achievement); Budget Management (cost variance: planned vs actual; budget utilization: spent vs remaining); Quality (adherence to project requirements; stakeholder satisfaction); Risk Management (risk occurrence; mitigation effectiveness).
-- Prescribed tracking tools: Trello (project management), Wave Accounting (expense tracking, budgeting, financial reporting), Google Sheets (supplementary analysis), Google Docs / Keep (documentation and notes), Google Calendar (scheduling), and dashboards for visual KPI representation.
+{me_framework}
 {prop_block}{reward_block}
 Write a board-quality analysis with these sections. Be specific, cite the numbers, be honest about what is projected vs confirmed. Do not use em-dashes. Use plain English a family with mixed business literacy can follow. Maximum 550 words.
 

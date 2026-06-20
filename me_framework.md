@@ -1,0 +1,3 @@
+MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project Management deck — evaluate this project AGAINST it):
+- KPI categories to track: Project Progress (percentage of completion; milestone achievement); Budget Management (cost variance: planned vs actual; budget utilization: spent vs remaining); Quality (adherence to project requirements; stakeholder satisfaction); Risk Management (risk occurrence; mitigation effectiveness).
+- Prescribed tracking tools: Trello (project management), Wave Accounting (expense tracking, budgeting, financial reporting), Google Sheets (supplementary analysis), Google Docs / Keep (documentation and notes), Google Calendar (scheduling), and dashboards for visual KPI representation.
