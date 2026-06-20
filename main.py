@@ -479,8 +479,17 @@ async def set_action_meta(request: Request):
         if pid is not None and pid not in PROJECT_NAMES:
             raise _HE(status_code=400, detail="Unknown project_id")
         sets.append("project_id=%s"); params.append(pid)
+    if "meeting_ref" in body:
+        mref = (body.get("meeting_ref") or "").strip()
+        if not mref:
+            raise _HE(status_code=400, detail="meeting_ref cannot be empty")
+        mrow = _dbq("SELECT id, ref FROM meetings WHERE ref=%s", (mref,))
+        if not mrow:
+            raise _HE(status_code=400, detail=f"Unknown meeting: {mref}")
+        sets.append("meeting_id=%s"); params.append(mrow[0]["id"])
+        sets.append("related_meeting=%s"); params.append(mrow[0]["ref"])
     if not sets:
-        raise _HE(status_code=400, detail="Nothing to update (item_type and/or project_id)")
+        raise _HE(status_code=400, detail="Nothing to update (item_type, project_id and/or meeting_ref)")
     params.append(ref)
     try:
         _exec(f"UPDATE actions SET {', '.join(sets)} WHERE ref=%s", tuple(params))
@@ -972,6 +981,7 @@ Extract and return ONLY valid JSON (no markdown, no explanation) in this exact s
       "assignee": "member name or All Members",
       "deadline": "YYYY-MM-DD or null",
       "priority": "high|medium|low",
+      "project_id": "the related project id from the allowed list below, or null",
       "matches_existing": "KIM/ref if this updates an existing action or null"
     }}
   ],
@@ -990,6 +1000,7 @@ Rules:
 - If an existing action is being carried over with a new deadline, add it to new_actions with matches_existing set.
 - Assignee names must match exactly: Hillary, Hellen, Alex, Solomon, Viola, Max, James, or "All Members".
 - Deadlines must be absolute dates (YYYY-MM-DD). If relative ("next week"), compute from meeting date {mtg['date']}.
+- project_id must be one of [{', '.join(PROJECT_NAMES)}] when the action clearly belongs to that project, else null.
 """
 
     # ── 4. Extract via the AI chain (Claude primary → DeepSeek → Groq). The
@@ -1115,6 +1126,8 @@ def _confirm_meeting_impl(meeting_id: int, body: dict, author: str):
         priority  = a.get("priority") or "medium"
         parent    = a.get("matches_existing") or None
         project   = (a.get("project_id") or "").strip() or None
+        if project not in PROJECT_NAMES:   # drop hallucinated/invalid ids from the model
+            project = None
         if not desc:
             continue
 

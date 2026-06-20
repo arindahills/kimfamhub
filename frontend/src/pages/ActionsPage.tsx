@@ -28,6 +28,7 @@ interface ActionItem {
   item_type: ItemType
   parent_ref: string | null
   meeting_number: string | null
+  meeting_ref: string | null
   updated_at: string | null
 }
 
@@ -76,7 +77,7 @@ function effortLabel(hours: number | null): string | null {
   return `${Math.round(hours / 8)}d`
 }
 
-function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onSetStatus, onJumpTo, projects, onSetMeta }: {
+function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onSetStatus, onJumpTo, projects, meetings, onSetMeta }: {
   item: ActionItem
   carriedIntoRef: string | null
   isAdmin: boolean
@@ -86,7 +87,8 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
   onSetStatus: (id: string, status: DbStatus) => Promise<void>
   onJumpTo: (ref: string) => void
   projects: { id: string; name: string }[]
-  onSetMeta: (id: string, patch: { item_type?: ItemType; project_id?: string | null }) => Promise<void>
+  meetings: { ref: string; number: string }[]
+  onSetMeta: (id: string, patch: { item_type?: ItemType; project_id?: string | null; meeting_ref?: string }) => Promise<void>
 }) {
   const s = STATUS_STYLE[item.status] ?? STATUS_STYLE.open
   const ty = TYPE_STYLE[item.item_type] ?? TYPE_STYLE.task
@@ -289,6 +291,14 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
             <option value="">No project</option>
             {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
+          <select value={item.meeting_ref || ''}
+            onChange={e => e.target.value && onSetMeta(item.id, { meeting_ref: e.target.value })}
+            title="Move to meeting (sprint)"
+            className="text-[11px] px-2 py-1 rounded-lg outline-none"
+            style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }}>
+            <option value="">No meeting</option>
+            {meetings.map(m => <option key={m.ref} value={m.ref}>{m.ref}</option>)}
+          </select>
         </div>
       )}
 
@@ -403,6 +413,7 @@ export default function ActionsPage() {
             item_type: (a.item_type || 'task') as ItemType,
             parent_ref: a.parent_ref || null,
             meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
+            meeting_ref: a.meeting || null,
             updated_at: a.note || null,
           })
         }
@@ -416,7 +427,14 @@ export default function ActionsPage() {
     queryFn: () => fetch('/api/projects/list', { credentials: 'include' }).then(r => r.json()).then(d => d.projects || []),
   })
 
-  const setMeta = async (id: string, patch: { item_type?: ItemType; project_id?: string | null }) => {
+  const { data: meetingsList = [] } = useQuery<{ ref: string; number: string }[]>({
+    queryKey: ['meetings-list'],
+    queryFn: () => fetch('/api/meetings', { credentials: 'include' }).then(r => r.json())
+      .then(d => (Array.isArray(d) ? d : []).map((m: any) => ({ ref: m.meeting_ref, number: m.meeting_number }))
+        .filter((m: any) => m.ref)),
+  })
+
+  const setMeta = async (id: string, patch: { item_type?: ItemType; project_id?: string | null; meeting_ref?: string }) => {
     try {
       const r = await fetch('/api/actions/meta', {
         method: 'PATCH', credentials: 'include',
@@ -426,6 +444,7 @@ export default function ActionsPage() {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
       toast.success(`${id} updated`)
       qc.invalidateQueries({ queryKey: ['actions'] })
+      if (patch.meeting_ref) qc.invalidateQueries({ queryKey: ['meetings-list'] })
     } catch (e: any) { toast.error(`Could not update: ${e.message}`) }
   }
 
@@ -607,22 +626,18 @@ export default function ActionsPage() {
             {v === 'list' ? 'List' : 'Board'}
           </button>
         ))}
-        {view === 'list' && (
-          <>
-            <span className="ml-2 text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Group</span>
-            {GROUPS.map(g => (
-              <button key={g.key} onClick={() => setGroupBy(g.key)}
-                className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                style={{
-                  background: groupBy === g.key ? '#334155' : 'transparent',
-                  color: groupBy === g.key ? '#e2e8f0' : '#475569',
-                  border: '1px solid #334155',
-                }}>
-                {g.label}
-              </button>
-            ))}
-          </>
-        )}
+        <span className="ml-2 text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>{view === 'board' ? 'Swimlanes' : 'Group'}</span>
+        {GROUPS.map(g => (
+          <button key={g.key} onClick={() => setGroupBy(g.key)}
+            className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+            style={{
+              background: groupBy === g.key ? '#334155' : 'transparent',
+              color: groupBy === g.key ? '#e2e8f0' : '#475569',
+              border: '1px solid #334155',
+            }}>
+            {g.label}
+          </button>
+        ))}
       </div>
 
       {/* Search */}
@@ -643,34 +658,39 @@ export default function ActionsPage() {
         </p>
       )}
 
-      {/* Board view: status columns (drag on desktop / status select anywhere, admin) */}
-      {view === 'board' && !isLoading && (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {BOARD_COLUMNS.map(col => {
-            const colItems = visible.filter(a => inColumn(a, col.key))
-            return (
-              <div key={col.key}
-                onDragOver={e => { if (isAdmin) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
-                onDrop={e => {
-                  if (!isAdmin) return
-                  e.preventDefault()
-                  const id = e.dataTransfer.getData('text/plain')
-                  if (!id || !(id in statusById) || inColumn({ status: statusById[id] } as ActionItem, col.key)) return  // skip unknown/same-column
-                  setStatus(id, col.key)
-                }}
-                className="shrink-0 rounded-xl p-2" style={{ width: 260, background: '#0d182955', border: '1px solid var(--border)' }}>
-                <div className="flex items-center justify-between mb-2 px-1">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: col.color }}>{col.label}</span>
-                  <span className="text-[10px]" style={{ color: '#475569' }}>{colItems.length}</span>
+      {/* Board view: swimlanes (by Group-by) × status columns. Drag (desktop) / status select (admin). */}
+      {view === 'board' && !isLoading && groupEntries.map(([laneName, laneItems]) => (
+        <div key={laneName} className="mb-4">
+          <h3 className="text-[11px] font-semibold mb-2 uppercase tracking-wider" style={{ color: '#475569' }}>
+            {laneName} ({laneItems.length})
+          </h3>
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {BOARD_COLUMNS.map(col => {
+              const colItems = laneItems.filter(a => inColumn(a, col.key))
+              return (
+                <div key={col.key}
+                  onDragOver={e => { if (isAdmin) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                  onDrop={e => {
+                    if (!isAdmin) return
+                    e.preventDefault()
+                    const id = e.dataTransfer.getData('text/plain')
+                    if (!id || !(id in statusById) || inColumn({ status: statusById[id] } as ActionItem, col.key)) return  // skip unknown/same-column
+                    setStatus(id, col.key)
+                  }}
+                  className="shrink-0 rounded-xl p-2" style={{ width: 240, background: '#0d182955', border: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: col.color }}>{col.label}</span>
+                    <span className="text-[10px]" style={{ color: '#475569' }}>{colItems.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {colItems.map(a => <BoardCard key={a.id} item={a} isAdmin={isAdmin} onSetStatus={setStatus} />)}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  {colItems.map(a => <BoardCard key={a.id} item={a} isAdmin={isAdmin} onSetStatus={setStatus} />)}
-                </div>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
         </div>
-      )}
+      ))}
 
       {/* List view */}
       {view === 'list' && groupEntries.map(([groupName, groupItems]) => (
@@ -692,6 +712,7 @@ export default function ActionsPage() {
                 onSetStatus={setStatus}
                 onJumpTo={jumpTo}
                 projects={projects}
+                meetings={meetingsList}
                 onSetMeta={setMeta}
               />
             ))}
