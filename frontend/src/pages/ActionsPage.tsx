@@ -10,7 +10,8 @@ const ADMIN_USERS = ['Hillary', 'Hellen']
 type DbStatus  = 'open' | 'in_progress' | 'blocked' | 'done' | 'cancelled' | 'carried_over'
 type Health    = 'overdue' | 'at_risk' | 'on_track' | null
 type Priority  = 'high' | 'medium' | 'low' | null
-type FilterTab = 'active' | 'overdue' | 'done' | 'all'
+type FilterTab = 'active' | 'this_meeting' | 'overdue' | 'due_soon' | 'done' | 'all'
+type GroupBy   = 'assignee' | 'project' | 'meeting'
 
 interface ActionItem {
   id: string            // action ref e.g. "KIM/08/26-1"
@@ -261,6 +262,7 @@ export default function ActionsPage() {
   const toast = useToast()
   const isAdmin = ADMIN_USERS.includes(user?.name || '')
   const [filter, setFilter] = useState<FilterTab>('active')
+  const [groupBy, setGroupBy] = useState<GroupBy>('assignee')
   const [search, setSearch] = useState('')
 
   const { data: items = [], isLoading } = useQuery<ActionItem[]>({
@@ -356,12 +358,24 @@ export default function ActionsPage() {
   const isActive = (a: ActionItem) =>
     a.status === 'open' || a.status === 'in_progress' || a.status === 'blocked'
 
+  // Meeting (= sprint) number parsed from "010/2026" -> 10. Latest = most recent meeting
+  // that has actions, so "This meeting" surfaces the last sprint's items for review.
+  const meetingNum = (m: string | null) => {
+    if (!m) return -1
+    const n = parseInt(m.split('/')[0], 10)
+    return isNaN(n) ? -1 : n
+  }
+  const latestMeeting = items.reduce((mx, a) => Math.max(mx, meetingNum(a.meeting_number)), -1)
+  const isThisMeeting = (a: ActionItem) => latestMeeting > 0 && meetingNum(a.meeting_number) === latestMeeting
+
   const visible = items.filter(a => {
     const matchFilter =
-      filter === 'all'     ? true :
-      filter === 'active'  ? isActive(a) :
-      filter === 'overdue' ? a.health === 'overdue' :
-      filter === 'done'    ? (a.status === 'done' || a.status === 'cancelled' || a.status === 'carried_over') :
+      filter === 'all'          ? true :
+      filter === 'active'       ? isActive(a) :
+      filter === 'this_meeting' ? isThisMeeting(a) :
+      filter === 'overdue'      ? a.health === 'overdue' :
+      filter === 'due_soon'     ? a.health === 'at_risk' :
+      filter === 'done'         ? (a.status === 'done' || a.status === 'cancelled' || a.status === 'carried_over') :
       true
     if (!matchFilter) return false
     if (search) {
@@ -377,18 +391,33 @@ export default function ActionsPage() {
   })
 
   const counts = {
-    active:  items.filter(isActive).length,
-    overdue: items.filter(a => a.health === 'overdue').length,
-    done:    items.filter(a => a.status === 'done' || a.status === 'cancelled' || a.status === 'carried_over').length,
-    all:     items.length,
+    active:       items.filter(isActive).length,
+    this_meeting: items.filter(isThisMeeting).length,
+    overdue:      items.filter(a => a.health === 'overdue').length,
+    due_soon:     items.filter(a => a.health === 'at_risk').length,
+    done:         items.filter(a => a.status === 'done' || a.status === 'cancelled' || a.status === 'carried_over').length,
+    all:          items.length,
   }
 
   const FILTERS: { key: FilterTab; label: string; color: string }[] = [
-    { key: 'active',  label: `Active (${counts.active})`,   color: '#60a5fa' },
-    { key: 'overdue', label: `Overdue (${counts.overdue})`, color: '#f87171' },
-    { key: 'done',    label: `Done (${counts.done})`,       color: '#4ade80' },
-    { key: 'all',     label: `All (${counts.all})`,         color: '#94a3b8' },
+    { key: 'active',       label: `Active (${counts.active})`,            color: '#60a5fa' },
+    { key: 'this_meeting', label: `This meeting (${counts.this_meeting})`, color: '#a78bfa' },
+    { key: 'overdue',      label: `Overdue (${counts.overdue})`,          color: '#f87171' },
+    { key: 'due_soon',     label: `Due soon (${counts.due_soon})`,        color: '#fbbf24' },
+    { key: 'done',         label: `Done (${counts.done})`,                color: '#4ade80' },
+    { key: 'all',          label: `All (${counts.all})`,                  color: '#94a3b8' },
   ]
+
+  const GROUPS: { key: GroupBy; label: string }[] = [
+    { key: 'assignee', label: 'By person' },
+    { key: 'project',  label: 'By project' },
+    { key: 'meeting',  label: 'By meeting' },
+  ]
+  const titleCase = (s: string) => s.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const groupKeyOf = (a: ActionItem) =>
+    groupBy === 'assignee' ? a.responsible :
+    groupBy === 'project'  ? (a.project_id ? titleCase(a.project_id) : 'No project') :
+                             (a.meeting_number ? `KIM ${a.meeting_number}` : 'No meeting')
 
   // Reverse the parent_ref links so a carried-over action can point DOWN to the
   // action it was carried/restated into (child.parent_ref === parent.id).
@@ -397,11 +426,17 @@ export default function ActionsPage() {
     if (a.parent_ref) carriedIntoByRef[a.parent_ref] = a.id
   }
 
-  const byPerson: Record<string, ActionItem[]> = {}
+  const groups: Record<string, ActionItem[]> = {}
   for (const a of visible) {
-    if (!byPerson[a.responsible]) byPerson[a.responsible] = []
-    byPerson[a.responsible].push(a)
+    const k = groupKeyOf(a)
+    if (!groups[k]) groups[k] = []
+    groups[k].push(a)
   }
+  // Newest meeting first when grouping by meeting; otherwise alphabetical.
+  const groupEntries = Object.entries(groups).sort((x, y) =>
+    groupBy === 'meeting'
+      ? meetingNum(y[0].replace(/^KIM\s*/, '')) - meetingNum(x[0].replace(/^KIM\s*/, ''))
+      : x[0].localeCompare(y[0]))
 
   return (
     <div className="max-w-2xl md:max-w-5xl mx-auto space-y-4">
@@ -417,6 +452,22 @@ export default function ActionsPage() {
               border: filter === f.key ? `1px solid ${f.color}55` : '1px solid #334155',
             }}>
             {f.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Group-by toggle */}
+      <div className="flex gap-2 items-center flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Group</span>
+        {GROUPS.map(g => (
+          <button key={g.key} onClick={() => setGroupBy(g.key)}
+            className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+            style={{
+              background: groupBy === g.key ? '#334155' : 'transparent',
+              color: groupBy === g.key ? '#e2e8f0' : '#475569',
+              border: '1px solid #334155',
+            }}>
+            {g.label}
           </button>
         ))}
       </div>
@@ -439,14 +490,14 @@ export default function ActionsPage() {
         </p>
       )}
 
-      {Object.entries(byPerson).map(([person, personItems]) => (
-        <div key={person}>
+      {groupEntries.map(([groupName, groupItems]) => (
+        <div key={groupName}>
           <h3 className="text-[11px] font-semibold mb-2 uppercase tracking-wider"
             style={{ color: '#475569' }}>
-            {person} ({personItems.length})
+            {groupName} ({groupItems.length})
           </h3>
           <div className="space-y-2">
-            {personItems.map(a => (
+            {groupItems.map(a => (
               <ActionCard
                 key={a.id}
                 item={a}
