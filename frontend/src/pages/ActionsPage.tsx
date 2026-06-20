@@ -11,7 +11,7 @@ type DbStatus  = 'open' | 'in_progress' | 'blocked' | 'done' | 'cancelled' | 'ca
 type Health    = 'overdue' | 'at_risk' | 'on_track' | null
 type Priority  = 'high' | 'medium' | 'low' | null
 type FilterTab = 'active' | 'this_meeting' | 'overdue' | 'due_soon' | 'done' | 'all'
-type GroupBy   = 'assignee' | 'project' | 'meeting'
+type GroupBy   = 'assignee' | 'project' | 'asset_class' | 'meeting'
 type ItemType  = 'epic' | 'feature' | 'task' | 'bug'
 
 interface ActionItem {
@@ -25,6 +25,7 @@ interface ActionItem {
   effort_hours: number | null
   project_id: string | null
   project_name: string | null
+  asset_class: string | null
   item_type: ItemType
   parent_ref: string | null
   meeting_number: string | null
@@ -410,6 +411,7 @@ export default function ActionsPage() {
             effort_hours: a.effort_hours ?? null,
             project_id: a.project_id || null,
             project_name: a.project_name || null,
+            asset_class: a.asset_class || null,
             item_type: (a.item_type || 'task') as ItemType,
             parent_ref: a.parent_ref || null,
             meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
@@ -563,15 +565,17 @@ export default function ActionsPage() {
   ]
 
   const GROUPS: { key: GroupBy; label: string }[] = [
-    { key: 'assignee', label: 'By person' },
-    { key: 'project',  label: 'By project' },
-    { key: 'meeting',  label: 'By meeting' },
+    { key: 'assignee',    label: 'By person' },
+    { key: 'project',     label: 'By project' },
+    { key: 'asset_class', label: 'By asset class' },
+    { key: 'meeting',     label: 'By meeting' },
   ]
   const titleCase = (s: string) => s.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   const groupKeyOf = (a: ActionItem) =>
-    groupBy === 'assignee' ? a.responsible :
-    groupBy === 'project'  ? (a.project_name || (a.project_id ? titleCase(a.project_id) : 'No project')) :
-                             (a.meeting_number ? `KIM ${a.meeting_number}` : 'No meeting')
+    groupBy === 'assignee'    ? a.responsible :
+    groupBy === 'project'     ? (a.project_name || (a.project_id ? titleCase(a.project_id) : 'No project')) :
+    groupBy === 'asset_class' ? (a.asset_class || 'No asset class') :
+                                (a.meeting_number ? `KIM ${a.meeting_number}` : 'No meeting')
 
   // Reverse the parent_ref links so a carried-over action can point DOWN to the
   // action it was carried/restated into (child.parent_ref === parent.id).

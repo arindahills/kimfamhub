@@ -249,13 +249,31 @@ def meetings_analytics(request: Request):
     }
 
 
-# Canonical project id -> display name (epics in the Jira-lite model). Single source of truth.
+# Project taxonomy, grounded in the Investment & Reward Guidelines (Ch.3 Asset Allocation):
+# venture id -> display name, and venture -> asset class (the portfolio level). Single source
+# of truth for action tagging + board grouping.
 PROJECT_NAMES = {
-    "chicken": "Free Range Chicken", "washing_bay": "Washing Bay",
-    "sheep": "Sheep (Dorper)", "goats": "Goats", "dairy": "Dairy / Cows",
-    "mango": "Mango & Oranges", "trees": "Tree Planting", "bees": "Apiary",
-    "rabbits": "Rabbits", "irrigation": "Irrigation & Bananas",
-    "fortune_credit": "Fortune Credit", "kakoba": "Kakoba Land",
+    # Real Estate (30-50%)
+    "kakoba": "Kakoba Land", "apartments": "Apartments",
+    # Farming & Agriculture (20-40%)
+    "chicken": "Free Range Chicken", "dairy": "Dairy / Cows", "goats": "Goats",
+    "sheep": "Sheep (Dorper)", "rabbits": "Rabbits", "bees": "Apiary",
+    "trees": "Tree Planting", "mango": "Mangoes & Oranges", "irrigation": "Irrigation & Bananas",
+    # Business Ventures (10-30%)
+    "washing_bay": "Washing Bay", "hotels": "Hotels / Cottages / Lodges", "restaurants": "Restaurants",
+    # Unit Trusts (5-15%)
+    "unit_trusts": "Unit Trusts", "fortune_credit": "Fortune Credit",
+    # Government Securities (5-15%) / Cash (0-10%)
+    "govt_securities": "Government Securities", "cash": "Cash & Equivalents",
+}
+PROJECT_ASSET_CLASS = {
+    "kakoba": "Real Estate", "apartments": "Real Estate",
+    "chicken": "Farming & Agriculture", "dairy": "Farming & Agriculture", "goats": "Farming & Agriculture",
+    "sheep": "Farming & Agriculture", "rabbits": "Farming & Agriculture", "bees": "Farming & Agriculture",
+    "trees": "Farming & Agriculture", "mango": "Farming & Agriculture", "irrigation": "Farming & Agriculture",
+    "washing_bay": "Business Ventures", "hotels": "Business Ventures", "restaurants": "Business Ventures",
+    "unit_trusts": "Unit Trusts", "fortune_credit": "Unit Trusts",
+    "govt_securities": "Government Securities", "cash": "Cash & Cash Equivalents",
 }
 _VALID_ITEM_TYPES = {"epic", "feature", "task", "bug"}
 
@@ -332,6 +350,7 @@ def get_actions(status: str = "open"):
             "effort_hours": float(r["effort_hours"]) if r["effort_hours"] else None,
             "project_id":   r["project_id"],
             "project_name": PROJECT_NAMES.get(r["project_id"]) if r["project_id"] else None,
+            "asset_class":  PROJECT_ASSET_CLASS.get(r["project_id"]) if r["project_id"] else None,
             "item_type":    r.get("item_type") or "task",
             "parent_ref":   r["parent_ref"],
             "health":       health,
@@ -450,7 +469,10 @@ def projects_list(request: Request):
     from fastapi import HTTPException as _HE
     if not _auth_verify(_get_tok(request)):
         raise _HE(status_code=401, detail="Login required")
-    return {"projects": [{"id": k, "name": v} for k, v in sorted(PROJECT_NAMES.items(), key=lambda x: x[1])]}
+    return {"projects": [
+        {"id": k, "name": v, "asset_class": PROJECT_ASSET_CLASS.get(k, "")}
+        for k, v in sorted(PROJECT_NAMES.items(), key=lambda x: (PROJECT_ASSET_CLASS.get(x[0], ""), x[1]))
+    ]}
 
 
 @app.patch("/api/actions/meta")
