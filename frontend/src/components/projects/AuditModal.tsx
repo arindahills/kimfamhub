@@ -59,6 +59,8 @@ const NARRATIVE_SECTIONS = [
   { key: 'KEY STRENGTHS', color: '#22c55e', icon: '✅' },
   { key: 'KEY RISKS', color: '#ef4444', icon: '⚠️' },
   { key: 'M&E ALIGNMENT', color: '#38bdf8', icon: '📊' },
+  { key: 'PROPOSAL ALIGNMENT', color: '#c084fc', icon: '📑' },
+  { key: 'REWARD COMPLIANCE', color: '#34d399', icon: '⚖️' },
   { key: 'WHAT THE FAMILY SHOULD DO NEXT', color: '#f59e0b', icon: '🎯' },
   { key: 'BOARD RECOMMENDATION', color: '#a78bfa', icon: '⚖️' },
   { key: 'SURPRISING INSIGHT', color: '#fcd34d', icon: '💡' },

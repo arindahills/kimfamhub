@@ -6765,6 +6765,35 @@ async def project_narrative(project_id: str, request: Request):
 
     audit = _build_audit_data(project_id)
 
+    # P2 (#2): link the live project to its approved proposal + the reward guidelines, so the
+    # review also checks delivery-vs-promise and reward-guideline compliance.
+    _PROJ_PROPOSAL_KW = {"chicken": "chicken", "trees": "eucalyptus", "bees": "bee",
+                         "irrigation": "irrigation", "washing_bay": "wash"}
+    prop_block = ""
+    kw = _PROJ_PROPOSAL_KW.get(project_id)
+    if kw:
+        try:
+            from db import query as _dbq3
+            pr = _dbq3("""SELECT title, overall_score, verdict, summary FROM proposals
+                          WHERE is_current=TRUE AND title ILIKE %s ORDER BY id DESC LIMIT 1""",
+                       (f"%{kw}%",))
+            if pr:
+                p0 = pr[0]
+                prop_block = (
+                    f"\nAPPROVED PROPOSAL (what the family committed to for this project):\n"
+                    f"Title: {p0['title']} (readiness {p0.get('overall_score')}/100, {p0.get('verdict')})\n"
+                    f"Proposal summary: {(p0.get('summary') or '')[:600]}\n")
+        except Exception as _pe:
+            log.error(f"narrative proposal link failed: {_pe}")
+    try:
+        # Reward guidelines portion only (skip the PM-framework half), kept small so the
+        # non-streaming narrative call stays under the proxy timeout. (Streaming = #3.)
+        _fw = _proposal_framework_context()
+        _ri = _fw.find("INVESTMENT & REWARD")
+        reward_block = "\nINVESTMENT & REWARD GUIDELINES (the family's rules):\n" + (_fw[_ri:_ri + 1800] if _ri >= 0 else _fw[:1800])
+    except Exception:
+        reward_block = ""
+
     prompt = f"""You are a seasoned agricultural investment analyst reviewing a Ugandan family investment club's farm project.
 
 PROJECT: {audit.get("project")} | STATUS: {audit.get("status")}
@@ -6784,8 +6813,8 @@ SENSITIVITY ANALYSIS:
 MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project Management deck — evaluate this project AGAINST it):
 - KPI categories to track: Project Progress (percentage of completion; milestone achievement); Budget Management (cost variance: planned vs actual; budget utilization: spent vs remaining); Quality (adherence to project requirements; stakeholder satisfaction); Risk Management (risk occurrence; mitigation effectiveness).
 - Prescribed tracking tools: Trello (project management), Wave Accounting (expense tracking, budgeting, financial reporting), Google Sheets (supplementary analysis), Google Docs / Keep (documentation and notes), Google Calendar (scheduling), and dashboards for visual KPI representation.
-
-Write a board-quality analysis with these sections. Be specific, cite the numbers, be honest about what is projected vs confirmed. Do not use em-dashes. Use plain English a family with mixed business literacy can follow. Maximum 450 words.
+{prop_block}{reward_block}
+Write a board-quality analysis with these sections. Be specific, cite the numbers, be honest about what is projected vs confirmed. Do not use em-dashes. Use plain English a family with mixed business literacy can follow. Maximum 550 words.
 
 EXECUTIVE SUMMARY (2-3 sentences: what is this project, current state, headline metric)
 
@@ -6794,6 +6823,10 @@ KEY STRENGTHS (3 bullet points max)
 KEY RISKS (3 bullet points max, most critical first)
 
 M&E ALIGNMENT (assess the project against the Monitoring & Evaluation framework above. For each KPI category — Progress, Budget, Quality, Risk — say in one line whether it is being tracked and on course, or is a gap. Then note any prescribed tracking tool not yet in use. 4-5 bullet points.)
+
+PROPOSAL ALIGNMENT (only if an approved proposal is provided above: is the live project delivering what the proposal promised? Compare promised vs actual on the things the proposal committed to — budget, returns/payback, timeline, scope. 2-4 bullet points. If no proposal was provided, write one line: "No approved proposal is linked to this project yet.")
+
+REWARD COMPLIANCE (using the Investment & Reward Guidelines above: is this project's participation and reward-sharing in line with the guidelines, and what should be checked or corrected? 2-3 bullet points.)
 
 WHAT THE FAMILY SHOULD DO NEXT (2-3 specific actions, numbered)
 
