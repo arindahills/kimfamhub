@@ -616,7 +616,47 @@ def _transcribe_audio(audio_bytes: bytes, audio_name: str, groq_key: str) -> str
 
 
 @app.post("/api/meetings/{meeting_id}/process")
-async def process_meeting(meeting_id: int, request: Request,
+async def process_meeting(meeting_id: int, request: Request):
+    """Streamed wrapper: runs the (long) transcribe+extract work as a task while emitting
+    SSE heartbeats, so audio/long transcripts survive the ~60s edge timeout and the user
+    sees live progress. The body is read once up-front (Starlette caches it) so the inner
+    impl can re-read the cached form during streaming."""
+    from fastapi import HTTPException as _HE
+    from fastapi.responses import StreamingResponse
+    import asyncio as _aio
+    payload = _auth_verify(_get_tok(request))
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    await request.form()   # consume + cache the multipart body before streaming starts
+
+    _STAGES = ["Transcribing the recording (long audio is split into 15-min chunks)...",
+               "Condensing the transcript...",
+               "Extracting actions and decisions with Claude...",
+               "Reconciling against open actions...",
+               "Almost done, finalising..."]
+
+    async def _gen():
+        yield _sse({"type": "step", "msg": "Processing the meeting..."})
+        task = _aio.create_task(_process_meeting_impl(meeting_id, request))
+        i = 0
+        while not task.done():
+            await _aio.sleep(6)
+            if not task.done():
+                yield _sse({"type": "step", "msg": _STAGES[min(i, len(_STAGES) - 1)]}); i += 1
+        try:
+            res = task.result()
+            yield _sse({**res, "type": "result"})
+        except _HE as he:
+            yield _sse({"type": "error", "msg": str(he.detail)})
+        except Exception as e:
+            log.error(f"process_meeting stream failed: {e}")
+            yield _sse({"type": "error", "msg": "Processing failed. Please try again."})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+
+async def _process_meeting_impl(meeting_id: int, request: Request,
     audio_file: "UploadFile | None" = None,
     transcript_text: str = "",
     transcript_file: "UploadFile | None" = None,

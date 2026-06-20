@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useToast } from './Toast'
+import { streamAi } from '../lib/aiStream'
 
 type TextMode = 'paste' | 'file'
 type Stage    = 'input' | 'review' | 'doc'
@@ -152,19 +153,10 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
       }
       if (notes.trim()) fd.append('secretary_notes', notes)
 
-      const res  = await fetch(`/api/meetings/${meetingId}/process`, {
-        method: 'POST', credentials: 'include', body: fd,
-      })
-      // The AI step can be slow; if the gateway times out or the app is mid-deploy
-      // the body is an HTML error page, not JSON. Handle that without a cryptic crash.
-      const ct = res.headers.get('content-type') || ''
-      if (!ct.includes('application/json')) {
-        throw new Error(res.status === 504 || res.status === 502
-          ? 'The AI took too long or the server is busy. Please try Extract again in a moment.'
-          : `Server returned an unexpected response (${res.status}). Please try again.`)
-      }
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Processing failed')
+      // Streamed: heartbeats keep the connection alive through long transcription +
+      // extraction (no more 60s gateway cut), with live progress in the toast.
+      const data = await streamAi(`/api/meetings/${meetingId}/process`,
+        { method: 'POST', body: fd }, msg => toast.update(tid, msg, 'loading'))
 
       setResult(data)
       const normalised: Extracted = {
