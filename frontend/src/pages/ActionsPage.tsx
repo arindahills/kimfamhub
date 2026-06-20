@@ -12,6 +12,7 @@ type Health    = 'overdue' | 'at_risk' | 'on_track' | null
 type Priority  = 'high' | 'medium' | 'low' | null
 type FilterTab = 'active' | 'this_meeting' | 'overdue' | 'due_soon' | 'done' | 'all'
 type GroupBy   = 'assignee' | 'project' | 'meeting'
+type ItemType  = 'epic' | 'feature' | 'task' | 'bug'
 
 interface ActionItem {
   id: string            // action ref e.g. "KIM/08/26-1"
@@ -23,9 +24,18 @@ interface ActionItem {
   priority: Priority
   effort_hours: number | null
   project_id: string | null
+  project_name: string | null
+  item_type: ItemType
   parent_ref: string | null
   meeting_number: string | null
   updated_at: string | null
+}
+
+const TYPE_STYLE: Record<ItemType, { label: string; color: string; bg: string }> = {
+  epic:    { label: 'Epic',    color: '#c084fc', bg: '#4c1d9533' },
+  feature: { label: 'Feature', color: '#38bdf8', bg: '#0c4a6e44' },
+  task:    { label: 'Task',    color: '#94a3b8', bg: '#1e293b66' },
+  bug:     { label: 'Bug',     color: '#f87171', bg: '#7f1d1d33' },
 }
 
 const STATUS_STYLE: Record<DbStatus, { label: string; color: string; bg: string }> = {
@@ -66,7 +76,7 @@ function effortLabel(hours: number | null): string | null {
   return `${Math.round(hours / 8)}d`
 }
 
-function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onSetStatus, onJumpTo }: {
+function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAddUpdate, onSetStatus, onJumpTo, projects, onSetMeta }: {
   item: ActionItem
   carriedIntoRef: string | null
   isAdmin: boolean
@@ -75,12 +85,16 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
   onAddUpdate: (id: string, text: string) => Promise<void>
   onSetStatus: (id: string, status: DbStatus) => Promise<void>
   onJumpTo: (ref: string) => void
+  projects: { id: string; name: string }[]
+  onSetMeta: (id: string, patch: { item_type?: ItemType; project_id?: string | null }) => Promise<void>
 }) {
   const s = STATUS_STYLE[item.status] ?? STATUS_STYLE.open
+  const ty = TYPE_STYLE[item.item_type] ?? TYPE_STYLE.task
   const [mode, setMode] = useState<null | 'update' | 'done'>(null)
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
   const [showStatus, setShowStatus] = useState(false)
+  const [showTag, setShowTag] = useState(false)
 
   const isTerminal = item.status === 'done' || item.status === 'cancelled'
 
@@ -105,13 +119,19 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
   return (
     <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: `1px solid ${s.color}33` }}>
 
-      {/* Row 1: description + status pill */}
+      {/* Row 1: description + type + status pill */}
       <div className="flex items-start justify-between gap-2 mb-1.5">
         <p className="text-sm leading-snug flex-1" style={{ color: '#e2e8f0' }}>{item.description}</p>
-        <span className="text-[10px] shrink-0 px-1.5 py-0.5 rounded-full font-semibold"
-          style={{ color: s.color, background: s.bg }}>
-          {s.label}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
+            style={{ color: ty.color, background: ty.bg }} title="Work item type">
+            {ty.label}
+          </span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
+            style={{ color: s.color, background: s.bg }}>
+            {s.label}
+          </span>
+        </div>
       </div>
 
       {/* Row 2: person, meeting, deadline, effort, health, priority */}
@@ -165,7 +185,7 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
           <Link to="/projects" className="text-[10px] px-1.5 py-0.5 rounded hover:brightness-125"
             style={{ color: '#38bdf8', background: '#0c4a6e33', border: '1px solid #0369a144', textDecoration: 'none' }}
             title="Go to Projects">
-            {item.project_id}
+            {item.project_name || item.project_id}
           </Link>
         )}
       </div>
@@ -229,6 +249,46 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
               Status ▾
             </button>
           )}
+          {isAdmin && (
+            <button onClick={() => setShowTag(s => !s)}
+              className="text-[11px] px-2.5 py-1 rounded-lg"
+              style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+              Tag ▾
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Terminal items can still be tagged (classify historical work) */}
+      {isAdmin && isTerminal && !mode && (
+        <div className="flex gap-2 mt-2 flex-wrap">
+          <button onClick={() => setShowTag(s => !s)}
+            className="text-[11px] px-2.5 py-1 rounded-lg"
+            style={{ background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>
+            Tag ▾
+          </button>
+        </div>
+      )}
+
+      {/* Tag editor: work-item type + project (epic) */}
+      {isAdmin && showTag && !mode && (
+        <div className="flex gap-2 mt-2 flex-wrap items-center">
+          <select value={item.item_type}
+            onChange={e => onSetMeta(item.id, { item_type: e.target.value as ItemType })}
+            className="text-[11px] px-2 py-1 rounded-lg outline-none"
+            style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }}>
+            <option value="epic">Epic</option>
+            <option value="feature">Feature</option>
+            <option value="task">Task</option>
+            <option value="bug">Bug</option>
+          </select>
+          <select value={item.project_id || ''}
+            onChange={e => onSetMeta(item.id, { project_id: e.target.value || null })}
+            className="text-[11px] px-2 py-1 rounded-lg outline-none"
+            style={{ background: '#0d1829', color: '#e2e8f0', border: '1px solid #334155' }}>
+            <option value="">No project</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
         </div>
       )}
 
@@ -284,6 +344,8 @@ export default function ActionsPage() {
             priority: (a.priority || null) as Priority,
             effort_hours: a.effort_hours ?? null,
             project_id: a.project_id || null,
+            project_name: a.project_name || null,
+            item_type: (a.item_type || 'task') as ItemType,
             parent_ref: a.parent_ref || null,
             meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
             updated_at: a.note || null,
@@ -293,6 +355,24 @@ export default function ActionsPage() {
       return flat
     },
   })
+
+  const { data: projects = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ['projects-list'],
+    queryFn: () => fetch('/api/projects/list', { credentials: 'include' }).then(r => r.json()).then(d => d.projects || []),
+  })
+
+  const setMeta = async (id: string, patch: { item_type?: ItemType; project_id?: string | null }) => {
+    try {
+      const r = await fetch('/api/actions/meta', {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: id, ...patch }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Failed')
+      toast.success(`${id} updated`)
+      qc.invalidateQueries({ queryKey: ['actions'] })
+    } catch (e: any) { toast.error(`Could not update: ${e.message}`) }
+  }
 
   const markDone = async (id: string, comment: string) => {
     try {
@@ -416,7 +496,7 @@ export default function ActionsPage() {
   const titleCase = (s: string) => s.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   const groupKeyOf = (a: ActionItem) =>
     groupBy === 'assignee' ? a.responsible :
-    groupBy === 'project'  ? (a.project_id ? titleCase(a.project_id) : 'No project') :
+    groupBy === 'project'  ? (a.project_name || (a.project_id ? titleCase(a.project_id) : 'No project')) :
                              (a.meeting_number ? `KIM ${a.meeting_number}` : 'No meeting')
 
   // Reverse the parent_ref links so a carried-over action can point DOWN to the
@@ -508,6 +588,8 @@ export default function ActionsPage() {
                 onAddUpdate={addUpdate}
                 onSetStatus={setStatus}
                 onJumpTo={jumpTo}
+                projects={projects}
+                onSetMeta={setMeta}
               />
             ))}
           </div>

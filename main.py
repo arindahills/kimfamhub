@@ -249,10 +249,43 @@ def meetings_analytics(request: Request):
     }
 
 
+# Canonical project id -> display name (epics in the Jira-lite model). Single source of truth.
+PROJECT_NAMES = {
+    "chicken": "Free Range Chicken", "washing_bay": "Washing Bay",
+    "sheep": "Sheep (Dorper)", "goats": "Goats", "dairy": "Dairy / Cows",
+    "mango": "Mango & Oranges", "trees": "Tree Planting", "bees": "Apiary",
+    "rabbits": "Rabbits", "irrigation": "Irrigation & Bananas",
+    "fortune_credit": "Fortune Credit", "kakoba": "Kakoba Land",
+}
+_VALID_ITEM_TYPES = {"epic", "feature", "task", "bug"}
+
+_ACTION_COLS_READY = False
+def _ensure_action_cols():
+    """Additive: work-item type for the Jira-lite tracker (#10). The `actions` table is owned
+    by `postgres`, NOT the app role, so the app cannot ALTER it — the column is created by the
+    owner out-of-band (a one-time `ALTER TABLE actions ADD COLUMN item_type ...`). This checks
+    the column EXISTS (a read the app role is allowed) and only attempts the ALTER as a
+    best-effort fallback; failures are logged, never silently swallowed, and never block."""
+    global _ACTION_COLS_READY
+    if _ACTION_COLS_READY:
+        return
+    from db import query as _q, execute as _exec
+    try:
+        if _q("""SELECT 1 FROM information_schema.columns
+                 WHERE table_name='actions' AND column_name='item_type'"""):
+            _ACTION_COLS_READY = True
+            return
+        _exec("ALTER TABLE actions ADD COLUMN IF NOT EXISTS item_type TEXT DEFAULT 'task'")
+        _ACTION_COLS_READY = True
+    except Exception as e:
+        log.warning(f"_ensure_action_cols (column may need owner ALTER): {e}")
+
+
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
     from db import query as _dbq
     from datetime import date as _date
+    _ensure_action_cols()
     filt = status.lower().strip()
     if filt == "done":
         where = "a.status IN ('done','cancelled','carried_over')"
@@ -263,7 +296,7 @@ def get_actions(status: str = "open"):
     rows = _dbq(f"""
         SELECT a.id, a.ref, a.description, a.assignee, a.assignees, a.deadline,
                a.status, a.related_meeting, a.priority, a.effort_hours,
-               a.project_id, a.parent_ref, a.blocked_reason,
+               a.project_id, a.parent_ref, a.blocked_reason, a.item_type,
                m.ref AS meeting_ref,
                (SELECT text FROM action_updates
                 WHERE action_id = a.id ORDER BY created_at DESC LIMIT 1) AS latest_update
@@ -298,6 +331,8 @@ def get_actions(status: str = "open"):
             "priority":     r["priority"],
             "effort_hours": float(r["effort_hours"]) if r["effort_hours"] else None,
             "project_id":   r["project_id"],
+            "project_name": PROJECT_NAMES.get(r["project_id"]) if r["project_id"] else None,
+            "item_type":    r.get("item_type") or "task",
             "parent_ref":   r["parent_ref"],
             "health":       health,
             "assignees":    people,
@@ -406,6 +441,52 @@ async def set_action_status(request: Request):
         return {"ok": True, "action_id": action_ref, "status": new_status}
     except Exception as e:
         import logging as _lg; _lg.getLogger("main").error(f"set_action_status: {e}")
+        raise _HE(status_code=500, detail="DB update failed")
+
+
+@app.get("/api/projects/list")
+def projects_list(request: Request):
+    """Project id + display name pairs for the action project picker (epics)."""
+    from fastapi import HTTPException as _HE
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Login required")
+    return {"projects": [{"id": k, "name": v} for k, v in sorted(PROJECT_NAMES.items(), key=lambda x: x[1])]}
+
+
+@app.patch("/api/actions/meta")
+async def set_action_meta(request: Request):
+    """Admin: set an action's work-item type (epic/feature/task/bug) and/or its project."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    payload = _auth_verify(_get_tok(request))
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    _ensure_action_cols()
+    body = await request.json()
+    ref = str(body.get("action_id", "")).strip()
+    if not ref:
+        raise _HE(status_code=400, detail="action_id required")
+    if not _dbq("SELECT id FROM actions WHERE ref=%s", (ref,)):
+        raise _HE(status_code=404, detail=f"Action not found: {ref}")
+    sets, params = [], []
+    if "item_type" in body:
+        it = (body.get("item_type") or "task").strip().lower()
+        if it not in _VALID_ITEM_TYPES:
+            raise _HE(status_code=400, detail=f"item_type must be one of {sorted(_VALID_ITEM_TYPES)}")
+        sets.append("item_type=%s"); params.append(it)
+    if "project_id" in body:
+        pid = (body.get("project_id") or "").strip() or None
+        if pid is not None and pid not in PROJECT_NAMES:
+            raise _HE(status_code=400, detail="Unknown project_id")
+        sets.append("project_id=%s"); params.append(pid)
+    if not sets:
+        raise _HE(status_code=400, detail="Nothing to update (item_type and/or project_id)")
+    params.append(ref)
+    try:
+        _exec(f"UPDATE actions SET {', '.join(sets)} WHERE ref=%s", tuple(params))
+        return {"ok": True, "action_id": ref}
+    except Exception as e:
+        import logging as _lg; _lg.getLogger("main").error(f"set_action_meta: {e}")
         raise _HE(status_code=500, detail="DB update failed")
 
 
@@ -2219,13 +2300,7 @@ def _build_default_agenda(key_topics: str | None = None) -> list:
         WHERE project_id IS NOT NULL AND status NOT IN ('done','cancelled')
         ORDER BY project_id
     """)
-    proj_names = {
-        "chicken": "Free Range Chicken", "washing_bay": "Washing Bay",
-        "sheep": "Sheep (Dorper)", "goats": "Goats", "dairy": "Dairy / Cows",
-        "mango": "Mango & Oranges", "trees": "Tree Planting", "bees": "Apiary",
-        "rabbits": "Rabbits", "irrigation": "Irrigation & Bananas",
-        "fortune_credit": "Fortune Credit", "kakoba": "Kakoba Land",
-    }
+    proj_names = PROJECT_NAMES
     project_items = [
         {"label": proj_names.get(r["project_id"], r["project_id"]),
          "presenter": "", "duration_min": 5, "type": "project",
