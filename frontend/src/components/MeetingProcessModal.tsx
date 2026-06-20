@@ -183,13 +183,12 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
     setConfirming(true); setError('')
     const tid = toast.loading('Saving actions and writing the minutes from the full transcript… this can take a few minutes')
     try {
-      const res  = await fetch(`/api/meetings/${meetingId}/confirm`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+      // Streamed: heartbeats keep the connection alive through the minutes-doc +
+      // retrospective generation (no 60s cut), with live progress in the toast.
+      const data = await streamAi(`/api/meetings/${meetingId}/confirm`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ extracted: edited, meeting_ref: result.meeting_ref }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Confirm failed')
+      }, msg => toast.update(tid, msg, 'loading'))
       setConfirmResult(data)
       setMinutesData(data.minutes_data ?? null)
       setStage('doc')

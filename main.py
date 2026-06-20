@@ -952,20 +952,54 @@ Rules:
 
 @app.post("/api/meetings/{meeting_id}/confirm")
 async def confirm_meeting_extraction(meeting_id: int, request: Request):
-    """Write approved extraction results to DB (actions + meeting decisions)."""
+    """Streamed wrapper: writes actions then generates the minutes doc + retrospective (two
+    long AI calls) as a task while emitting SSE heartbeats, so a long meeting's Confirm
+    survives the ~60s edge timeout. Body is read once up-front (Starlette caches it)."""
+    from fastapi import HTTPException as _HE
+    from fastapi.responses import StreamingResponse
+    import asyncio as _aio
+    payload = _auth_verify(_get_tok(request))
+    if not payload or payload.get("sub") not in _ADMINS_PP:
+        raise _HE(status_code=403, detail="Admin only")
+    _body = await request.json()
+    _author = payload.get("sub", "admin")
+
+    _STAGES = ["Saving actions and decisions to the tracker...",
+               "Writing the minutes document...",
+               "Generating the meeting retrospective...",
+               "Almost done, finalising the minutes..."]
+
+    async def _gen():
+        yield _sse({"type": "step", "msg": "Confirming the meeting..."})
+        # Runs in a worker thread: the impl's AI calls are blocking, so off-loading keeps
+        # the event loop free for the heartbeats below.
+        task = _aio.create_task(_aio.to_thread(_confirm_meeting_impl, meeting_id, _body, _author))
+        i = 0
+        while not task.done():
+            await _aio.sleep(6)
+            if not task.done():
+                yield _sse({"type": "step", "msg": _STAGES[min(i, len(_STAGES) - 1)]}); i += 1
+        try:
+            yield _sse({**task.result(), "type": "result"})
+        except _HE as he:
+            yield _sse({"type": "error", "msg": str(he.detail)})
+        except Exception as e:
+            log.error(f"confirm_meeting stream failed: {e}")
+            yield _sse({"type": "error", "msg": "Could not confirm the meeting. Please try again."})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+
+def _confirm_meeting_impl(meeting_id: int, body: dict, author: str):
+    """Write approved extraction results to DB (actions + meeting decisions). Synchronous so
+    it can run in a worker thread while the streaming wrapper emits heartbeats."""
     from fastapi import HTTPException as _HE
     from db import query as _dbq, execute as _exec
     from datetime import datetime as _dt
 
-    token = _get_tok(request)
-    payload = _auth_verify(token)
-    if not payload or payload.get("sub") not in _ADMINS_PP:
-        raise _HE(status_code=403, detail="Admin only")
-
-    body = await request.json()
     extracted   = body.get("extracted", {})
     meeting_ref = body.get("meeting_ref", "")
-    author      = payload.get("sub", "admin")
 
     rows = _dbq("SELECT id, ref FROM meetings WHERE id=%s", (meeting_id,))
     if not rows:
