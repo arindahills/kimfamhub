@@ -534,6 +534,19 @@ def _nth_weekday(y, month, weekday, n):   # weekday: Mon=0 .. Sun=6
     d0 = date(y, month, 1)
     return d0 + timedelta(days=(weekday - d0.weekday()) % 7 + 7 * (n - 1))
 
+def _mothers_day(y):
+    """Editable via the KIMFAM_MOTHERS_DAY env var (no code change needed):
+    'second_sunday_may' (default), 'uk_mothering' (4th Sun of Lent = Easter-3wk),
+    or a fixed 'DD-MM'."""
+    rule = os.environ.get("KIMFAM_MOTHERS_DAY", "second_sunday_may").strip().lower()
+    if rule == "uk_mothering":
+        return _easter(y) - timedelta(weeks=3)
+    m = re.match(r"(\d{1,2})[/-](\d{1,2})$", rule)
+    if m:
+        try: return date(y, int(m.group(2)), int(m.group(1)))
+        except ValueError: pass
+    return _nth_weekday(y, 5, 6, 2)   # default: 2nd Sunday of May
+
 def _holidays_for(d):
     """Return [(key, label, emoji, scope)] for date d. scope: group|fathers|mothers.
 
@@ -561,7 +574,7 @@ def _holidays_for(d):
     if d == es:                     out.append(("easter", "Happy Easter", "✝️", "group"))
     if d == es + timedelta(days=1): out.append(("easter_monday", "Easter Monday", "✝️", "group"))
     if d == _nth_weekday(y, 6, 6, 3): out.append(("fathers_day", "Father's Day", "👨‍👧", "fathers"))
-    if d == _nth_weekday(y, 5, 6, 2): out.append(("mothers_day", "Mother's Day", "👩‍👧", "mothers"))
+    if d == _mothers_day(y):          out.append(("mothers_day", "Mother's Day", "👩‍👧", "mothers"))
     return out
 
 def _greet_already(today, key):
