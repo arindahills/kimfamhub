@@ -398,6 +398,17 @@ def check_meeting_reminders():
         venue    = str(r.get("Venue", "") or r.get("Location", "")).strip()
         d = _parse_date(date_str)
         if d == tomorrow:
+            # Dedup: only send once per ref per calendar day (guards against >1 scheduler
+            # ever running — e.g. a restart race, or staging+prod both reaching Hillary).
+            cache_key = f"dayb_reminder_{ref}_{tomorrow}"
+            with _db() as conn:
+                if conn.execute("SELECT 1 FROM action_tracker_cache WHERE action_id=?", (cache_key,)).fetchone():
+                    log.info("Day-before reminder already sent for %s", ref)
+                    break
+                conn.execute(
+                    "INSERT INTO action_tracker_cache(action_id,row_hash,updated_at) VALUES(?,?,?)",
+                    (cache_key, "sent", str(tomorrow)))
+                conn.commit()
             msg = (
                 f"📋 *KimFam Meeting Tomorrow{env}*\n"
                 f"*Ref:* {ref}\n"
@@ -408,6 +419,8 @@ def check_meeting_reminders():
                 + _SIG
             )
             all_phones = [p for p in _notif.MEMBER_PHONES.values() if p]
+            if IS_STAGING:
+                all_phones = [_notif.HILLARY_PHONE]
             _notif._broadcast(all_phones, msg)
             log.info("Day-before meeting reminder sent for %s", ref)
             break
@@ -492,11 +505,14 @@ def check_meeting_today():
 # ─────────────────────────────────────────────────────────────────────────────
 _scheduler = None
 _lock_fd   = None  # holds the file descriptor so the lock survives for the process lifetime
+_lock_conn = None  # MUST stay referenced for the process lifetime — a PG session advisory
+                   # lock is released the moment its connection is closed/GC'd. Keeping this
+                   # global is what makes the lock actually hold (was the double-send bug).
 
 _LOCK_FILE = "/tmp/kimfam_scheduler.lock"
 
 def start():
-    global _scheduler, _lock_fd
+    global _scheduler, _lock_fd, _lock_conn
     # Primary guard: PostgreSQL advisory lock (preferred — survives worker recycles cleanly).
     try:
         import psycopg2
