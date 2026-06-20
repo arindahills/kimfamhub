@@ -599,12 +599,12 @@ def check_greetings(today=None):
                 continue
             _greet_group(
                 f"🎂 *Happy Birthday {name}!*{env}\n"
-                f"The whole KimFam family wishes you a joyful day and a blessed year ahead. 🎉"
+                f"The whole KimFam family celebrates you today and stands with you for a joyful, blessed year ahead. 🎉"
                 + _SIG)
             fn = _first_name(name)
             if _notif.MEMBER_PHONES.get(fn):
                 _greet_personal([_notif.MEMBER_PHONES[fn]],
-                    f"🎂 *Happy Birthday, {fn}!*{env}\nWishing you a blessed year from your KimFam family. 🎉" + _SIG)
+                    f"🎂 *Happy Birthday, {fn}!*{env}\nYour KimFam family celebrates you today. Have a blessed year ahead. 🎉" + _SIG)
             else:
                 parent_phones = [_notif.MEMBER_PHONES[n] for n in _fp.FAMILY_MEMBER_MAP.get(fid, [])
                                  if _notif.MEMBER_PHONES.get(n)]
@@ -618,7 +618,7 @@ def check_greetings(today=None):
         if _greet_already(today, f"hol_{key}"):
             continue
         if scope == "group":
-            _greet_group(f"{emoji} *{label}*{env}\nWarm wishes to the entire KimFam family. 🙏" + _SIG)
+            _greet_group(f"{emoji} *{label}*{env}\nThe whole KimFam family celebrates this day together. 🙏" + _SIG)
         else:
             role = "Father" if scope == "fathers" else "Mother"
             who = "fathers" if scope == "fathers" else "mothers"
