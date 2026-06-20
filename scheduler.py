@@ -500,6 +500,138 @@ def check_meeting_today():
         _notif._broadcast(all_phones, msg)
         log.info("1-hour meeting reminder sent for %s (%.0f min until start)", ref, mins_until)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 5: Daily greetings — birthdays + holidays (07:00 Kampala)
+# Group celebration + a personal note (the person if a member, else their parents).
+# Dedup once per occasion per day via action_tracker_cache (so a restart/second
+# scheduler can never double-send). Staging routes everything to Hillary only.
+# ─────────────────────────────────────────────────────────────────────────────
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"], 1)}
+
+def _bday_day_month(s):
+    s = (s or "").strip()
+    m = re.match(r"(\d{1,2})\s+([A-Za-z]{3,})", s)
+    if not m:
+        return None
+    mon = _MONTHS.get(m.group(2)[:3].lower())
+    return (int(m.group(1)), mon) if mon else None
+
+def _first_name(full):
+    parts = (full or "").strip().split()
+    return parts[0] if parts else ""
+
+def _easter(y):
+    a = y % 19; b = y // 100; c = y % 100; d = b // 4; e = b % 4
+    f = (b + 8) // 25; g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30; i = c // 4; k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7; mth = (a + 11 * h + 22 * l) // 451
+    mo = (h + l - 7 * mth + 114) // 31; da = ((h + l - 7 * mth + 114) % 31) + 1
+    return date(y, mo, da)
+
+def _nth_weekday(y, month, weekday, n):   # weekday: Mon=0 .. Sun=6
+    d0 = date(y, month, 1)
+    return d0 + timedelta(days=(weekday - d0.weekday()) % 7 + 7 * (n - 1))
+
+def _holidays_for(d):
+    """Return [(key, label, emoji, scope)] for date d. scope: group|fathers|mothers."""
+    y, out = d.year, []
+    fixed = {
+        (1, 1):  ("new_year", "Happy New Year", "🎉"),
+        (1, 26): ("nrm_day", "NRM Liberation Day", "🇺🇬"),
+        (2, 16): ("luwum_day", "Janani Luwum Day", "🇺🇬"),
+        (3, 8):  ("womens_day", "International Women's Day", "💐"),
+        (5, 1):  ("labour_day", "Labour Day", "🛠️"),
+        (6, 3):  ("martyrs_day", "Uganda Martyrs Day", "🙏"),
+        (6, 9):  ("heroes_day", "National Heroes Day", "🇺🇬"),
+        (10, 9): ("independence_day", "Uganda Independence Day", "🇺🇬"),
+        (12, 25):("christmas", "Merry Christmas", "🎄"),
+        (12, 26):("boxing_day", "Boxing Day", "🎁"),
+    }
+    if (d.month, d.day) in fixed:
+        k, lbl, em = fixed[(d.month, d.day)]; out.append((k, lbl, em, "group"))
+    es = _easter(y)
+    if d == es - timedelta(days=2): out.append(("good_friday", "Good Friday", "✝️", "group"))
+    if d == es:                     out.append(("easter", "Happy Easter", "✝️", "group"))
+    if d == es + timedelta(days=1): out.append(("easter_monday", "Easter Monday", "✝️", "group"))
+    if d == _nth_weekday(y, 6, 6, 3): out.append(("fathers_day", "Father's Day", "👨‍👧", "fathers"))
+    if d == _nth_weekday(y, 5, 6, 2): out.append(("mothers_day", "Mother's Day", "👩‍👧", "mothers"))
+    return out
+
+def _greet_already(today, key):
+    ck = f"greet_{key}_{today}"
+    with _db() as conn:
+        if conn.execute("SELECT 1 FROM action_tracker_cache WHERE action_id=?", (ck,)).fetchone():
+            return True
+        conn.execute("INSERT INTO action_tracker_cache(action_id,row_hash,updated_at) VALUES(?,?,?)",
+                     (ck, "sent", str(today)))
+        conn.commit()
+        return False
+
+def _greet_group(msg):
+    _notif._broadcast([], msg)   # staging-safe: routes to Hillary + test group
+
+def _greet_personal(phones, msg):
+    targets = [_notif.HILLARY_PHONE] if IS_STAGING else [p for p in phones if p]
+    for p in dict.fromkeys(targets):
+        _notif._send(p, msg)
+
+def check_greetings(today=None):
+    log.info("Scheduler: checking greetings (birthdays + holidays)")
+    today = today or datetime.now(KAMPALA).date()
+    env = " [STAGING]" if IS_STAGING else ""
+    try:
+        import family_profiles as _fp
+        fams = _fp.SEED_DATA
+    except Exception as e:
+        log.warning("greetings: family data unavailable: %s", e)
+        return
+
+    # ── Birthdays ──
+    for fam in fams:
+        fid = fam.get("family_id", "")
+        for person in (fam.get("parents", []) + fam.get("children", [])):
+            if _bday_day_month(person.get("birthday")) != (today.day, today.month):
+                continue
+            name = person.get("name", "").strip()
+            if not name or _greet_already(today, f"bday_{name}"):
+                continue
+            _greet_group(
+                f"🎂 *Happy Birthday {name}!*{env}\n"
+                f"The whole KimFam family wishes you a joyful day and a blessed year ahead. 🎉"
+                + _SIG)
+            fn = _first_name(name)
+            if _notif.MEMBER_PHONES.get(fn):
+                _greet_personal([_notif.MEMBER_PHONES[fn]],
+                    f"🎂 *Happy Birthday, {fn}!*{env}\nWishing you a blessed year from your KimFam family. 🎉" + _SIG)
+            else:
+                parent_phones = [_notif.MEMBER_PHONES[n] for n in _fp.FAMILY_MEMBER_MAP.get(fid, [])
+                                 if _notif.MEMBER_PHONES.get(n)]
+                if parent_phones:
+                    _greet_personal(parent_phones,
+                        f"🎂 Today is *{name}*'s birthday!{env}\nYour KimFam family is celebrating with you. 🎉" + _SIG)
+            log.info("Birthday greeting sent for %s", name)
+
+    # ── Holidays ──
+    for key, label, emoji, scope in _holidays_for(today):
+        if _greet_already(today, f"hol_{key}"):
+            continue
+        if scope == "group":
+            _greet_group(f"{emoji} *{label}*{env}\nWarm wishes to the entire KimFam family. 🙏" + _SIG)
+        else:
+            role = "Father" if scope == "fathers" else "Mother"
+            who = "fathers" if scope == "fathers" else "mothers"
+            _greet_group(f"{emoji} *Happy {label}*{env}\n"
+                         f"Today we honour and appreciate our {who} in the KimFam family. 🙏" + _SIG)
+            names = {_first_name(p.get("name", "")) for fam in fams
+                     for p in fam.get("parents", []) if p.get("role") == role}
+            phones = [_notif.MEMBER_PHONES[n] for n in names if _notif.MEMBER_PHONES.get(n)]
+            if phones:
+                _greet_personal(phones, f"{emoji} *Happy {label}, from KimFam!*{env}\nThank you for all you do. 🙏" + _SIG)
+        log.info("Holiday greeting sent: %s", label)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Scheduler startup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -561,6 +693,9 @@ def start():
     # Monthly on 5th at 08:00
     _scheduler.add_job(monthly_payment_reminders, "cron", day=5, hour=8, minute=0,
                        id="monthly_reminder", replace_existing=True)
+    # Daily greetings (birthdays + holidays) at 07:00 Kampala
+    _scheduler.add_job(check_greetings, "cron", hour=7, minute=0,
+                       id="greetings", replace_existing=True, misfire_grace_time=3600)
     _scheduler.start()
     log.info("KimFam scheduler started (%s mode)", "STAGING" if IS_STAGING else "PROD")
     # Run the 1-hour meeting check once now, so a restart (e.g. a deploy) right
