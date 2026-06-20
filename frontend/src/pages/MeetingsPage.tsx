@@ -129,8 +129,18 @@ function EditMeetingModal({ m, onClose, onSaved }: { m: Meeting; onClose: () => 
   const [startTime, setStart] = useState((m.start_time_eat || '16:30').slice(0, 5))
   const [topics, setTopics]   = useState(m.key_topics || '')
   const [saving, setSaving]   = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
   const [error, setError]     = useState('')
   const toast = useToast()
+
+  const suggestAgenda = async () => {
+    setSuggesting(true)
+    try {
+      const res = await fetch('/api/meetings/suggest-agenda', { credentials: 'include' })
+      const d = await res.json()
+      if (d.suggestion) setTopics(d.suggestion)
+    } catch {/* ignore */} finally { setSuggesting(false) }
+  }
 
   const save = async () => {
     setError(''); setSaving(true)
@@ -181,7 +191,13 @@ function EditMeetingModal({ m, onClose, onSaved }: { m: Meeting; onClose: () => 
             </div>
           </div>
           <div>
-            <label className="text-[10px] uppercase tracking-wider mb-1 block" style={{ color: '#475569' }}>Main agenda topics</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Main agenda topics</label>
+              <button type="button" onClick={suggestAgenda} disabled={suggesting}
+                className="text-[10px] px-2 py-0.5 rounded disabled:opacity-50" style={{ background: '#1e293b', color: '#93c5fd' }}>
+                {suggesting ? 'Suggesting…' : '✨ AI Suggest'}
+              </button>
+            </div>
             <textarea value={topics} onChange={e => setTopics(e.target.value)} rows={3}
               placeholder="Separate items with semicolons"
               className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
