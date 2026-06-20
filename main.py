@@ -3484,15 +3484,19 @@ def list_proposals(request: Request):
     for r in current:
         row = _proposal_row(r)
         thread = r.get("thread_id") or r["id"]
-        vers = _dbq("""SELECT id, version, overall_score, verdict, scored, uploaded_at, source_path
+        vers = _dbq("""SELECT id, version, overall_score, verdict, scored, uploaded_at, source_path, scores
                        FROM proposals WHERE thread_id=%s OR id=%s ORDER BY version DESC""",
                     (thread, thread))
+        import json as _hjson
+        def _hj(v):
+            return v if isinstance(v, list) else (_hjson.loads(v) if v else [])
         row["history"] = [{
             "id": v["id"], "version": v["version"],
             "overall_score": float(v["overall_score"]) if v.get("overall_score") is not None else None,
             "verdict": v.get("verdict"), "scored": v.get("scored", False),
             "uploaded_at": str(v.get("uploaded_at") or ""),
             "file_url": (f"/docs/{v['source_path']}" if v.get("source_path") else None),
+            "criteria": [{"name": c.get("name"), "score": c.get("score")} for c in _hj(v.get("scores"))],
         } for v in vers]
         out.append(row)
     return {"proposals": out}

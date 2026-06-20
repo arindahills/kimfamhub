@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext'
 
 interface Criterion { name: string; weight: number; score: number; rationale: string }
 interface Readiness { status?: string; assessment?: string; blocking?: string[] }
-interface Version { id: number; version: number; overall_score: number | null; verdict: string | null; scored: boolean; uploaded_at: string; file_url: string | null }
+interface Version { id: number; version: number; overall_score: number | null; verdict: string | null; scored: boolean; uploaded_at: string; file_url: string | null; criteria: { name: string; score: number }[] }
 interface Proposal {
   id: number; title: string; owner: string; submitted_by: string
   file_url: string | null; overall_score: number | null; verdict: string | null
@@ -370,6 +370,35 @@ export default function ProposalsPage() {
                         </div>
                       )
                     })}
+                    {/* Per-criterion diff: current vs the immediately prior version */}
+                    {(() => {
+                      const cur = p.history[0], prev = p.history[1]   // history is version DESC
+                      if (!cur?.criteria?.length || !prev?.criteria?.length) return null
+                      const prevMap: Record<string, number> = {}
+                      prev.criteria.forEach(c => { prevMap[c.name] = c.score })
+                      const rows = cur.criteria
+                        .map(c => ({ name: c.name, from: prevMap[c.name], to: c.score }))
+                        .filter(r => r.from != null)
+                      if (!rows.length) return null
+                      return (
+                        <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide mb-1" style={{ color: '#7c93b3' }}>What changed since v{prev.version}</div>
+                          {rows.map(r => {
+                            const up = r.to - r.from
+                            const col = up > 0 ? '#86efac' : up < 0 ? '#fca5a5' : '#64748b'
+                            const arrow = up > 0 ? '▲' : up < 0 ? '▼' : '—'
+                            return (
+                              <div key={r.name} className="flex items-center justify-between text-[11px] py-0.5">
+                                <span style={{ color: '#cbd5e1' }}>{r.name}</span>
+                                <span className="flex items-center gap-1.5" style={{ color: col }}>
+                                  <span style={{ color: '#64748b' }}>{r.from}/5 →</span>{r.to}/5 <span>{arrow}</span>
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )
+                    })()}
                   </div>
                 )}
 
