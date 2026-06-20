@@ -315,6 +315,60 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
   )
 }
 
+// ── Kanban board ──────────────────────────────────────────────────────────────
+const BOARD_COLUMNS: { key: DbStatus; label: string; color: string }[] = [
+  { key: 'open',        label: 'Open',        color: '#fbbf24' },
+  { key: 'in_progress', label: 'In Progress', color: '#60a5fa' },
+  { key: 'blocked',     label: 'Blocked',     color: '#f97316' },
+  { key: 'done',        label: 'Done',        color: '#4ade80' },
+]
+// 'done' column holds all closed states.
+const inColumn = (a: ActionItem, col: DbStatus) =>
+  col === 'done' ? (a.status === 'done' || a.status === 'cancelled' || a.status === 'carried_over')
+                 : a.status === col
+
+function BoardCard({ item, isAdmin, onSetStatus }: {
+  item: ActionItem; isAdmin: boolean; onSetStatus: (id: string, status: DbStatus) => Promise<void>
+}) {
+  const ty = TYPE_STYLE[item.item_type] ?? TYPE_STYLE.task
+  const st = STATUS_STYLE[item.status] ?? STATUS_STYLE.open
+  // The select only offers the board-selectable statuses; for any other true status
+  // (e.g. carried_over) it's hidden so the status badge above is the source of truth.
+  const selectable = (['open', 'in_progress', 'blocked', 'done', 'cancelled'] as DbStatus[]).includes(item.status)
+  return (
+    <div
+      draggable={isAdmin}
+      onDragStart={e => { e.dataTransfer.setData('text/plain', item.id); e.dataTransfer.effectAllowed = 'move' }}
+      className="rounded-lg p-2.5"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', cursor: isAdmin ? 'grab' : 'default' }}>
+      <p className="text-[12px] leading-snug mb-1.5" style={{ color: '#e2e8f0' }}>{item.description}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[9px] px-1 py-0.5 rounded-full font-semibold" style={{ color: ty.color, background: ty.bg }}>{ty.label}</span>
+        <span className="text-[9px] px-1 py-0.5 rounded-full font-semibold" style={{ color: st.color, background: st.bg }}>{st.label}</span>
+        <span className="text-[10px]" style={{ color: '#64748b' }}>{item.responsible}</span>
+        <HealthBadge health={item.health} status={item.status} />
+        {item.project_name && (
+          <span className="text-[9px] px-1 py-0.5 rounded" style={{ color: '#38bdf8', background: '#0c4a6e33' }}>{item.project_name}</span>
+        )}
+      </div>
+      <div className="text-[9px] font-mono mt-1" style={{ color: '#475569' }}>{item.id}</div>
+      {isAdmin && selectable && (
+        <select value={item.status}
+          onMouseDown={e => e.stopPropagation()}
+          onChange={e => onSetStatus(item.id, e.target.value as DbStatus)}
+          className="mt-1.5 w-full text-[10px] px-1.5 py-1 rounded outline-none"
+          style={{ background: '#0d1829', color: '#94a3b8', border: '1px solid #334155' }}>
+          <option value="open">Open</option>
+          <option value="in_progress">In Progress</option>
+          <option value="blocked">Blocked</option>
+          <option value="done">Done</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      )}
+    </div>
+  )
+}
+
 export default function ActionsPage() {
   const { t } = useTranslation()
   const { user } = useAuth()
@@ -323,6 +377,7 @@ export default function ActionsPage() {
   const isAdmin = ADMIN_USERS.includes(user?.name || '')
   const [filter, setFilter] = useState<FilterTab>('active')
   const [groupBy, setGroupBy] = useState<GroupBy>('assignee')
+  const [view, setView] = useState<'list' | 'board'>('list')
   const [search, setSearch] = useState('')
 
   const { data: items = [], isLoading } = useQuery<ActionItem[]>({
@@ -502,8 +557,10 @@ export default function ActionsPage() {
   // Reverse the parent_ref links so a carried-over action can point DOWN to the
   // action it was carried/restated into (child.parent_ref === parent.id).
   const carriedIntoByRef: Record<string, string> = {}
+  const statusById: Record<string, DbStatus> = {}
   for (const a of items) {
     if (a.parent_ref) carriedIntoByRef[a.parent_ref] = a.id
+    statusById[a.id] = a.status
   }
 
   const groups: Record<string, ActionItem[]> = {}
@@ -536,20 +593,36 @@ export default function ActionsPage() {
         ))}
       </div>
 
-      {/* Group-by toggle */}
+      {/* View toggle + (list only) Group-by */}
       <div className="flex gap-2 items-center flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Group</span>
-        {GROUPS.map(g => (
-          <button key={g.key} onClick={() => setGroupBy(g.key)}
+        <span className="text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>View</span>
+        {(['list', 'board'] as const).map(v => (
+          <button key={v} onClick={() => setView(v)}
             className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
             style={{
-              background: groupBy === g.key ? '#334155' : 'transparent',
-              color: groupBy === g.key ? '#e2e8f0' : '#475569',
+              background: view === v ? '#334155' : 'transparent',
+              color: view === v ? '#e2e8f0' : '#475569',
               border: '1px solid #334155',
             }}>
-            {g.label}
+            {v === 'list' ? 'List' : 'Board'}
           </button>
         ))}
+        {view === 'list' && (
+          <>
+            <span className="ml-2 text-[10px] uppercase tracking-wider" style={{ color: '#475569' }}>Group</span>
+            {GROUPS.map(g => (
+              <button key={g.key} onClick={() => setGroupBy(g.key)}
+                className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+                style={{
+                  background: groupBy === g.key ? '#334155' : 'transparent',
+                  color: groupBy === g.key ? '#e2e8f0' : '#475569',
+                  border: '1px solid #334155',
+                }}>
+                {g.label}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Search */}
@@ -570,7 +643,37 @@ export default function ActionsPage() {
         </p>
       )}
 
-      {groupEntries.map(([groupName, groupItems]) => (
+      {/* Board view: status columns (drag on desktop / status select anywhere, admin) */}
+      {view === 'board' && !isLoading && (
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {BOARD_COLUMNS.map(col => {
+            const colItems = visible.filter(a => inColumn(a, col.key))
+            return (
+              <div key={col.key}
+                onDragOver={e => { if (isAdmin) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                onDrop={e => {
+                  if (!isAdmin) return
+                  e.preventDefault()
+                  const id = e.dataTransfer.getData('text/plain')
+                  if (!id || !(id in statusById) || inColumn({ status: statusById[id] } as ActionItem, col.key)) return  // skip unknown/same-column
+                  setStatus(id, col.key)
+                }}
+                className="shrink-0 rounded-xl p-2" style={{ width: 260, background: '#0d182955', border: '1px solid var(--border)' }}>
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: col.color }}>{col.label}</span>
+                  <span className="text-[10px]" style={{ color: '#475569' }}>{colItems.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {colItems.map(a => <BoardCard key={a.id} item={a} isAdmin={isAdmin} onSetStatus={setStatus} />)}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* List view */}
+      {view === 'list' && groupEntries.map(([groupName, groupItems]) => (
         <div key={groupName}>
           <h3 className="text-[11px] font-semibold mb-2 uppercase tracking-wider"
             style={{ color: '#475569' }}>
