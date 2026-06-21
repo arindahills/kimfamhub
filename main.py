@@ -3269,10 +3269,42 @@ def _read_doc_bytes(rel_path: str) -> bytes | None:
             return None
     return None
 
+def _kimfam_context_for(rel: str, doc_text: str) -> str:
+    """Lightweight KimFam context so a summary isn't read in isolation: the project taxonomy
+    plus the top related excerpts from the Ask KimFam corpus (minutes/projects/prior docs),
+    excluding the document itself. Best-effort, free (local embedding query)."""
+    taxo = "KimFam projects (venture -> asset class): " + "; ".join(
+        f"{v} ({PROJECT_ASSET_CLASS.get(k, '')})" for k, v in PROJECT_NAMES.items())
+    related = ""
+    try:
+        from sentence_transformers import SentenceTransformer
+        import chromadb
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        emb = [float(x) for x in model.encode((doc_text or "")[:800], normalize_embeddings=True)]
+        client = chromadb.PersistentClient(path=str(Path(__file__).parent / "data" / "chroma"))
+        col = client.get_or_create_collection("kimfam_docs")
+        res = col.query(query_embeddings=[emb], n_results=6, include=["documents", "metadatas"])
+        docs0 = (res.get("documents") or [[]])[0]
+        metas0 = (res.get("metadatas") or [[]])[0]
+        chunks = []
+        for txt, meta in zip(docs0, metas0):
+            if (meta or {}).get("source", "") == rel:   # skip the doc itself
+                continue
+            chunks.append(f"[{(meta or {}).get('source', '?')}] {txt[:400]}")
+            if len(chunks) >= 3:
+                break
+        if chunks:
+            related = "\n\nRelated KimFam records (minutes, projects, prior docs):\n" + "\n".join(chunks)
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("main").warning(f"summary context: {_e}")
+    return taxo + related
+
 @app.get("/api/docs/summary")
 async def doc_summary(request: Request, path: str = "", refresh: bool = False):
     """Quick AI review of one document. Cached by content md5 (first view generates, rest are
-    free/instant); regenerates only when the file changes or refresh=true. Haiku-generated."""
+    free/instant); regenerates only when the file changes or refresh=true. The 'For KimFam'
+    context section reflects the corpus as of generation time; use refresh to re-contextualise.
+    Haiku-generated."""
     from fastapi import HTTPException as _HE
     token = _get_tok(request)
     if not (_auth_verify(token) if token else None):
@@ -3296,15 +3328,20 @@ async def doc_summary(request: Request, path: str = "", refresh: bool = False):
     if not text or not text.strip():
         raise _HE(status_code=422, detail="No readable text in this document")
     truncated = len(text) > 14000
+    context = _kimfam_context_for(rel, text)
     prompt = (
-        "You are summarizing a KimFam Investment Club document so a member can grasp it without "
-        "opening the file. Use plain text only: no markdown headings, no asterisks. Begin with "
-        "'TL;DR: ' followed by one sentence. Then a blank line, then short bullet lines starting "
-        "with '- ' covering, where present: parties, key dates, amounts, the main obligations or "
-        "decisions, and any risks or things to flag. Be concise and factual, do not invent "
-        "anything not in the text."
+        "You are summarizing a document for the KimFam Investment Club so a member grasps it "
+        "without opening the file. Plain text only: no markdown headings, no asterisks.\n"
+        "First, strictly from THE DOCUMENT: begin with 'TL;DR: ' and one sentence, then a blank "
+        "line, then short '- ' bullets covering parties, key dates, amounts, and the main "
+        "obligations or decisions.\n"
+        "Then a blank line and a line reading exactly 'For KimFam:' followed by '- ' bullets on how "
+        "this connects to the club context below (related projects, decisions, actions) and anything "
+        "to watch or flag. Use the context ONLY for that section; it must NOT change the factual "
+        "summary, and do not invent anything not supported by the document or the context."
         + ("\nNote: the document was truncated; summarize what is shown." if truncated else "")
-        + "\n\nDocument follows:\n\n" + text[:14000]
+        + "\n\n--- KimFam context ---\n" + context
+        + "\n\n--- Document ---\n" + text[:14000]
     )
     summary = (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
     if not summary:

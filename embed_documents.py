@@ -231,7 +231,7 @@ def run():
         embeddings = embed_texts(chunks)
         metadatas = [
             {
-                "source": rel.replace("docs/", ""),
+                "source": rel[5:] if rel.startswith("docs/") else rel,
                 "doc_type": doc_type,
                 "date": doc_date,
                 "chunk_index": i,
