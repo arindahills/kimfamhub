@@ -4952,14 +4952,35 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
 import r2_storage as _r2
 
 _ALLOWED_DOC_CATEGORIES = {"minutes", "governance", "projects", "financial", "receipts"}
-_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".jpg", ".jpeg", ".png"}
+# Only types the Documents module actually serves + can embed (no images: they would
+# upload but never appear in the doc tree, _DOC_SUFFIXES excludes them).
+_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".pptx", ".xlsx"}
+_EMBEDDABLE_SUFFIXES    = {".docx", ".pdf", ".pptx", ".xlsx"}
+
+def _trigger_embed():
+    """Fire-and-forget re-embed so a new/updated doc is searchable in Ask KimFam."""
+    try:
+        import subprocess as _sp, sys as _sys, os as _os
+        _app_dir = _os.path.dirname(__file__)
+        _sp.Popen(
+            [_sys.executable, _os.path.join(_app_dir, "embed_documents.py")],
+            cwd=_app_dir, env={**_os.environ},
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        return True
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("main").warning(f"embed trigger failed: {_e}")
+        return False
 
 @app.post("/api/admin/upload-doc")
 async def admin_upload_doc(
     request: Request,
     category: str = Form(...),
     file: UploadFile = FastAPIFile(...),
+    subgroup: str = Form(""),
 ):
+    """Admin: upload any document into category -> optional sub-group. Mirrors to R2,
+    versions a same-named file into _versions/, and re-embeds for Ask KimFam."""
     from fastapi import HTTPException as _HE
     token = _get_tok(request)
     payload = _auth_verify(token) if token else None
@@ -4971,17 +4992,31 @@ async def admin_upload_doc(
     if suffix not in _ALLOWED_DOC_SUFFIXES:
         raise _HE(status_code=400, detail=f"File type not allowed: {suffix}")
 
-    safe_filename = "".join(c for c in (file.filename or "upload") if c.isalnum() or c in "._- ")
+    safe_filename = ("".join(c for c in (file.filename or "upload") if c.isalnum() or c in "._- ")).strip() or "upload"
+    # Sub-group is a single folder one level deep — no path traversal, no slashes.
+    safe_subgroup = ("".join(c for c in (subgroup or "") if c.isalnum() or c in "._- &")).strip()
+    # Reject traversal (.. / .) and reserved/hidden names (leading "." or "_", e.g. _versions).
+    if safe_subgroup.startswith((".", "_")) or safe_subgroup in {".", ".."}:
+        safe_subgroup = ""
+    rel_dir = f"{category}/{safe_subgroup}" if safe_subgroup else category
     contents = await file.read()
 
-    # Write to local filesystem (keeps existing list/serve endpoints working)
-    local_path = DOCS_DIR / category / safe_filename
-    (DOCS_DIR / category).mkdir(parents=True, exist_ok=True)
+    # Write to local filesystem (keeps existing list/serve endpoints + embed working).
+    local_dir = DOCS_DIR / rel_dir
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_dir / safe_filename
+    archived_previous = False
+    if local_path.exists():
+        # Version the prior copy into a hidden _versions/ folder (get_docs skips _versions).
+        import time as _t
+        vdir = local_dir / "_versions"; vdir.mkdir(exist_ok=True)
+        local_path.rename(vdir / f"{Path(safe_filename).stem}.{_t.time_ns()}{suffix}")
+        archived_previous = True
     with open(str(local_path), "wb") as fh:
         fh.write(contents)
 
-    # Also upload to R2 for durable storage
-    r2_key  = f"{category}/{safe_filename}"
+    # Also upload to R2 (current copy; on prod get_docs serves from R2).
+    r2_key  = f"{rel_dir}/{safe_filename}"
     r2_url  = None
     if _r2.is_configured():
         import tempfile, os as _os
@@ -4997,7 +5032,12 @@ async def admin_upload_doc(
     # Invalidate doc cache so new file appears immediately
     _doc_cache.clear()
 
-    return {"ok": True, "filename": safe_filename, "r2_key": r2_key, "r2_url": r2_url}
+    # Re-embed for Ask KimFam (text docs only).
+    embedding = _trigger_embed() if suffix in _EMBEDDABLE_SUFFIXES else False
+
+    return {"ok": True, "filename": safe_filename, "group": safe_subgroup or "General",
+            "r2_key": r2_key, "r2_url": r2_url,
+            "archived_previous": archived_previous, "embedding": embedding}
 
 
 # ── Contributions (Sprint 1) ──────────────────────────────────────────────────

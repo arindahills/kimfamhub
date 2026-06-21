@@ -58,6 +58,7 @@ export default function AdminPage() {
   const qc = useQueryClient()
   const [setPwFor, setSetPwFor] = useState<string | null>(null)
   const [uploadCat, setUploadCat] = useState('minutes')
+  const [uploadSub, setUploadSub] = useState('')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
@@ -82,9 +83,12 @@ export default function AdminPage() {
     const fd = new FormData()
     fd.append('file', uploadFile)
     fd.append('category', uploadCat)
+    if (uploadSub.trim()) fd.append('subgroup', uploadSub.trim())
     const r = await fetch('/api/admin/upload-doc', { method: 'POST', credentials: 'include', body: fd })
     const j = await r.json()
-    setUploadMsg(r.ok ? 'Uploaded.' : j.detail || 'Error.')
+    setUploadMsg(r.ok
+      ? `Uploaded to ${uploadCat} / ${j.group || 'General'}.${j.archived_previous ? ' Previous version archived.' : ''}${j.embedding ? ' Indexing for Ask KimFam…' : ''}`
+      : j.detail || 'Error.')
     if (r.ok) { setUploadFile(null); qc.invalidateQueries({ queryKey: ['docs'] }) }
     setUploading(false)
   }
@@ -140,7 +144,11 @@ export default function AdminPage() {
           style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
           {DOC_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
-        <input type="file" accept=".docx,.pdf" onChange={e => setUploadFile(e.target.files?.[0] || null)}
+        <input type="text" value={uploadSub} onChange={e => setUploadSub(e.target.value)}
+          placeholder="Sub-group (optional, e.g. Kizinda Property), blank for General"
+          className="w-full rounded-lg px-3 py-2 text-sm mb-2"
+          style={{ background: '#0f172a', color: 'var(--text-primary)', border: '1px solid var(--border)' }} />
+        <input type="file" accept=".docx,.pdf,.pptx,.xlsx" onChange={e => setUploadFile(e.target.files?.[0] || null)}
           className="text-xs w-full mb-2" style={{ color: 'var(--text-muted)' }} />
         {uploadMsg && <p className="text-xs mb-2" style={{ color: uploadMsg.includes('Upload') ? '#4ade80' : '#f87171' }}>{uploadMsg}</p>}
         <button onClick={uploadDoc} disabled={!uploadFile || uploading}
@@ -152,7 +160,7 @@ export default function AdminPage() {
 
       {/* Reindex Ask KimFam */}
       <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)' }}>
-        <h3 className="font-semibold text-sm mb-1" style={{ color: '#f1f5f9' }}>Ask KimFam — Reindex</h3>
+        <h3 className="font-semibold text-sm mb-1" style={{ color: '#f1f5f9' }}>Ask KimFam Reindex</h3>
         <p className="text-xs mb-3" style={{ color: '#64748b' }}>
           Run after uploading new documents to make them searchable by Ask KimFam.
         </p>

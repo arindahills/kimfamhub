@@ -21,8 +21,9 @@ import chromadb
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("embed_documents")
 
-# Paths
-BASE_DIR = Path("/var/www/kimfamhub")
+# Paths — derive from this file's location so staging/local embed their own tree
+# (matches main.py's DOCS_DIR = Path(__file__).parent/"docs").
+BASE_DIR = Path(__file__).resolve().parent
 DOCS_DIR = BASE_DIR / "docs"
 CHROMA_DIR = BASE_DIR / "data" / "chroma"
 MANIFEST_PATH = BASE_DIR / "data" / "embed_manifest.json"
@@ -175,11 +176,12 @@ def run():
     manifest = load_manifest()
 
     # Find all supported documents in docs/ (docx, pdf, pptx, xlsx). Skip Office
-    # lock/temp files (~$...) which would crash the readers.
+    # lock/temp files (~$...) and archived prior versions in _versions/ (those are
+    # hidden in the Documents nav and must not pollute RAG search).
     source_files = [
         p for ext in ("*.docx", "*.pdf", "*.pptx", "*.xlsx")
         for p in DOCS_DIR.rglob(ext)
-        if not p.name.startswith("~")
+        if not p.name.startswith("~") and "_versions" not in p.parts
     ]
     on_disk = {str(p.relative_to(BASE_DIR)) for p in source_files}
 
