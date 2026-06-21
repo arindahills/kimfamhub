@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 interface DocFile {
@@ -62,6 +62,34 @@ export default function DocsPage() {
     queryKey: ['docs'],
     queryFn: () => fetch('/api/docs', { credentials: 'include' }).then(r => r.json()),
   })
+
+  // Per-document AI summary (Haiku, cached server-side by content hash)
+  const qc = useQueryClient()
+  const [summaryDoc, setSummaryDoc] = useState<{ path: string; name: string } | null>(null)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenError, setRegenError] = useState('')
+  const { data: sum, isFetching: sumLoading, error: sumError } = useQuery<{ summary: string; cached: boolean }>({
+    queryKey: ['doc-summary', summaryDoc?.path],
+    enabled: !!summaryDoc,
+    staleTime: Infinity,
+    retry: false,
+    queryFn: async () => {
+      const r = await fetch(`/api/docs/summary?path=${encodeURIComponent(summaryDoc!.path)}`, { credentials: 'include' })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({} as any))).detail || 'Could not load summary')
+      return r.json()
+    },
+  })
+  const regenerate = async () => {
+    if (!summaryDoc) return
+    setRegenerating(true); setRegenError('')
+    try {
+      const r = await fetch(`/api/docs/summary?refresh=true&path=${encodeURIComponent(summaryDoc.path)}`, { credentials: 'include' })
+      if (r.ok) qc.setQueryData(['doc-summary', summaryDoc.path], await r.json())
+      else setRegenError((await r.json().catch(() => ({} as any))).detail || 'Could not regenerate')
+    } catch { setRegenError('Could not regenerate') }
+    finally { setRegenerating(false) }
+  }
+  const docPathOf = (url: string) => url.replace(/^\/docs\//, '')
 
   const q = search.trim().toLowerCase()
   const filtered: DocsData | undefined = !data ? data : q === '' ? data : Object.fromEntries(
@@ -146,6 +174,12 @@ export default function DocsPage() {
                           <span className="text-sm truncate" style={{ color: '#cbd5e1' }}>{f.name}</span>
                         </div>
                         <div className="flex gap-2 shrink-0 ml-2">
+                          {['docx', 'pdf', 'pptx', 'xlsx'].includes(ext(fileBase(f.file))) && (
+                            <button onClick={() => { setRegenError(''); setSummaryDoc({ path: docPathOf(f.url), name: f.name }) }}
+                              className="text-[11px] px-2 py-1 rounded" style={{ background: '#3b2f1e', color: '#fcd34d' }}>
+                              Summary
+                            </button>
+                          )}
                           <a href={`${encodeURI(f.url)}/view`} target="_blank" rel="noreferrer"
                             className="text-[11px] px-2 py-1 rounded" style={{ background: '#1e3a5f', color: '#93c5fd' }}>
                             View
@@ -164,6 +198,34 @@ export default function DocsPage() {
           </div>
         )
       })}
+
+      {summaryDoc && (
+        <div onClick={() => setSummaryDoc(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--bg-card)', borderRadius: 12, maxWidth: 560, width: '100%', maxHeight: '80vh', overflow: 'auto', padding: 20, border: '1px solid var(--border)' }}>
+            <div className="flex items-start justify-between mb-3 gap-3">
+              <h3 className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>📄 {summaryDoc.name}</h3>
+              <button onClick={() => setSummaryDoc(null)} style={{ color: '#64748b', fontSize: 16, lineHeight: 1 }}>✕</button>
+            </div>
+            {(sumLoading || regenerating) && <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Generating summary…</p>}
+            {sumError && !sumLoading && <p className="text-xs" style={{ color: '#f87171' }}>{String((sumError as Error).message || sumError)}</p>}
+            {regenError && <p className="text-xs mt-2" style={{ color: '#f87171' }}>{regenError}</p>}
+            {sum?.summary && !regenerating && (
+              <div className="text-sm" style={{ color: '#cbd5e1', whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>{sum.summary}</div>
+            )}
+            {sum && !sumLoading && (
+              <div className="flex items-center justify-between mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <span className="text-[10px]" style={{ color: '#475569' }}>{sum.cached ? 'Cached' : 'Freshly generated'} · Haiku</span>
+                <button onClick={regenerate} disabled={regenerating}
+                  className="text-[11px] px-2 py-1 rounded disabled:opacity-60" style={{ background: '#1e293b', color: '#93c5fd' }}>
+                  {regenerating ? 'Regenerating…' : 'Regenerate'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

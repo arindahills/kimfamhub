@@ -3234,6 +3234,88 @@ def get_docs():
             result[cat] = _docs_build_cat(cat, groups)
     return result
 
+# ── Per-document AI summary (Haiku, cached by content hash) ──────────────────────
+_SUMMARY_CACHE_PATH = DOCS_DIR.parent / "data" / "doc_summaries.json"
+import asyncio as _asyncio_sum
+_SUMMARY_LOCK = _asyncio_sum.Lock()   # serialize read-modify-write of the cache file
+
+def _load_summary_cache() -> dict:
+    import json as _j
+    try:
+        return _j.loads(_SUMMARY_CACHE_PATH.read_text())
+    except Exception:
+        return {}
+
+def _save_summary_cache(cache: dict):
+    import json as _j
+    try:
+        _SUMMARY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SUMMARY_CACHE_PATH.write_text(_j.dumps(cache, indent=2))
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("main").warning(f"summary cache save: {_e}")
+
+def _read_doc_bytes(rel_path: str) -> bytes | None:
+    """Bytes of a document by its '<category>/<rel>' path: local docs/ mirror first, then R2."""
+    local = DOCS_DIR / rel_path
+    if local.exists() and local.is_file():
+        return local.read_bytes()
+    if _r2.is_configured():
+        try:
+            import io as _io
+            buf = _io.BytesIO()
+            _r2._client().download_fileobj(_r2._R2_BUCKET, rel_path, buf)
+            return buf.getvalue()
+        except Exception:
+            return None
+    return None
+
+@app.get("/api/docs/summary")
+async def doc_summary(request: Request, path: str = "", refresh: bool = False):
+    """Quick AI review of one document. Cached by content md5 (first view generates, rest are
+    free/instant); regenerates only when the file changes or refresh=true. Haiku-generated."""
+    from fastapi import HTTPException as _HE
+    token = _get_tok(request)
+    if not (_auth_verify(token) if token else None):
+        raise _HE(status_code=401, detail="Not authenticated")
+    rel = (path or "").strip().lstrip("/")
+    parts = [p for p in rel.split("/") if p]
+    if not parts or ".." in parts or "\x00" in rel or parts[0] not in _DOC_CATS:
+        raise _HE(status_code=400, detail="Invalid document path")
+    if Path(rel).suffix.lower() not in _EMBEDDABLE_SUFFIXES:
+        raise _HE(status_code=400, detail="Summary is only available for text documents")
+    raw = _read_doc_bytes(rel)
+    if raw is None:
+        raise _HE(status_code=404, detail="Document not found")
+    import hashlib as _hl
+    md5 = _hl.md5(raw).hexdigest()
+    cache = _load_summary_cache()
+    hit = cache.get(rel)
+    if hit and hit.get("md5") == md5 and not refresh:
+        return {"path": rel, "summary": hit["summary"], "cached": True}
+    text = _extract_doc_text(Path(rel).name, raw)
+    if not text or not text.strip():
+        raise _HE(status_code=422, detail="No readable text in this document")
+    truncated = len(text) > 14000
+    prompt = (
+        "You are summarizing a KimFam Investment Club document so a member can grasp it without "
+        "opening the file. Use plain text only: no markdown headings, no asterisks. Begin with "
+        "'TL;DR: ' followed by one sentence. Then a blank line, then short bullet lines starting "
+        "with '- ' covering, where present: parties, key dates, amounts, the main obligations or "
+        "decisions, and any risks or things to flag. Be concise and factual, do not invent "
+        "anything not in the text."
+        + ("\nNote: the document was truncated; summarize what is shown." if truncated else "")
+        + "\n\nDocument follows:\n\n" + text[:14000]
+    )
+    summary = (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+    if not summary:
+        raise _HE(status_code=503, detail="Could not generate a summary right now. Please try again.")
+    # Re-load under lock and merge so a racing request for another doc isn't lost.
+    async with _SUMMARY_LOCK:
+        cache = _load_summary_cache()
+        cache[rel] = {"md5": md5, "summary": summary}
+        _save_summary_cache(cache)
+    return {"path": rel, "summary": summary, "cached": False, "truncated": truncated}
+
 @app.get("/api/docs/search")
 def search_docs(query: str = ""):
     query_lower = query.lower().strip()
