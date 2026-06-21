@@ -3299,6 +3299,26 @@ def _kimfam_context_for(rel: str, doc_text: str) -> str:
         import logging as _lg; _lg.getLogger("main").warning(f"summary context: {_e}")
     return taxo + related
 
+async def _summarize_doc_text(rel: str, text: str) -> str:
+    """Faithful document summary + a 'For KimFam' context section (Haiku). '' on failure."""
+    truncated = len(text) > 14000
+    context = _kimfam_context_for(rel, text)
+    prompt = (
+        "You are summarizing a document for the KimFam Investment Club so a member grasps it "
+        "without opening the file. Plain text only: no markdown headings, no asterisks.\n"
+        "First, strictly from THE DOCUMENT: begin with 'TL;DR: ' and one sentence, then a blank "
+        "line, then short '- ' bullets covering parties, key dates, amounts, and the main "
+        "obligations or decisions.\n"
+        "Then a blank line and a line reading exactly 'For KimFam:' followed by '- ' bullets on how "
+        "this connects to the club context below (related projects, decisions, actions) and anything "
+        "to watch or flag. Use the context ONLY for that section; it must NOT change the factual "
+        "summary, and do not invent anything not supported by the document or the context."
+        + ("\nNote: the document was truncated; summarize what is shown." if truncated else "")
+        + "\n\n--- KimFam context ---\n" + context
+        + "\n\n--- Document ---\n" + text[:14000]
+    )
+    return (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+
 @app.get("/api/docs/summary")
 async def doc_summary(request: Request, path: str = "", refresh: bool = False):
     """Quick AI review of one document. Cached by content md5 (first view generates, rest are
@@ -3327,25 +3347,10 @@ async def doc_summary(request: Request, path: str = "", refresh: bool = False):
     text = _extract_doc_text(Path(rel).name, raw)
     if not text or not text.strip():
         raise _HE(status_code=422, detail="No readable text in this document")
-    truncated = len(text) > 14000
-    context = _kimfam_context_for(rel, text)
-    prompt = (
-        "You are summarizing a document for the KimFam Investment Club so a member grasps it "
-        "without opening the file. Plain text only: no markdown headings, no asterisks.\n"
-        "First, strictly from THE DOCUMENT: begin with 'TL;DR: ' and one sentence, then a blank "
-        "line, then short '- ' bullets covering parties, key dates, amounts, and the main "
-        "obligations or decisions.\n"
-        "Then a blank line and a line reading exactly 'For KimFam:' followed by '- ' bullets on how "
-        "this connects to the club context below (related projects, decisions, actions) and anything "
-        "to watch or flag. Use the context ONLY for that section; it must NOT change the factual "
-        "summary, and do not invent anything not supported by the document or the context."
-        + ("\nNote: the document was truncated; summarize what is shown." if truncated else "")
-        + "\n\n--- KimFam context ---\n" + context
-        + "\n\n--- Document ---\n" + text[:14000]
-    )
-    summary = (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+    summary = await _summarize_doc_text(rel, text)
     if not summary:
         raise _HE(status_code=503, detail="Could not generate a summary right now. Please try again.")
+    truncated = len(text) > 14000
     # Re-load under lock and merge so a racing request for another doc isn't lost.
     async with _SUMMARY_LOCK:
         cache = _load_summary_cache()
@@ -5092,6 +5097,50 @@ def _trigger_embed():
         return False
 
 @app.post("/api/admin/upload-doc")
+def _store_document_bytes(contents: bytes, category: str, filename: str, subgroup: str = "") -> dict:
+    """Shared core for filing a document: sanitize, version a same-named prior copy into _versions/,
+    write local docs/ + R2, clear cache, re-embed. Caller validates auth + category first.
+    Returns {filename, group, r2_key, r2_url, archived_previous, embedding}."""
+    from fastapi import HTTPException as _HE
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in _ALLOWED_DOC_SUFFIXES:
+        raise _HE(status_code=400, detail=f"File type not allowed: {suffix}")
+    safe_filename = ("".join(c for c in (filename or "upload") if c.isalnum() or c in "._- ")).strip() or "upload"
+    # Sub-group is a single folder one level deep — no path traversal, no slashes.
+    safe_subgroup = ("".join(c for c in (subgroup or "") if c.isalnum() or c in "._- &")).strip()
+    # Reject traversal (.. / .) and reserved/hidden names (leading "." or "_", e.g. _versions).
+    if safe_subgroup.startswith((".", "_")) or safe_subgroup in {".", ".."}:
+        safe_subgroup = ""
+    rel_dir = f"{category}/{safe_subgroup}" if safe_subgroup else category
+
+    local_dir = DOCS_DIR / rel_dir
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_dir / safe_filename
+    archived_previous = False
+    if local_path.exists():
+        import time as _t
+        vdir = local_dir / "_versions"; vdir.mkdir(exist_ok=True)
+        local_path.rename(vdir / f"{Path(safe_filename).stem}.{_t.time_ns()}{suffix}")
+        archived_previous = True
+    with open(str(local_path), "wb") as fh:
+        fh.write(contents)
+
+    r2_key = f"{rel_dir}/{safe_filename}"
+    r2_url = None
+    if _r2.is_configured():
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(contents); tmp_path = tmp.name
+        try:
+            r2_url = _r2.upload(tmp_path, r2_key, public=(category in {"governance", "minutes"}))
+        finally:
+            _os.unlink(tmp_path)
+
+    _doc_cache.clear()
+    embedding = _trigger_embed() if suffix in _EMBEDDABLE_SUFFIXES else False
+    return {"filename": safe_filename, "group": safe_subgroup or "General", "r2_key": r2_key,
+            "r2_url": r2_url, "archived_previous": archived_previous, "embedding": embedding}
+
 async def admin_upload_doc(
     request: Request,
     category: str = Form(...),
@@ -5107,56 +5156,103 @@ async def admin_upload_doc(
         raise _HE(status_code=403, detail="Admin only")
     if category not in _ALLOWED_DOC_CATEGORIES:
         raise _HE(status_code=400, detail=f"Unknown category: {category}")
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in _ALLOWED_DOC_SUFFIXES:
-        raise _HE(status_code=400, detail=f"File type not allowed: {suffix}")
-
-    safe_filename = ("".join(c for c in (file.filename or "upload") if c.isalnum() or c in "._- ")).strip() or "upload"
-    # Sub-group is a single folder one level deep — no path traversal, no slashes.
-    safe_subgroup = ("".join(c for c in (subgroup or "") if c.isalnum() or c in "._- &")).strip()
-    # Reject traversal (.. / .) and reserved/hidden names (leading "." or "_", e.g. _versions).
-    if safe_subgroup.startswith((".", "_")) or safe_subgroup in {".", ".."}:
-        safe_subgroup = ""
-    rel_dir = f"{category}/{safe_subgroup}" if safe_subgroup else category
     contents = await file.read()
+    res = _store_document_bytes(contents, category, file.filename or "upload", subgroup)
+    return {"ok": True, **res}
 
-    # Write to local filesystem (keeps existing list/serve endpoints + embed working).
-    local_dir = DOCS_DIR / rel_dir
-    local_dir.mkdir(parents=True, exist_ok=True)
-    local_path = local_dir / safe_filename
-    archived_previous = False
-    if local_path.exists():
-        # Version the prior copy into a hidden _versions/ folder (get_docs skips _versions).
-        import time as _t
-        vdir = local_dir / "_versions"; vdir.mkdir(exist_ok=True)
-        local_path.rename(vdir / f"{Path(safe_filename).stem}.{_t.time_ns()}{suffix}")
-        archived_previous = True
-    with open(str(local_path), "wb") as fh:
-        fh.write(contents)
-
-    # Also upload to R2 (current copy; on prod get_docs serves from R2).
-    r2_key  = f"{rel_dir}/{safe_filename}"
-    r2_url  = None
-    if _r2.is_configured():
-        import tempfile, os as _os
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(contents)
-            tmp_path = tmp.name
+@app.post("/api/agent/classify-doc")
+async def agent_classify_doc(request: Request):
+    """Internal (agent): classify an inbound document BY CONTENT into the Documents taxonomy and
+    propose a filing + summary + matching action. Advisory only — the agent asks Hillary to approve."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    if not _internal_key_ok(request):
+        raise _HE(status_code=403, detail="forbidden")
+    body = await request.json()
+    spath = (body.get("server_path") or "").strip()
+    fname = (body.get("filename") or (Path(spath).name if spath else "")).strip()
+    if not spath or Path(fname).suffix.lower() not in _EMBEDDABLE_SUFFIXES:
+        raise _HE(status_code=400, detail="server_path + a text-document filename required")
+    p = Path(spath)
+    if not p.is_file():
+        raise _HE(status_code=404, detail="file not found on server")
+    text = _extract_doc_text(fname, p.read_bytes())
+    if not text or not text.strip():
+        raise _HE(status_code=422, detail="no readable text in document")
+    docs = get_docs()
+    subs = {c: [g["label"] for g in docs.get(c, {}).get("groups", [])] for c in _DOC_CATS}
+    cat_lines = "\n".join(
+        f"  {c} ({CATEGORY_LABELS[c]}); existing sub-groups: {', '.join(subs.get(c) or ['(none)'])}"
+        for c in _DOC_CATS)
+    try:
+        acts = _dbq("SELECT ref, description FROM actions WHERE status NOT IN ('done','cancelled') ORDER BY ref DESC LIMIT 40")
+        act_lines = "\n".join(f"  {a['ref']}: {(a['description'] or '')[:80]}" for a in acts)
+    except Exception:
+        act_lines = ""
+    prompt = (
+        "Classify this KimFam document for filing, BY CONTENT (not filename). Categories and their "
+        "existing sub-groups:\n" + cat_lines +
+        "\n\nOpen action points (ref: description):\n" + (act_lines or "  (none)") +
+        "\n\nReturn ONLY a JSON object: {\"category\": one of [" + ", ".join(_DOC_CATS) + "], "
+        "\"subgroup\": an existing sub-group name if one fits, else a concise new Title Case name, "
+        "\"related_action_ref\": the single best matching action ref or null, "
+        "\"confidence\": a number 0.0-1.0, \"reason\": one short sentence}.\n\nDocument follows:\n\n"
+        + text[:12000]
+    )
+    raw_out = (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+    import json as _json, re as _re
+    m = _re.search(r"\{.*\}", raw_out, _re.DOTALL)
+    try:
+        cls = _json.loads(m.group()) if m else {}
+    except Exception:
+        cls = {}
+    category = cls.get("category") if cls.get("category") in _DOC_CATS else None
+    aref = cls.get("related_action_ref")
+    if aref:
         try:
-            public = category in {"governance", "minutes"}
-            r2_url = _r2.upload(tmp_path, r2_key, public=public)
-        finally:
-            _os.unlink(tmp_path)
+            if not _dbq("SELECT 1 FROM actions WHERE ref=%s", (str(aref),)):
+                aref = None
+        except Exception:
+            pass
+    summary = await _summarize_doc_text((category + "/" + fname) if category else fname, text)
+    return {"category": category, "subgroup": (cls.get("subgroup") or "").strip(),
+            "related_action_ref": aref, "confidence": cls.get("confidence"),
+            "reason": (cls.get("reason") or "")[:200], "summary": summary, "filename": fname}
 
-    # Invalidate doc cache so new file appears immediately
-    _doc_cache.clear()
-
-    # Re-embed for Ask KimFam (text docs only).
-    embedding = _trigger_embed() if suffix in _EMBEDDABLE_SUFFIXES else False
-
-    return {"ok": True, "filename": safe_filename, "group": safe_subgroup or "General",
-            "r2_key": r2_key, "r2_url": r2_url,
-            "archived_previous": archived_previous, "embedding": embedding}
+@app.post("/api/agent/file-doc")
+async def agent_file_doc(request: Request):
+    """Internal (agent): after Hillary approves, file an inbound document (R2 + docs/ + embed) and
+    comment on the matched action. Never closes the action."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq, execute as _exec
+    if not _internal_key_ok(request):
+        raise _HE(status_code=403, detail="forbidden")
+    body = await request.json()
+    spath = (body.get("server_path") or "").strip()
+    fname = (body.get("filename") or (Path(spath).name if spath else "")).strip()
+    category = (body.get("category") or "").strip()
+    subgroup = (body.get("subgroup") or "").strip()
+    action_ref = (body.get("related_action_ref") or "").strip()
+    note = (body.get("note") or "").strip()
+    if category not in _DOC_CATS:
+        raise _HE(status_code=400, detail="invalid category")
+    p = Path(spath)
+    if not p.is_file():
+        raise _HE(status_code=404, detail="file not found on server")
+    res = _store_document_bytes(p.read_bytes(), category, fname, subgroup)
+    commented = False
+    if action_ref:
+        try:
+            rows = _dbq("SELECT id FROM actions WHERE ref=%s", (action_ref,))
+            if rows:
+                txt = note or (f"Document filed via agent: {res['filename']} "
+                               f"(Project Documents / {res['group']}), indexed for Ask KimFam. Under review.")
+                _exec("INSERT INTO action_updates (action_id, author, text, type) VALUES (%s,%s,%s,'comment')",
+                      (rows[0]["id"], "Rincol AI", txt))
+                commented = True
+        except Exception as e:
+            log.warning(f"file-doc action comment failed: {e}")
+    return {"ok": True, **res, "action_ref": action_ref or None, "action_commented": commented}
 
 
 # ── Contributions (Sprint 1) ──────────────────────────────────────────────────
