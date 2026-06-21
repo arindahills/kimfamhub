@@ -1552,6 +1552,17 @@ exhaustive about what they do support."""
                 data = None
     if not isinstance(data, dict):
         return None
+    # Force authoritative chair/secretary from office_bearers; never trust AI inference
+    try:
+        _ob_rows = _dbq_n("""SELECT role_slug, member_name FROM club_office_bearers
+                              WHERE effective_to IS NULL""")
+        _ob = {x["role_slug"]: x["member_name"] for x in _ob_rows}
+        if _ob.get("chairman"):
+            data["chair"] = _ob["chairman"]
+        if _ob.get("secretary"):
+            data["secretary"] = _ob["secretary"]
+    except Exception:
+        pass
     data["_start_eat"] = _fmt_eat(r["conductor_started_at"])
     data["_end_eat"]   = _fmt_eat(r["conductor_ended_at"])
     data["prior_actions_status"] = prior_status
@@ -1790,10 +1801,12 @@ async def meetings_minutes_draft_replace(meeting_id: int, request: Request):
 
 @app.post("/api/meetings/{meeting_id}/minutes/edit")
 async def meetings_minutes_edit(meeting_id: int, request: Request):
-    """Apply a plain-English edit instruction to the minutes via Claude, regenerate .docx."""
+    """Apply a plain-English edit instruction to the minutes via Claude, regenerate .docx.
+    Streamed (SSE) so the Cloudflare 60s edge timeout is never hit."""
     from fastapi import HTTPException as _HE
+    from fastapi.responses import StreamingResponse as _SR
     from db import query as _dbq
-    import os as _os, json as _json3, re as _re4
+    import os as _os, json as _json3, re as _re4, asyncio as _aio
 
     token = _get_tok(request)
     payload = _auth_verify(token)
@@ -1813,12 +1826,13 @@ async def meetings_minutes_edit(meeting_id: int, request: Request):
     with open(data_path) as _f:
         minutes_data = _json3.load(_f)
 
-    prompt = f"""You are editing KimFam Investment Club meeting minutes.
+    async def _apply_edit():
+        prompt = f"""You are editing KimFam Investment Club meeting minutes.
 
 CURRENT MINUTES (JSON):
 {_json3.dumps(minutes_data, indent=2)}
 
-EDIT INSTRUCTION FROM CHAIRMAN:
+EDIT INSTRUCTION:
 {instruction}
 
 Apply the instruction and return ONLY valid JSON with the same structure (no markdown, no explanation):
@@ -1840,59 +1854,75 @@ Rules:
 - Preserve all action refs exactly as-is.
 - Keep all existing actions unless explicitly told to remove one.
 """
-
-    raw = ""
-    try:
-        import asyncio as _aio
-        env = dict(_os.environ); env["HOME"] = "/root"
-        proc = await _aio.create_subprocess_exec(
-            "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
-            stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
-        )
-        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=60)
-        if proc.returncode == 0:
-            raw = stdout.decode().strip()
-    except Exception:
-        pass
-
-    if not raw:
-        groq_key = _os.getenv("GROQ_API_KEY", "")
-        if groq_key:
-            from groq import Groq as _Groq
-            resp = _Groq(api_key=groq_key).chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000, temperature=0.1,
+        raw = ""
+        try:
+            env = dict(_os.environ); env["HOME"] = "/root"
+            proc = await _aio.create_subprocess_exec(
+                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
             )
-            raw = resp.choices[0].message.content.strip()
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode == 0:
+                raw = stdout.decode().strip()
+        except Exception:
+            pass
 
-    if not raw:
-        raise _HE(status_code=503, detail="AI unavailable — try again")
+        if not raw:
+            groq_key = _os.getenv("GROQ_API_KEY", "")
+            if groq_key:
+                from groq import Groq as _Groq
+                resp = _Groq(api_key=groq_key).chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000, temperature=0.1,
+                )
+                raw = resp.choices[0].message.content.strip()
 
-    raw = _re4.sub(r"^```(?:json)?\s*", "", raw)
-    raw = _re4.sub(r"\s*```$", "", raw.strip())
-    try:
-        updated = _json3.loads(raw)
-    except Exception:
-        m = _re4.search(r"\{.*\}", raw, _re4.DOTALL)
-        if m:
-            updated = _json3.loads(m.group())
-        else:
-            raise _HE(status_code=502, detail="AI returned unparseable response")
+        if not raw:
+            raise _HE(status_code=503, detail="AI unavailable — try again")
 
-    # Save updated data + regenerate .docx
-    with open(data_path, "w") as _f:
-        _json3.dump(updated, _f)
+        raw = _re4.sub(r"^```(?:json)?\s*", "", raw)
+        raw = _re4.sub(r"\s*```$", "", raw.strip())
+        try:
+            updated = _json3.loads(raw)
+        except Exception:
+            m = _re4.search(r"\{.*\}", raw, _re4.DOTALL)
+            if m:
+                updated = _json3.loads(m.group())
+            else:
+                raise _HE(status_code=502, detail="AI returned unparseable response")
 
-    mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
-    _docx_bytes = _build_minutes_docx(mtg=mtg_row[0] if mtg_row else {}, **{
-        k: updated[k]
-        for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
-    })
-    with open(draft_path, "wb") as _f:
-        _f.write(_docx_bytes)
+        with open(data_path, "w") as _f:
+            _json3.dump(updated, _f)
 
-    return {"ok": True, "minutes_data": updated}
+        mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
+        _docx_bytes = _build_minutes_docx(mtg=mtg_row[0] if mtg_row else {}, **{
+            k: updated[k]
+            for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
+        })
+        with open(draft_path, "wb") as _f:
+            _f.write(_docx_bytes)
+
+        return {"ok": True, "minutes_data": updated}
+
+    async def _gen():
+        yield _sse({"type": "step", "msg": "Applying your change to the minutes..."})
+        task = _aio.create_task(_apply_edit())
+        while not task.done():
+            await _aio.sleep(6)
+            if not task.done():
+                yield _sse({"type": "step", "msg": "Still working, almost done..."})
+        try:
+            res = task.result()
+            yield _sse({**res, "type": "result"})
+        except _HE as he:
+            yield _sse({"type": "error", "msg": str(he.detail)})
+        except Exception as e:
+            log.error(f"minutes edit stream error: {e}")
+            yield _sse({"type": "error", "msg": "Edit failed. Please try again."})
+
+    return _SR(_gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
 @app.post("/api/meetings/{meeting_id}/publish")

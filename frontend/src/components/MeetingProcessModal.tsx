@@ -206,13 +206,12 @@ export default function MeetingProcessModal({ meetingId, meetingRef, initialNote
     setApplying(true); setError('')
     const tid = toast.loading('Applying your change to the minutes…')
     try {
-      const res  = await fetch(`/api/meetings/${meetingId}/minutes/edit`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction: instr }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Edit failed')
+      const data = await streamAi(
+        `/api/meetings/${meetingId}/minutes/edit`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instruction: instr }) },
+        msg => toast.update(tid, msg, 'loading'),
+      )
       setMinutesData(data.minutes_data)
       setEditInstruction('')
       toast.update(tid, 'Edit applied', 'success')
