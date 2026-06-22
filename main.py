@@ -1526,7 +1526,7 @@ subsections, paragraphs and bullets as the meeting needs):
 
 Number the sections sequentially from 1. Only include what the inputs support, but be
 exhaustive about what they do support."""
-    raw = _ask_claude(prompt, model="claude-haiku-4-5-20251001", timeout=240)
+    raw = _ask_claude(prompt, model="claude-sonnet-4-6", timeout=300)
     def _parse(x):
         if not x: return None
         try: return _json_n2.loads(x)
