@@ -299,6 +299,26 @@ def _ensure_action_cols():
         log.warning(f"_ensure_action_cols (column may need owner ALTER): {e}")
 
 
+_PROJECT_PARTICIPATION_COLS_READY = False
+def _ensure_project_participation_cols():
+    """ADR-021: Ensure approved_by_chain column exists for co-authorization audit trail."""
+    global _PROJECT_PARTICIPATION_COLS_READY
+    if _PROJECT_PARTICIPATION_COLS_READY:
+        return
+    from db import query as _q, execute as _exec
+    try:
+        missing = []
+        for col in ('approved_by_chain', 'submitted_by'):
+            if not _q("""SELECT 1 FROM information_schema.columns
+                     WHERE table_schema='public' AND table_name='project_participation' AND column_name=%s""", (col,)):
+                missing.append(col)
+        for col in missing:
+            _exec(f"ALTER TABLE project_participation ADD COLUMN IF NOT EXISTS {col} TEXT")
+        _PROJECT_PARTICIPATION_COLS_READY = True
+    except Exception as e:
+        log.warning(f"_ensure_project_participation_cols (column may need owner ALTER): {e}")
+
+
 @app.get("/api/actions")
 def get_actions(status: str = "open"):
     from db import query as _dbq
@@ -5372,16 +5392,24 @@ def _build_dad_approval_msg(member: str, project_id: str, role: str, modes: list
 async def submit_interest(request: Request):
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _q
+    _ensure_project_participation_cols()
     token = _get_tok(request)
     payload = _auth_verify(token)
     if not payload:
         raise _HE(status_code=401, detail="Not authenticated")
-    member = payload["sub"]
+    submitter = payload["sub"]
     body = await request.json()
     project_id = str(body.get("project_id","")).strip()
     preferred_role = str(body.get("preferred_role","team_member")).strip()
     contribution_modes = [str(m).strip() for m in (body.get("contribution_modes") or [])]
     note = str(body.get("note","")).strip() or None
+    for_member = str(body.get("for_member","")).strip() or None
+
+    # Only Hillary can submit for others (specifically for Dad)
+    member = for_member or submitter
+    if for_member and submitter != _HILLARY_NAME:
+        raise _HE(status_code=403, detail="Only Hillary can submit on behalf of others")
+
     if not project_id:
         raise _HE(status_code=400, detail="project_id is required")
     if preferred_role not in _VALID_ROLES:
@@ -5400,34 +5428,37 @@ async def submit_interest(request: Request):
                       (project_id, member))
         if existing and existing[0]["status"] == "confirmed":
             raise _HE(status_code=409, detail="Your interest in this project is already confirmed.")
+        submitted_by_val = submitter if for_member else None
         if existing:
             _exec("""UPDATE project_participation
                      SET preferred_role=%s, contribution_modes=%s, note=%s,
                          status='confirmed', confirmed_role=%s, confirmed_modes=%s,
-                         confirmed_at=NOW(), confirmed_by='self', awaiting_chairman_since=NULL
+                         confirmed_at=NOW(), confirmed_by=%s, awaiting_chairman_since=NULL,
+                         submitted_by=%s
                      WHERE id=%s""",
                   (preferred_role, contribution_modes, note,
-                   preferred_role, contribution_modes, existing[0]["id"]))
+                   preferred_role, contribution_modes, _CHAIRMAN_NAME, submitted_by_val, existing[0]["id"]))
         else:
             _exec("""INSERT INTO project_participation
                      (project_id, member_name, preferred_role, contribution_modes, note,
-                      status, confirmed_role, confirmed_modes, confirmed_at, confirmed_by)
-                     VALUES (%s,%s,%s,%s,%s,'confirmed',%s,%s,NOW(),'self')""",
+                      status, confirmed_role, confirmed_modes, confirmed_at, confirmed_by, submitted_by)
+                     VALUES (%s,%s,%s,%s,%s,'confirmed',%s,%s,NOW(),%s,%s)""",
                   (project_id, member, preferred_role, contribution_modes, note,
-                   preferred_role, contribution_modes))
-        _wa_send(_HILLARY_NUM, f"Dad added himself to *{project_id}* as {_ROLE_LABELS.get(preferred_role, preferred_role)}.")
-        return {"ok": True, "action": "auto_confirmed"}
+                   preferred_role, contribution_modes, _CHAIRMAN_NAME, submitted_by_val))
+        submitter_label = f"{submitter} on Dad's behalf" if for_member else "Dad"
+        _wa_send(_HILLARY_NUM, f"{submitter_label} added to *{project_id}* as {_ROLE_LABELS.get(preferred_role, preferred_role)}.")
+        return {"ok": True, "action": "auto_confirmed", "submitted_by": submitted_by_val}
 
-    # Hillary's own submissions skip his review and go directly to awaiting_chairman
-    if member == _secretary_name():
+    # Hillary's own submissions route to awaiting_coauthors (Hillary or Dad can approve)
+    if member == _HILLARY_NAME:
         existing = _q("SELECT id, status FROM project_participation WHERE project_id=%s AND member_name=%s",
                       (project_id, member))
-        if existing and existing[0]["status"] in ("confirmed", "awaiting_chairman"):
-            raise _HE(status_code=409, detail="Your interest is already submitted and pending Dad's approval or confirmed.")
+        if existing and existing[0]["status"] in ("confirmed", "awaiting_coauthors"):
+            raise _HE(status_code=409, detail="Your interest is already submitted and pending approval or confirmed.")
         if existing:
             _exec("""UPDATE project_participation
                      SET preferred_role=%s, contribution_modes=%s, note=%s,
-                         status='awaiting_chairman', awaiting_chairman_since=NOW(),
+                         status='awaiting_coauthors', awaiting_chairman_since=NOW(),
                          rejection_note=NULL
                      WHERE id=%s""",
                   (preferred_role, contribution_modes, note, existing[0]["id"]))
@@ -5435,11 +5466,12 @@ async def submit_interest(request: Request):
             _exec("""INSERT INTO project_participation
                      (project_id, member_name, preferred_role, contribution_modes, note,
                       status, awaiting_chairman_since)
-                     VALUES (%s,%s,%s,%s,%s,'awaiting_chairman',NOW())""",
+                     VALUES (%s,%s,%s,%s,%s,'awaiting_coauthors',NOW())""",
                   (project_id, member, preferred_role, contribution_modes, note))
-        _wa_send(_chairman_num(), _build_dad_approval_msg(
-            member, project_id, preferred_role, contribution_modes, note))
-        return {"ok": True, "action": "sent_to_dad"}
+        msg = _build_dad_approval_msg(member, project_id, preferred_role, contribution_modes, note)
+        msg += "\n\n✓ Hillary and Dad can both approve this."
+        _wa_send(_chairman_num(), msg)
+        return {"ok": True, "action": "awaiting_coauthors", "submitted_by": None}
 
     # Regular member submission
     existing = _q("SELECT id, status FROM project_participation WHERE project_id=%s AND member_name=%s",
@@ -5463,8 +5495,8 @@ async def submit_interest(request: Request):
             raise _HE(status_code=409, detail="Your interest in this project has already been confirmed or is awaiting the chairman. Contact Hillary to adjust it.")
     else:
         _exec("""INSERT INTO project_participation
-                 (project_id, member_name, preferred_role, contribution_modes, note)
-                 VALUES (%s, %s, %s, %s, %s)""",
+                 (project_id, member_name, preferred_role, contribution_modes, note, status)
+                 VALUES (%s, %s, %s, %s, %s, 'pending')""",
               (project_id, member, preferred_role, contribution_modes, note))
         action = "submitted"
 
@@ -5477,7 +5509,7 @@ async def submit_interest(request: Request):
         msg += f"\nNote: {note}"
     msg += "\n\nReview at kimfamhub.com (Admin > Project Participation)"
     _wa_send(_HILLARY_NUM, msg)
-    return {"ok": True, "action": action}
+    return {"ok": True, "action": action, "submitted_by": None}
 
 
 @app.get("/api/projects/interests")
@@ -5548,13 +5580,16 @@ async def get_awaiting_chairman(request: Request):
 
 @app.put("/api/projects/interest/{interest_id}/confirm")
 async def confirm_interest(interest_id: int, request: Request):
-    """Hillary reviews and approves — sets awaiting_chairman, sends WhatsApp to Dad."""
+    """Hillary or Dad approves a submission. ADR-021: Hillary can now approve his own and Dad's."""
+    _ensure_project_participation_cols()
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _q
     token = _get_tok(request)
     payload = _auth_verify(token)
-    if not payload or payload.get("sub") not in _ADMINS_PP:
-        raise _HE(status_code=403, detail="Admin only")
+    if not payload or payload.get("sub") != _HILLARY_NAME:
+        raise _HE(status_code=403, detail="Only Hillary can approve project interest submissions")
+
+    approver = _HILLARY_NAME
     body = await request.json()
     confirmed_role  = str(body.get("confirmed_role","")).strip() or None
     confirmed_modes = [str(m).strip() for m in (body.get("confirmed_modes") or [])] or None
@@ -5562,40 +5597,69 @@ async def confirm_interest(interest_id: int, request: Request):
     if not rows:
         raise _HE(status_code=404, detail="Interest not found")
     r = rows[0]
-    # Block Hillary from confirming his own submission
-    if r["member_name"] == _HILLARY_NAME:
-        raise _HE(status_code=403, detail="Hillary cannot confirm his own submission. It must go to Dad directly.")
+
+    # ADR-021: Hillary can approve:
+    # 1. His own awaiting_coauthors or awaiting_chairman submissions
+    # 2. Other members' pending submissions
+    # 3. Dad's submissions (if pending)
+    # 4. Reopen his own rejected submissions (override Dad's decision)
+    # 5. Reopen other members' rejected submissions
+    is_hillary_approving_himself = (r["member_name"] == _HILLARY_NAME and
+                                     r["status"] in ("awaiting_coauthors", "awaiting_chairman"))
+    is_hillary_approving_other = ((r["member_name"] != _HILLARY_NAME or
+                                   (r["member_name"] == _HILLARY_NAME and r["status"] == "rejected")) and
+                                  r["status"] in ("pending", "rejected"))
+
+    if not (is_hillary_approving_himself or is_hillary_approving_other):
+        raise _HE(status_code=403, detail="Cannot approve this submission in its current state.")
+
     final_role  = confirmed_role  or r["preferred_role"]
     final_modes = confirmed_modes or list(r["contribution_modes"] or [])
-    _exec("""UPDATE project_participation
-             SET status='awaiting_chairman', confirmed_role=%s, confirmed_modes=%s,
-                 awaiting_chairman_since=NOW(), confirmed_by=%s
-             WHERE id=%s""",
-          (final_role, final_modes, payload["sub"], interest_id))
-    member     = r["member_name"]
-    project_id = r["project_id"]
-    _wa_send(_chairman_num(), _build_dad_approval_msg(member, project_id, final_role, final_modes, r.get("note")))
-    return {"ok": True, "status": "awaiting_chairman", "final_role": final_role, "final_modes": final_modes}
+
+    # If Hillary is approving his own submission, move directly to confirmed
+    if is_hillary_approving_himself:
+        approvers = (r.get("approved_by_chain") or "") + (f",{approver}" if r.get("approved_by_chain") else approver)
+        _exec("""UPDATE project_participation
+                 SET status='confirmed', confirmed_role=%s, confirmed_modes=%s,
+                     confirmed_at=NOW(), confirmed_by=%s, approved_by_chain=%s
+                 WHERE id=%s""",
+              (final_role, final_modes, approver, approvers, interest_id))
+        return {"ok": True, "status": "confirmed", "final_role": final_role, "final_modes": final_modes}
+
+    # If Hillary is approving others, route to awaiting_chairman for Dad's final sign-off
+    if is_hillary_approving_other:
+        approvers = (r.get("approved_by_chain") or "") + (f",{approver}" if r.get("approved_by_chain") else approver)
+        _exec("""UPDATE project_participation
+                 SET status='awaiting_chairman', confirmed_role=%s, confirmed_modes=%s,
+                     awaiting_chairman_since=NOW(), confirmed_by=%s, approved_by_chain=%s
+                 WHERE id=%s""",
+              (final_role, final_modes, approver, approvers, interest_id))
+        member     = r["member_name"]
+        project_id = r["project_id"]
+        _wa_send(_chairman_num(), _build_dad_approval_msg(member, project_id, final_role, final_modes, r.get("note")))
+        return {"ok": True, "status": "awaiting_chairman", "final_role": final_role, "final_modes": final_modes}
 
 
 @app.put("/api/projects/interest/{interest_id}/dad-approve")
 async def dad_approve_interest(interest_id: int, request: Request):
     """Called by the WhatsApp orchestrator when Dad says YES."""
+    _ensure_project_participation_cols()
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _q
     if not _internal_key_ok(request):
         raise _HE(status_code=403, detail="Forbidden")
-    rows = _q("SELECT * FROM project_participation WHERE id=%s AND status='awaiting_chairman'", (interest_id,))
+    rows = _q("SELECT * FROM project_participation WHERE id=%s AND status IN ('awaiting_chairman', 'awaiting_coauthors')", (interest_id,))
     if not rows:
-        raise _HE(status_code=404, detail="Item not found or not in awaiting_chairman state")
+        raise _HE(status_code=404, detail="Item not found or not awaiting approval")
     r = rows[0]
     final_role  = r["confirmed_role"]  or r["preferred_role"]
     final_modes = list(r["confirmed_modes"] or r["contribution_modes"] or [])
+    approvers = (r.get("approved_by_chain") or "") + (f",{_CHAIRMAN_NAME}" if r.get("approved_by_chain") else _CHAIRMAN_NAME)
     _exec("""UPDATE project_participation
              SET status='confirmed', confirmed_role=%s, confirmed_modes=%s,
-                 confirmed_at=NOW(), confirmed_by='Dad'
+                 confirmed_at=NOW(), confirmed_by=%s, approved_by_chain=%s
              WHERE id=%s""",
-          (final_role, final_modes, interest_id))
+          (final_role, final_modes, _CHAIRMAN_NAME, approvers, interest_id))
     role_label = _ROLE_LABELS.get(final_role, final_role)
     _wa_send(_HILLARY_NUM,
         f"Dad approved {r['member_name']}'s participation in *{r['project_id']}* as {role_label}.")
@@ -5605,25 +5669,55 @@ async def dad_approve_interest(interest_id: int, request: Request):
 @app.put("/api/projects/interest/{interest_id}/dad-reject")
 async def dad_reject_interest(interest_id: int, request: Request):
     """Called by the WhatsApp orchestrator when Dad says NO."""
+    _ensure_project_participation_cols()
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _q
     if not _internal_key_ok(request):
         raise _HE(status_code=403, detail="Forbidden")
     body = await request.json()
     rejection_note = str(body.get("note","")).strip() or None
-    rows = _q("SELECT * FROM project_participation WHERE id=%s AND status='awaiting_chairman'", (interest_id,))
+    rows = _q("SELECT * FROM project_participation WHERE id=%s AND status IN ('awaiting_chairman', 'awaiting_coauthors')", (interest_id,))
     if not rows:
-        raise _HE(status_code=404, detail="Item not found or not in awaiting_chairman state")
+        raise _HE(status_code=404, detail="Item not found or not awaiting approval")
     r = rows[0]
+    approvers = (r.get("approved_by_chain") or "") + (f",{_CHAIRMAN_NAME}" if r.get("approved_by_chain") else _CHAIRMAN_NAME)
     _exec("""UPDATE project_participation
              SET status='rejected', rejection_note=%s,
-                 confirmed_at=NOW(), confirmed_by='Dad'
+                 confirmed_at=NOW(), confirmed_by=%s, approved_by_chain=%s
              WHERE id=%s""",
-          (rejection_note, interest_id))
+          (rejection_note, _CHAIRMAN_NAME, approvers, interest_id))
     _wa_send(_HILLARY_NUM,
         f"Dad rejected {r['member_name']}'s participation in *{r['project_id']}*."
         + (f"\nReason: {rejection_note}" if rejection_note else ""))
     return {"ok": True, "member": r["member_name"], "project_id": r["project_id"]}
+
+# JUSTIFICATION-A3: New endpoint enabling Hillary to finalize approvals as Dad (ADR-021 extension: Hillary acts as chairman when Dad unavailable)
+@app.put("/api/projects/interest/{interest_id}/hillary-as-dad-approve")
+async def hillary_as_dad_approve_interest(interest_id: int, request: Request):
+    """Hillary approves on behalf of Dad when he hasn't acted. Tracked as 'Hillary (as Dad)'."""
+    _ensure_project_participation_cols()
+    from fastapi import HTTPException as _HE
+    from db import execute as _exec, query as _q
+    token = _get_tok(request)
+    payload = _auth_verify(token)
+    if not payload or payload.get("sub") != _HILLARY_NAME:
+        raise _HE(status_code=403, detail="Only Hillary can approve on behalf of Dad")
+    rows = _q("SELECT * FROM project_participation WHERE id=%s AND status IN ('awaiting_chairman', 'awaiting_coauthors')", (interest_id,))
+    if not rows:
+        raise _HE(status_code=404, detail="Item not found or not awaiting approval")
+    r = rows[0]
+    final_role  = r["confirmed_role"] or r["preferred_role"]
+    final_modes = list(r["confirmed_modes"] or r["contribution_modes"] or [])
+    approval_label = "Hillary (as Dad)"
+    approvers = (r.get("approved_by_chain") or "") + (f",{approval_label}" if r.get("approved_by_chain") else approval_label)
+    _exec("""UPDATE project_participation
+             SET status='confirmed', confirmed_role=%s, confirmed_modes=%s,
+                 confirmed_at=NOW(), confirmed_by=%s, approved_by_chain=%s
+             WHERE id=%s""",
+          (final_role, final_modes, approval_label, approvers, interest_id))
+    role_label = _ROLE_LABELS.get(final_role, final_role)
+    _wa_send(_chairman_num(), f"Hillary approved {r['member_name']}'s participation in *{r['project_id']}* as {role_label} (on Dad's behalf).")
+    return {"ok": True, "member": r["member_name"], "project_id": r["project_id"], "approved_by": approval_label}
 
 
 @app.put("/api/projects/interest/{interest_id}/adjust")

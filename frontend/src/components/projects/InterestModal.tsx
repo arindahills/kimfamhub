@@ -157,32 +157,34 @@ const initials = (name: string) => name.trim().slice(0, 1).toUpperCase()
 /**
  * Replaces the "Express Interest" button once the member has already applied —
  * the control now reflects where their application sits in the approval flow.
+ * Hillary can approve her own awaiting_chairman/awaiting_coauthors submissions.
  */
-function MyInterestStatus({ status, onClick }: { status: string; onClick: () => void }) {
+function MyInterestStatus({ status, onApprove }: { status: string; onApprove?: () => void }) {
   const base = 'flex items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-semibold'
   if (status === 'confirmed') {
     return (
-      <button onClick={onClick} className={base} style={{ color: '#34d399', background: 'rgba(52,211,153,.13)', border: '1px solid rgba(52,211,153,.4)' }}>
+      <span className={base} style={{ color: '#34d399', background: 'rgba(52,211,153,.13)', border: '1px solid rgba(52,211,153,.4)' }}>
         <ShieldCheck size={13} /> Interest Confirmed
-      </button>
+      </span>
     )
   }
-  if (status === 'awaiting_chairman') {
+  if (status === 'awaiting_chairman' || status === 'awaiting_coauthors') {
     return (
-      <button onClick={onClick} className={base} style={{ color: '#a5b4fc', background: 'rgba(129,140,248,.13)', border: '1px solid rgba(129,140,248,.4)' }}>
-        <Clock size={13} /> Awaiting Chairman
+      <button onClick={onApprove} className={base} style={{ color: '#22c55e', background: 'rgba(34,197,94,.16)', border: '1px solid rgba(34,197,94,.5)', cursor: 'pointer' }}>
+        <Check size={13} /> Approve
       </button>
     )
   }
   // pending / anything else mid-review — animated "checking approval" shimmer
   return (
-    <button onClick={onClick} className={cn(base, 'status-checking')} style={{ color: '#fcd34d', background: 'rgba(251,191,36,.13)', border: '1px solid rgba(251,191,36,.4)' }}>
+    <span className={cn(base, 'status-checking')} style={{ color: '#fcd34d', background: 'rgba(251,191,36,.13)', border: '1px solid rgba(251,191,36,.4)' }}>
       <Clock size={13} /> Checking approval…
-    </button>
+    </span>
   )
 }
 
 export function TeamInterest({ projectId, onExpressInterest }: { projectId: string; onExpressInterest: () => void }) {
+  const qc = useQueryClient()
   const { user } = useAuth()
   const me = user?.name || ''
   const [open, setOpen] = useState(false)
@@ -191,6 +193,37 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
     queryKey: ['interests', projectId],
     queryFn: () => fetch(`/api/projects/interests?project_id=${projectId}`, { credentials: 'include' }).then(r => r.ok ? r.json() : []),
     staleTime: 60_000,
+  })
+
+  const approve = useMutation({
+    mutationFn: (interestId: number) =>
+      fetch(`/api/projects/interest/${interestId}/confirm`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed_role: 'team_member', confirmed_modes: [] }),
+      }).then(async r => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Approval failed')
+        return r.json()
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['interests', projectId] })
+    },
+  })
+
+  const approveAsDad = useMutation({
+    mutationFn: (interestId: number) =>
+      fetch(`/api/projects/interest/${interestId}/hillary-as-dad-approve`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      }).then(async r => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'Approval failed')
+        return r.json()
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['interests', projectId] })
+    },
   })
 
   const visible = interests.filter(r => r.status !== 'rejected' || r.member_name === me)
@@ -211,7 +244,10 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
           <span className="rounded-full bg-[var(--primary)]/15 px-1.5 text-[11px] font-semibold text-[#93c5fd]">{visible.length}</span>
         </button>
         {mine ? (
-          <MyInterestStatus status={mine.status} onClick={() => visible.length && setOpen(true)} />
+          <MyInterestStatus
+            status={mine.status}
+            onApprove={() => mine.id && approve.mutate(mine.id)}
+          />
         ) : (
           <button
             onClick={onExpressInterest}
@@ -230,6 +266,7 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
             const roleLabel = r.preferred_role === 'project_lead' ? 'Project Lead' : 'Team Member'
             const modes = r.contribution_modes?.length ? r.contribution_modes.join(', ') : ''
             const isMe = r.member_name === me
+            const canApproveAsDad = me === 'Hillary' && !isMe && r.status === 'awaiting_chairman'
             return (
               <div key={r.id} className="flex items-center gap-2.5 px-3 py-2.5">
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold" style={{ background: `${color}22`, color }}>{initials(r.member_name)}</div>
@@ -240,7 +277,13 @@ export function TeamInterest({ projectId, onExpressInterest }: { projectId: stri
                   </div>
                   <div className="truncate text-[11px] text-[var(--muted-2)]">{roleLabel}{modes ? ` · ${modes}` : ''}</div>
                 </div>
-                <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ color, background: `${color}1f` }}>{titleCase(r.status)}</span>
+                {canApproveAsDad ? (
+                  <button onClick={() => r.id && approveAsDad.mutate(r.id)} className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ color: '#22c55e', background: 'rgba(34,197,94,.16)', border: '1px solid rgba(34,197,94,.5)', cursor: 'pointer' }}>
+                    Approve (as Dad)
+                  </button>
+                ) : (
+                  <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ color, background: `${color}1f` }}>{titleCase(r.status)}</span>
+                )}
               </div>
             )
           })}
