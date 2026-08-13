@@ -63,7 +63,66 @@ def send_push(sub: dict, title: str, body: str) -> bool:
             log.warning(f"  Push failed for {sub['member_name']}: {e}")
         return False
 
-# Most recent cycle whose due_date has passed and still has unpaid active members
+
+# ── Auto-create cycle if the current period's cycle doesn't exist ─────────────
+# Cycles run 28th-to-28th. If today is past the 28th, we're in next month's cycle.
+KLAFAM_ROTATION = ["arindas", "turamyes", "priscilla", "alex"]
+
+def _klafam_due_month(d):
+    """Return (year, month) of the cycle period that contains date d."""
+    if d.day <= 28:
+        return d.year, d.month
+    else:
+        if d.month == 12:
+            return d.year + 1, 1
+        return d.year, d.month + 1
+
+def _klafam_bene_slug(year, month):
+    base_year, base_month = 2021, 1
+    total = (year - base_year) * 12 + (month - base_month)
+    return KLAFAM_ROTATION[total % 4]
+
+def _auto_create_cycle(year, month):
+    existing = query("SELECT id FROM klafam_cycles WHERE year=%s AND month=%s", (year, month))
+    if existing:
+        return None  # already exists
+
+    month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    label    = f"{month_names[month-1]} {year}"
+    # Due date = 28th of the PREVIOUS month (e.g. the Aug cycle is due 28 Jul).
+    _pm, _py = (12, year - 1) if month == 1 else (month - 1, year)
+    due      = date(_py, _pm, 28)
+    bene_slug = _klafam_bene_slug(year, month)
+
+    bene_rows = query("SELECT id FROM klafam_members WHERE slug=%s", (bene_slug,))
+    bene_id   = bene_rows[0]["id"] if bene_rows else None
+
+    row = _exec(
+        "INSERT INTO klafam_cycles (year,month,month_label,due_date,beneficiary_id,total_collected) "
+        "VALUES (%s,%s,%s,%s,%s,0) RETURNING id",
+        (year, month, label, due, bene_id)
+    )
+    cycle_id = row[0]
+
+    active = query("SELECT id FROM klafam_members WHERE is_active=TRUE")
+    for m in active:
+        # Beneficiary automatically receives — mark them paid at 300,000
+        status = 'paid' if bene_id and m["id"] == bene_id else 'pending'
+        amount = 300000 if status == 'paid' else 0
+        _exec(
+            "INSERT INTO klafam_contributions (cycle_id,member_id,amount,status) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (cycle_id,member_id) DO NOTHING",
+            (cycle_id, m["id"], amount, status)
+        )
+    log.info(f"Auto-created {label} cycle (beneficiary: {bene_slug})")
+    return cycle_id
+
+cy, cm = _klafam_due_month(today)
+_auto_create_cycle(cy, cm)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Reminders start on the due date (28th), fire every 3 days, for the most recent cycle only.
+# Look-back capped at 28 days so old unreconciled cycles are never chased automatically.
 cycles = query(
     """
     SELECT DISTINCT kc.id, kc.month_label, kc.due_date
@@ -71,12 +130,13 @@ cycles = query(
     JOIN klafam_contributions contrib ON contrib.cycle_id = kc.id
     JOIN klafam_members km ON km.id = contrib.member_id
     WHERE kc.due_date <= %s
+      AND kc.due_date >= %s - INTERVAL '28 days'
       AND contrib.status IN ('pending', 'missed')
       AND km.is_active = TRUE
     ORDER BY kc.due_date DESC
     LIMIT 1
     """,
-    (today,)
+    (today, today)
 )
 
 if not cycles:
@@ -86,6 +146,11 @@ if not cycles:
 cycle = cycles[0]
 due_date = cycle["due_date"]
 days_overdue = (today - due_date).days
+
+# Fire on the due date (day 0) then every 3 days: 0, 3, 6, 9 ...
+if days_overdue % 3 != 0:
+    log.info(f"Not a reminder day (day {days_overdue} overdue, next on day {days_overdue + (3 - days_overdue % 3)}) — done")
+    sys.exit(0)
 
 if days_overdue == 0:
     urgency = "Today is the deadline."

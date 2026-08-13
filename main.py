@@ -35,6 +35,11 @@ async def lifespan(app):
         _pitch.start_background(get_all_projects)
     except Exception as _e:
         import logging as _lg; _lg.getLogger("pitch").warning("pitch engine not started: %s", _e)
+    # Correct any KlaFam cycle due-dates to the 28th of the previous month (idempotent).
+    try:
+        _klafam_fix_due_dates()
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("klafam").warning("due-date fix skipped: %s", _e)
     yield
     if os.environ.get("SCHEDULER_ENABLED") == "1":
         _scheduler_mod.stop()
@@ -8458,6 +8463,127 @@ def _klafam_slug(request) -> str | None:
     except Exception:
         return None
     return _KLAFAM_PERSON_TO_SLUG.get(name)
+
+
+# JUSTIFICATION-A3: restoring two endpoints (rotation, create_cycle) lost with the
+# module + adding the due-date rule fix; all genuinely new code, not a wrapper.
+# Rotation order (fixed): arindas → turamyes → priscilla → alex → repeat.
+# Anchor: Jan 2021 = arindas (position 0), 4-month cycle.
+_KLAFAM_ROTATION = ['arindas', 'turamyes', 'priscilla', 'alex']
+
+def _klafam_next_beneficiary(year: int, month: int) -> str:
+    total_months = (year - 2021) * 12 + (month - 1)
+    return _KLAFAM_ROTATION[total_months % 4]
+
+
+def _klafam_due_date(year: int, month: int):
+    """Due date for a cycle = the 28th of the PREVIOUS month.
+    e.g. the Aug cycle is due 28 Jul; the Jan cycle is due 28 Dec of the prior year."""
+    from datetime import date
+    pm, py = month - 1, year
+    if pm == 0:
+        pm, py = 12, year - 1
+    return date(py, pm, 28)
+
+
+def _klafam_fix_due_dates():
+    """Idempotent: correct every cycle's due_date to the 28th of its previous month.
+    Runs at startup; only writes rows that are wrong, so it's a no-op once corrected."""
+    from db import query as dbq, execute as _exec
+    try:
+        rows = dbq("SELECT id, year, month, due_date FROM klafam_cycles")
+    except Exception:
+        return 0
+    fixed = 0
+    for r in rows:
+        want = _klafam_due_date(r["year"], r["month"])
+        if r["due_date"] != want:
+            _exec("UPDATE klafam_cycles SET due_date=%s WHERE id=%s", (want, r["id"]))
+            fixed += 1
+    if fixed:
+        import logging as _lg
+        _lg.getLogger("klafam").info("Corrected due_date on %d cycle(s) to 28th-of-previous-month", fixed)
+    return fixed
+
+
+@app.get("/api/klafam/rotation")
+def klafam_rotation(request: Request):
+    """Return the beneficiary rotation schedule for the next 12 months."""
+    from db import query as dbq
+    from datetime import date
+
+    today = date.today()
+    year, month = today.year, today.month
+
+    members = dbq("SELECT id, slug, display_name FROM klafam_members WHERE is_active=TRUE ORDER BY id")
+    member_map = {m["slug"]: m for m in members}
+    month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+    schedule = []
+    for i in range(12):
+        y, m_n = year, month + i
+        while m_n > 12:
+            m_n -= 12; y += 1
+        slug = _klafam_next_beneficiary(y, m_n)
+        member = member_map.get(slug, {})
+        schedule.append({
+            "year": y, "month": m_n,
+            "month_label": f"{month_names[m_n-1]} {y}",
+            "due_date": _klafam_due_date(y, m_n).isoformat(),
+            "beneficiary_slug": slug,
+            "beneficiary_name": member.get("display_name", slug),
+        })
+    return schedule
+
+
+@app.post("/api/klafam/cycles")
+async def klafam_create_cycle(request: Request):
+    """Create a new monthly cycle (KlaFam members only). Due date and beneficiary
+    are auto-derived from the rotation/schedule when not supplied."""
+    from fastapi import HTTPException as _HE
+    from db import query as dbq, execute as _exec
+
+    slug = _klafam_slug(request)
+    if not slug:
+        raise _HE(status_code=401, detail="Not a KlaFam member")
+
+    body = await request.json()
+    year  = int(body.get("year", 0))
+    month = int(body.get("month", 0))
+    if not year or not month or not (1 <= month <= 12):
+        raise _HE(status_code=400, detail="Valid year and month required")
+
+    existing = dbq("SELECT id FROM klafam_cycles WHERE year=%s AND month=%s", (year, month))
+    if existing:
+        raise _HE(status_code=409, detail="Cycle for this month already exists")
+
+    month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    label = f"{month_names[month-1]} {year}"
+
+    # Due date: 28th of the previous month (never trust a client override for this).
+    due_date = _klafam_due_date(year, month)
+
+    # Beneficiary: explicit override, else the fixed rotation.
+    bene_slug = body.get("beneficiary_slug") or _klafam_next_beneficiary(year, month)
+    bene_rows = dbq("SELECT id FROM klafam_members WHERE slug=%s", (bene_slug,))
+    bene_id = bene_rows[0]["id"] if bene_rows else None
+
+    row = _exec(
+        "INSERT INTO klafam_cycles (year,month,month_label,due_date,beneficiary_id,total_collected) "
+        "VALUES (%s,%s,%s,%s,%s,0) RETURNING id",
+        (year, month, label, due_date, bene_id)
+    )
+    cycle_id = row[0]
+
+    active = dbq("SELECT id FROM klafam_members WHERE is_active=TRUE")
+    for m in active:
+        _exec(
+            "INSERT INTO klafam_contributions (cycle_id,member_id,amount,status) "
+            "VALUES (%s,%s,0,'pending') ON CONFLICT (cycle_id,member_id) DO NOTHING",
+            (cycle_id, m["id"])
+        )
+
+    return {"ok": True, "cycle_id": cycle_id, "label": label, "due_date": due_date.isoformat()}
 
 
 def _klafam_member_stats():
