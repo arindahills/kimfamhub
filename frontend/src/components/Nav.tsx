@@ -52,7 +52,7 @@ export default function Nav() {
   }
 
   tabs = user?.role === 'admin'
-    ? [...tabs, { to: '/admin', icon: '⚙️', key: 'admin' }]
+    ? [...tabs, { to: '/admin', icon: '⚙️', key: 'admin', tour: 'nav-admin' }]
     : tabs
 
   // Close drawer on navigation
