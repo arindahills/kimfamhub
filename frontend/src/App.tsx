@@ -24,7 +24,7 @@ import AskPage from './pages/AskPage'
 import AdminPage from './pages/AdminPage'
 import ExpenditurePage from './pages/ExpenditurePage'
 import EngagementPage from './pages/EngagementPage'
-import PlaceholderPage from './pages/PlaceholderPage'
+import KlaFamPage from './pages/KlaFamPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -64,7 +64,7 @@ function AuthGate() {
         <Route path="/admin"       element={<AdminPage />} />
         <Route path="/expenditure"  element={<ExpenditurePage />} />
         <Route path="/engagement"   element={<EngagementPage />} />
-        <Route path="/klafam"       element={isKlaFamMember ? <PlaceholderPage navKey="klafam" icon="🏦" /> : <Navigate to="/" replace />} />
+        <Route path="/klafam"       element={isKlaFamMember ? <KlaFamPage /> : <Navigate to="/" replace />} />
         <Route path="*"            element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
