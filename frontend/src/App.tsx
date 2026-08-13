@@ -7,6 +7,8 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { ToastProvider } from './components/Toast'
 import AppShell from './components/AppShell'
 import LoginPage from './pages/LoginPage'
+
+const KLAFAM_MEMBERS = ['Hillary Arinda', 'Esther', 'Max Turamye', 'Alex Tuhimbise', 'Priscilla Tuhimbise']
 import HomePage from './pages/HomePage'
 import FinancesPage from './pages/FinancesPage'
 import ActionsPage from './pages/ActionsPage'
@@ -22,6 +24,7 @@ import AskPage from './pages/AskPage'
 import AdminPage from './pages/AdminPage'
 import ExpenditurePage from './pages/ExpenditurePage'
 import EngagementPage from './pages/EngagementPage'
+import PlaceholderPage from './pages/PlaceholderPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -41,6 +44,8 @@ function AuthGate() {
 
   if (!user) return <LoginPage />
 
+  const isKlaFamMember = user.name ? KLAFAM_MEMBERS.includes(user.name) : false
+
   return (
     <AppShell>
       <Routes>
@@ -59,6 +64,7 @@ function AuthGate() {
         <Route path="/admin"       element={<AdminPage />} />
         <Route path="/expenditure"  element={<ExpenditurePage />} />
         <Route path="/engagement"   element={<EngagementPage />} />
+        <Route path="/klafam"       element={isKlaFamMember ? <PlaceholderPage navKey="klafam" icon="🏦" /> : <Navigate to="/" replace />} />
         <Route path="*"            element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>

@@ -27,12 +27,15 @@ const TABS = [
   { to: '/docs',        icon: '📁', key: 'docs',        tour: 'nav-docs'        },
   { to: '/expenditure', icon: '💸', key: 'expenditure', tour: 'nav-expenditure' },
   { to: '/engagement',  icon: '🏆', key: 'engagement',  tour: 'nav-engagement'  },
+  { to: '/klafam',      icon: '🏦', key: 'klafam',      tour: 'nav-klafam'      },
   { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
 // 5 tabs pinned to the mobile bottom bar — chosen based on usage data.
 // Updates moved to the drawer (2026-06-13); Members promoted to the bottom bar.
 const BOTTOM_TABS = ['/', '/finances', '/members', '/projects', '/ask']
+
+const KLAFAM_MEMBERS = ['Hillary Arinda', 'Esther', 'Max Turamye', 'Alex Tuhimbise', 'Priscilla Tuhimbise']
 
 export default function Nav() {
   const { t } = useTranslation()
@@ -41,9 +44,16 @@ export default function Nav() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
 
-  const tabs = user?.role === 'admin'
-    ? [...TABS, { to: '/admin', icon: '⚙️', key: 'admin' }]
-    : TABS
+  const isKlaFamMember = user?.name ? KLAFAM_MEMBERS.includes(user.name) : false
+
+  let tabs = TABS
+  if (!isKlaFamMember) {
+    tabs = tabs.filter(tab => tab.key !== 'klafam')
+  }
+
+  tabs = user?.role === 'admin'
+    ? [...tabs, { to: '/admin', icon: '⚙️', key: 'admin' }]
+    : tabs
 
   // Close drawer on navigation
   useEffect(() => { setDrawerOpen(false) }, [location.pathname])
