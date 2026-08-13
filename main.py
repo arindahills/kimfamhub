@@ -8425,6 +8425,355 @@ async def engagement_scores(request: Request):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# KlaFam Module — rotating savings group (tanda / merry-go-round)
+# Members: The Arindas, The Turamyes, Priscilla, Alex  (Boaz: historical only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The JWT `sub` is the member's first name (see auth.py MEMBERS). Map both the
+# first-name form (what login actually issues) and the full-name form for safety.
+_KLAFAM_PERSON_TO_SLUG = {
+    "Hillary":             "arindas",
+    "Esther":              "arindas",
+    "Max":                 "turamyes",
+    "Janet":               "turamyes",
+    "Priscilla":           "priscilla",
+    "Alex":                "alex",
+    "Hillary Arinda":      "arindas",
+    "Esther Arinda":       "arindas",
+    "Max Turamye":         "turamyes",
+    "Janet Turamye":       "turamyes",
+    "Priscilla Tuhimbise": "priscilla",
+    "Alex Tuhimbise":      "alex",
+}
+
+def _klafam_slug(request) -> str | None:
+    """Return the KlaFam member slug for the logged-in person, or None."""
+    import jwt as _jwt
+    JWT_SECRET = os.environ.get("JWT_SECRET", "kimfam-secret-change-me")
+    token = _get_tok(request)
+    try:
+        payload = _jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        name = payload.get("sub", "")
+    except Exception:
+        return None
+    return _KLAFAM_PERSON_TO_SLUG.get(name)
+
+
+def _klafam_member_stats():
+    from db import query as dbq
+    rows = dbq("""
+        SELECT
+            m.id, m.slug, m.display_name, m.is_active,
+            COUNT(c.id)                            AS months_tracked,
+            COALESCE(SUM(c.amount), 0)             AS total_contributed,
+            COUNT(c.id) FILTER (WHERE c.status='missed')   AS missed_count,
+            COUNT(c.id) FILTER (WHERE c.status='offset')   AS offset_count,
+            (SELECT COUNT(*) FROM klafam_cycles WHERE beneficiary_id=m.id)              AS times_received,
+            (SELECT COALESCE(SUM(total_collected),0) FROM klafam_cycles WHERE beneficiary_id=m.id) AS total_received
+        FROM klafam_members m
+        LEFT JOIN klafam_contributions c ON c.member_id=m.id
+        GROUP BY m.id, m.slug, m.display_name, m.is_active
+        ORDER BY m.id
+    """)
+    out = []
+    for r in rows:
+        out.append({
+            "id":               r["id"],
+            "slug":             r["slug"],
+            "display_name":     r["display_name"],
+            "is_active":        r["is_active"],
+            "total_contributed": int(r["total_contributed"]),
+            "total_received":   int(r["total_received"]),
+            "net":              int(r["total_received"]) - int(r["total_contributed"]),
+            "times_received":   int(r["times_received"]),
+            "missed_count":     int(r["missed_count"]),
+            "offset_count":     int(r["offset_count"]),
+        })
+    return out
+
+
+def _klafam_cycle_detail(cycle_id: int):
+    from db import query as dbq
+    cycles = dbq("""
+        SELECT kc.*, km.slug as bene_slug, km.display_name as bene_name
+        FROM klafam_cycles kc
+        LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id
+        WHERE kc.id=%s
+    """, (cycle_id,))
+    if not cycles:
+        return None
+    c = cycles[0]
+    contribs = dbq("""
+        SELECT kc.*, km.slug, km.display_name, km.is_active
+        FROM klafam_contributions kc
+        JOIN klafam_members km ON km.id=kc.member_id
+        WHERE kc.cycle_id=%s
+        ORDER BY km.id
+    """, (cycle_id,))
+    return {
+        "id":            c["id"],
+        "year":          c["year"],
+        "month":         c["month"],
+        "month_label":   c["month_label"],
+        "due_date":      c["due_date"].isoformat() if c["due_date"] else None,
+        "beneficiary_id":   c["beneficiary_id"],
+        "beneficiary_slug": c["bene_slug"],
+        "beneficiary_name": c["bene_name"],
+        "total_collected":  int(c["total_collected"]),
+        "acknowledged_at":  c["acknowledged_at"].isoformat() if c["acknowledged_at"] else None,
+        "acknowledged_by":  c["acknowledged_by"],
+        "contributions": [
+            {
+                "id":         ct["id"],
+                "member_id":  ct["member_id"],
+                "slug":       ct["slug"],
+                "display_name": ct["display_name"],
+                "is_active":  ct["is_active"],
+                "amount":     int(ct["amount"]),
+                "status":     ct["status"],
+                "paid_date":  ct["paid_date"].isoformat() if ct.get("paid_date") else None,
+                "offset_reason": ct.get("offset_reason"),
+                "notes":      ct.get("notes"),
+            }
+            for ct in contribs
+        ],
+    }
+
+
+@app.get("/api/klafam/overview")
+def klafam_overview(request: Request):
+    from db import query as dbq
+    from datetime import date
+    import calendar
+
+    today = date.today()
+
+    # Current cycle = this month
+    current = dbq(
+        "SELECT id FROM klafam_cycles WHERE year=%s AND month=%s",
+        (today.year, today.month)
+    )
+    current_detail = _klafam_cycle_detail(current[0]["id"]) if current else None
+
+    # Next cycle = next month (to show who receives)
+    if today.month == 12:
+        ny, nm = today.year + 1, 1
+    else:
+        ny, nm = today.year, today.month + 1
+    next_cycle = dbq(
+        "SELECT kc.id, km.display_name as bene_name, km.slug as bene_slug "
+        "FROM klafam_cycles kc LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id "
+        "WHERE kc.year=%s AND kc.month=%s",
+        (ny, nm)
+    )
+    next_info = {"bene_name": next_cycle[0]["bene_name"], "bene_slug": next_cycle[0]["bene_slug"]} if next_cycle else None
+
+    # Recent cycles (last 12)
+    recent = dbq("""
+        SELECT kc.id, kc.year, kc.month, kc.month_label, kc.due_date,
+               kc.total_collected, kc.acknowledged_at,
+               km.display_name as bene_name, km.slug as bene_slug
+        FROM klafam_cycles kc
+        LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id
+        ORDER BY kc.year DESC, kc.month DESC
+        LIMIT 12
+    """)
+
+    return {
+        "current_cycle": current_detail,
+        "next_cycle":    next_info,
+        "member_stats":  _klafam_member_stats(),
+        "recent_cycles": [
+            {
+                "id":              r["id"],
+                "year":            r["year"],
+                "month":           r["month"],
+                "month_label":     r["month_label"],
+                "due_date":        r["due_date"].isoformat() if r["due_date"] else None,
+                "total_collected": int(r["total_collected"]),
+                "beneficiary_name": r["bene_name"],
+                "beneficiary_slug": r["bene_slug"],
+                "acknowledged":    bool(r["acknowledged_at"]),
+            }
+            for r in recent
+        ],
+    }
+
+
+@app.get("/api/klafam/cycles")
+def klafam_cycles_list(request: Request):
+    from db import query as dbq
+    rows = dbq("""
+        SELECT kc.id, kc.year, kc.month, kc.month_label, kc.due_date,
+               kc.total_collected, kc.acknowledged_at,
+               km.display_name as bene_name, km.slug as bene_slug
+        FROM klafam_cycles kc
+        LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id
+        ORDER BY kc.year DESC, kc.month DESC
+    """)
+    return [
+        {
+            "id":               r["id"],
+            "year":             r["year"],
+            "month":            r["month"],
+            "month_label":      r["month_label"],
+            "due_date":         r["due_date"].isoformat() if r["due_date"] else None,
+            "total_collected":  int(r["total_collected"]),
+            "beneficiary_name": r["bene_name"],
+            "beneficiary_slug": r["bene_slug"],
+            "acknowledged":     bool(r["acknowledged_at"]),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/klafam/cycles/{cycle_id}")
+def klafam_cycle_get(cycle_id: int, request: Request):
+    from fastapi import HTTPException as _HE
+    detail = _klafam_cycle_detail(cycle_id)
+    if not detail:
+        raise _HE(status_code=404, detail="Cycle not found")
+    return detail
+
+
+@app.post("/api/klafam/contributions/pay")
+async def klafam_record_payment(request: Request):
+    """Record own contribution for a cycle. No admin confirmation needed."""
+    from fastapi import HTTPException as _HE
+    from db import query as dbq, execute as _exec
+    from datetime import date
+
+    slug = _klafam_slug(request)
+    if not slug:
+        raise _HE(status_code=401, detail="Not a KlaFam member")
+
+    body = await request.json()
+    cycle_id = body.get("cycle_id")
+    amount   = int(body.get("amount", 300000))
+    notes    = body.get("notes", "")
+    paid_date = body.get("paid_date") or date.today().isoformat()
+
+    if not cycle_id:
+        raise _HE(status_code=400, detail="cycle_id required")
+
+    # Get member id
+    members = dbq("SELECT id FROM klafam_members WHERE slug=%s", (slug,))
+    if not members:
+        raise _HE(status_code=404, detail="Member not found")
+    member_id = members[0]["id"]
+
+    existing = dbq(
+        "SELECT id FROM klafam_contributions WHERE cycle_id=%s AND member_id=%s",
+        (cycle_id, member_id)
+    )
+    if existing:
+        _exec(
+            "UPDATE klafam_contributions SET amount=%s, status='paid', paid_date=%s, notes=%s, offset_reason=NULL WHERE id=%s",
+            (amount, paid_date, notes, existing[0]["id"])
+        )
+    else:
+        _exec(
+            "INSERT INTO klafam_contributions (cycle_id, member_id, amount, status, paid_date, notes) "
+            "VALUES (%s,%s,%s,'paid',%s,%s)",
+            (cycle_id, member_id, amount, paid_date, notes)
+        )
+
+    # Recalculate total_collected for cycle
+    tot = dbq(
+        "SELECT COALESCE(SUM(amount),0) as t FROM klafam_contributions WHERE cycle_id=%s AND status='paid'",
+        (cycle_id,)
+    )
+    _exec("UPDATE klafam_cycles SET total_collected=%s WHERE id=%s",
+          (int(tot[0]["t"]), cycle_id))
+
+    return {"ok": True, "cycle_id": cycle_id, "member_slug": slug, "amount": amount}
+
+
+@app.post("/api/klafam/contributions/offset")
+async def klafam_record_offset(request: Request):
+    """Mark own contribution as an offset (deducted from a debt owed to you)."""
+    from fastapi import HTTPException as _HE
+    from db import query as dbq, execute as _exec
+    from datetime import date
+
+    slug = _klafam_slug(request)
+    if not slug:
+        raise _HE(status_code=401, detail="Not a KlaFam member")
+
+    body = await request.json()
+    cycle_id = body.get("cycle_id")
+    reason   = body.get("reason", "")
+
+    if not cycle_id or not reason:
+        raise _HE(status_code=400, detail="cycle_id and reason required")
+
+    members = dbq("SELECT id FROM klafam_members WHERE slug=%s", (slug,))
+    member_id = members[0]["id"]
+
+    existing = dbq(
+        "SELECT id FROM klafam_contributions WHERE cycle_id=%s AND member_id=%s",
+        (cycle_id, member_id)
+    )
+    if existing:
+        _exec(
+            "UPDATE klafam_contributions SET amount=0, status='offset', offset_reason=%s, paid_date=NULL WHERE id=%s",
+            (reason, existing[0]["id"])
+        )
+    else:
+        _exec(
+            "INSERT INTO klafam_contributions (cycle_id,member_id,amount,status,offset_reason) VALUES (%s,%s,0,'offset',%s)",
+            (cycle_id, member_id, reason)
+        )
+
+    return {"ok": True, "cycle_id": cycle_id, "member_slug": slug}
+
+
+@app.post("/api/klafam/cycles/{cycle_id}/acknowledge")
+async def klafam_acknowledge(cycle_id: int, request: Request):
+    """Beneficiary acknowledges receipt of the payout for this cycle."""
+    from fastapi import HTTPException as _HE
+    from db import query as dbq, execute as _exec
+    from datetime import datetime, timezone
+    import jwt as _jwt
+
+    JWT_SECRET = os.environ.get("JWT_SECRET", "kimfam-secret-change-me")
+    token = _get_tok(request)
+    try:
+        payload = _jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        member_name = payload.get("sub", "")
+    except Exception:
+        raise _HE(status_code=401, detail="Not authenticated")
+
+    slug = _KLAFAM_PERSON_TO_SLUG.get(member_name)
+    if not slug:
+        raise _HE(status_code=403, detail="Not a KlaFam member")
+
+    cycle = dbq(
+        "SELECT kc.id, km.slug as bene_slug FROM klafam_cycles kc "
+        "LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id WHERE kc.id=%s",
+        (cycle_id,)
+    )
+    if not cycle:
+        raise _HE(status_code=404, detail="Cycle not found")
+    if cycle[0]["bene_slug"] != slug:
+        raise _HE(status_code=403, detail="Only the beneficiary can acknowledge this cycle")
+
+    now = datetime.now(timezone.utc)
+    _exec(
+        "UPDATE klafam_cycles SET acknowledged_at=%s, acknowledged_by=%s WHERE id=%s",
+        (now, member_name, cycle_id)
+    )
+    return {"ok": True, "acknowledged_at": now.isoformat()}
+
+
+@app.get("/api/klafam/me")
+def klafam_me(request: Request):
+    """Return the KlaFam slug for the logged-in user, or null."""
+    slug = _klafam_slug(request)
+    return {"slug": slug, "is_klafam": slug is not None}
+
+
 # ── SPA fallback — MUST be last; catches all non-API routes for React Router ──
 @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
 def spa_fallback(full_path: str):
