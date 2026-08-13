@@ -8,7 +8,7 @@ import { ToastProvider } from './components/Toast'
 import AppShell from './components/AppShell'
 import LoginPage from './pages/LoginPage'
 
-const KLAFAM_MEMBERS = ['Hillary Arinda', 'Esther', 'Max Turamye', 'Alex Tuhimbise', 'Priscilla Tuhimbise']
+const KLAFAM_MEMBERS = ['Hillary', 'Esther', 'Max', 'Alex', 'Priscilla']
 import HomePage from './pages/HomePage'
 import FinancesPage from './pages/FinancesPage'
 import ActionsPage from './pages/ActionsPage'

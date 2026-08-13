@@ -27,7 +27,7 @@ const TABS = [
   { to: '/docs',        icon: '📁', key: 'docs',        tour: 'nav-docs'        },
   { to: '/expenditure', icon: '💸', key: 'expenditure', tour: 'nav-expenditure' },
   { to: '/engagement',  icon: '🏆', key: 'engagement',  tour: 'nav-engagement'  },
-  { to: '/klafam',      icon: '🏦', key: 'klafam',      tour: 'nav-klafam'      },
+  { to: '/klafam',      icon: '💵', key: 'klafam',      tour: 'nav-klafam'      },
   { to: '/ask',         icon: '🤖', key: 'ask',         tour: 'nav-ask'         },
 ]
 
@@ -35,7 +35,7 @@ const TABS = [
 // Updates moved to the drawer (2026-06-13); Members promoted to the bottom bar.
 const BOTTOM_TABS = ['/', '/finances', '/members', '/projects', '/ask']
 
-const KLAFAM_MEMBERS = ['Hillary Arinda', 'Esther', 'Max Turamye', 'Alex Tuhimbise', 'Priscilla Tuhimbise']
+const KLAFAM_MEMBERS = ['Hillary', 'Esther', 'Max', 'Alex', 'Priscilla']
 
 export default function Nav() {
   const { t } = useTranslation()
