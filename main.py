@@ -1910,6 +1910,14 @@ async def meetings_minutes_edit(meeting_id: int, request: Request):
             narrative = await _aio.to_thread(
                 _generate_minutes_narrative, meeting_id,
                 minutes_data.get("key_topics", ""), minutes_data.get("key_decisions", []), actions)
+            # Cache the rebuilt narrative immediately so retries are fast even if this
+            # edit later fails to parse.
+            if isinstance(narrative, dict) and narrative.get("sections"):
+                try:
+                    with open(narr_path, "w") as _nf:
+                        _json3.dump(narrative, _nf)
+                except Exception:
+                    pass
         if not isinstance(narrative, dict) or not narrative.get("sections"):
             raise _HE(status_code=503,
                       detail="Could not load the full minutes to edit. Re-process the meeting, then try the change again.")
