@@ -1295,6 +1295,13 @@ def _confirm_meeting_impl(meeting_id: int, body: dict, author: str):
             _narr = _generate_minutes_narrative(meeting_id, key_topics, key_decisions, docx_actions)
             if _narr:
                 _docx_bytes = _build_minutes_docx_v2(meeting_ref, mtg_meta, _narr, docx_actions)
+                # Persist the rich narrative so "Request a change" edits the SAME
+                # document the draft was built from (not the thin summary).
+                try:
+                    with open(f"/tmp/kimfam_minutes_{meeting_id}_narrative.json", "w") as _nf:
+                        _json2.dump(_narr, _nf)
+                except Exception:
+                    pass
         except Exception as _ne:
             import logging as _lg
             _lg.getLogger("main").error(f"narrative minutes failed, falling back: {_ne}")
@@ -1884,42 +1891,54 @@ async def meetings_minutes_edit(meeting_id: int, request: Request):
     with open(data_path) as _f:
         minutes_data = _json3.load(_f)
 
+    narr_path   = f"/tmp/kimfam_minutes_{meeting_id}_narrative.json"
+    actions     = minutes_data.get("actions", []) or []
+    meeting_ref = minutes_data.get("meeting_ref") or ""
+
     async def _apply_edit():
-        prompt = f"""You are editing KimFam Investment Club meeting minutes.
+        # Edit the RICH narrative that the draft was actually built from — not the thin
+        # summary — and rebuild with the same v2 builder, so an edit can never downgrade
+        # the document. Regenerate the narrative if this meeting predates persistence.
+        narrative = None
+        if _os.path.exists(narr_path):
+            try:
+                with open(narr_path) as _nf:
+                    narrative = _json3.load(_nf)
+            except Exception:
+                narrative = None
+        if not isinstance(narrative, dict) or not narrative.get("sections"):
+            narrative = await _aio.to_thread(
+                _generate_minutes_narrative, meeting_id,
+                minutes_data.get("key_topics", ""), minutes_data.get("key_decisions", []), actions)
+        if not isinstance(narrative, dict) or not narrative.get("sections"):
+            raise _HE(status_code=503,
+                      detail="Could not load the full minutes to edit. Re-process the meeting, then try the change again.")
+
+        core = {k: narrative.get(k) for k in ("attendance", "chair", "secretary", "sections", "decisions")}
+        prompt = f"""You are editing the official KimFam Investment Club meeting minutes.
+Apply ONLY the instruction to the minutes JSON below and return the FULL updated minutes
+as valid JSON in the SAME shape. Change nothing the instruction does not touch: keep every
+section, subsection, paragraph, bullet, figure and decision. No em-dashes or en-dashes.
 
 CURRENT MINUTES (JSON):
-{_json3.dumps(minutes_data, indent=2)}
+{_json3.dumps(core, indent=2, ensure_ascii=False)}
 
 EDIT INSTRUCTION:
 {instruction}
 
-Apply the instruction and return ONLY valid JSON with the same structure (no markdown, no explanation):
-{{
-  "meeting_ref": "...",
-  "date": "...",
-  "venue": "...",
-  "start_time_eat": "...",
-  "summary": "...",
-  "key_topics": "...",
-  "key_decisions": ["..."],
-  "actions": [
-    {{"ref":"...","description":"...","assignees":["..."],"deadline":"...","priority":"..."}}
-  ]
-}}
+Return ONLY valid JSON (no markdown, no commentary) with exactly these keys:
+{{"attendance": {{"present":[],"apologies":[],"absent":[]}}, "chair":"...", "secretary":"...",
+  "sections":[{{"number":"1","title":"...","paragraphs":["..."],"bullets":["..."],"subsections":[]}}],
+  "decisions":["..."]}}"""
 
-Rules:
-- Only apply what was instructed. Do not change anything else.
-- Preserve all action refs exactly as-is.
-- Keep all existing actions unless explicitly told to remove one.
-"""
         raw = ""
         try:
             env = dict(_os.environ); env["HOME"] = "/root"
             proc = await _aio.create_subprocess_exec(
-                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+                "claude", "-p", prompt, "--model", "claude-sonnet-4-6",
                 stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
             )
-            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=120)
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=280)
             if proc.returncode == 0:
                 raw = stdout.decode().strip()
         except Exception:
@@ -1928,40 +1947,61 @@ Rules:
         if not raw:
             groq_key = _os.getenv("GROQ_API_KEY", "")
             if groq_key:
-                from groq import Groq as _Groq
-                resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=2000, temperature=0.1,
-                )
-                raw = resp.choices[0].message.content.strip()
+                try:
+                    from groq import Groq as _Groq
+                    resp = await _aio.to_thread(lambda: _Groq(api_key=groq_key).chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=8000, temperature=0.1))
+                    raw = resp.choices[0].message.content.strip()
+                except Exception:
+                    raw = ""
 
         if not raw:
-            raise _HE(status_code=503, detail="AI unavailable — try again")
+            raise _HE(status_code=503, detail="The AI is busy right now. Please try the change again in a moment.")
 
         raw = _re4.sub(r"^```(?:json)?\s*", "", raw)
         raw = _re4.sub(r"\s*```$", "", raw.strip())
+        edited = None
         try:
-            updated = _json3.loads(raw)
+            edited = _json3.loads(raw)
         except Exception:
             m = _re4.search(r"\{.*\}", raw, _re4.DOTALL)
             if m:
-                updated = _json3.loads(m.group())
-            else:
-                raise _HE(status_code=502, detail="AI returned unparseable response")
+                try: edited = _json3.loads(m.group())
+                except Exception: edited = None
 
-        with open(data_path, "w") as _f:
-            _json3.dump(updated, _f)
+        # A vague instruction the model answered in prose -> keep the original document
+        # untouched and tell the user how to phrase it. NEVER corrupt the minutes.
+        if not isinstance(edited, dict) or not edited.get("sections"):
+            raise _HE(status_code=422,
+                      detail="I couldn't turn that into a change to the minutes. Be specific, e.g. "
+                             "'add a decision that ...', 'correct the treasurer balance to UGX ...', "
+                             "or 'expand the washing bay section with the toilet decision'.")
+
+        # Merge over the loaded narrative so metadata the editor omits is preserved
+        # (timing, prior-actions table). Force chair/secretary from the office bearers.
+        for k in ("attendance", "chair", "secretary", "sections", "decisions"):
+            if k in edited:
+                narrative[k] = edited[k]
+        try:
+            _ob = {x["role_slug"]: x["member_name"] for x in _dbq(
+                "SELECT role_slug, member_name FROM club_office_bearers WHERE effective_to IS NULL")}
+            if _ob.get("chairman"):  narrative["chair"] = _ob["chairman"]
+            if _ob.get("secretary"): narrative["secretary"] = _ob["secretary"]
+        except Exception:
+            pass
+
+        with open(narr_path, "w") as _nf:
+            _json3.dump(narrative, _nf)
 
         mtg_row = _dbq("SELECT ref, date, venue, start_time_eat FROM meetings WHERE id=%s", (meeting_id,))
-        _docx_bytes = _build_minutes_docx(mtg=mtg_row[0] if mtg_row else {}, **{
-            k: updated[k]
-            for k in ("meeting_ref","summary","key_topics","key_decisions","actions")
-        })
+        _ref = meeting_ref or (mtg_row[0]["ref"] if mtg_row else "")
+        _docx_bytes = _build_minutes_docx_v2(_ref, mtg_row[0] if mtg_row else {}, narrative, actions)
         with open(draft_path, "wb") as _f:
             _f.write(_docx_bytes)
 
-        return {"ok": True, "minutes_data": updated}
+        return {"ok": True, "minutes_data": minutes_data}
 
     async def _gen():
         yield _sse({"type": "step", "msg": "Applying your change to the minutes..."})
