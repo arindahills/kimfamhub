@@ -309,9 +309,10 @@ def _ensure_action_cols():
         log.warning(f"_ensure_action_cols (column may need owner ALTER): {e}")
 
 
-# Standing self-admitting KimFam Google Meet link (Viola's recurring family room).
-# Reused for every meeting; members already know it and it self-admits.
-KIMFAM_MEET_LINK = "https://meet.google.com/vrt-wjvn-opg"
+# Standing KimFam Google Meet link — THE link members are invited to on the calendar
+# event, so the announcement always matches the invite. Do NOT create a new per-meeting
+# calendar event (Google mints a fresh link → mismatch); reuse this one room.
+KIMFAM_MEET_LINK = "https://meet.google.com/iim-ugbx-vcn"
 
 _MEETING_COLS_READY = False
 def _ensure_meeting_cols():
