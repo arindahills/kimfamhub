@@ -319,8 +319,15 @@ def _ensure_meeting_cols():
     global _MEETING_COLS_READY
     if _MEETING_COLS_READY:
         return
-    from db import execute as _exec
+    from db import query as _q, execute as _exec
     try:
+        # meetings is owned by postgres; the app role can't ALTER it. The column is
+        # added out-of-band by the owner (see deploy notes). If it exists, we're done —
+        # never keep retrying a failing ALTER on every call.
+        if _q("""SELECT 1 FROM information_schema.columns
+                 WHERE table_name='meetings' AND column_name='meet_link'"""):
+            _MEETING_COLS_READY = True
+            return
         _exec("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meet_link TEXT")
         _exec("UPDATE meetings SET meet_link=%s WHERE meet_link IS NULL OR meet_link=''", (KIMFAM_MEET_LINK,))
         _MEETING_COLS_READY = True
