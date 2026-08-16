@@ -40,6 +40,11 @@ async def lifespan(app):
         _klafam_fix_due_dates()
     except Exception as _e:
         import logging as _lg; _lg.getLogger("klafam").warning("due-date fix skipped: %s", _e)
+    # Ensure meetings.meet_link exists and backfill the standing KimFam Meet link (idempotent).
+    try:
+        _ensure_meeting_cols()
+    except Exception as _e:
+        import logging as _lg; _lg.getLogger("meetings").warning("meet_link ensure skipped: %s", _e)
     yield
     if os.environ.get("SCHEDULER_ENABLED") == "1":
         _scheduler_mod.stop()
@@ -304,6 +309,25 @@ def _ensure_action_cols():
         log.warning(f"_ensure_action_cols (column may need owner ALTER): {e}")
 
 
+# Standing self-admitting KimFam Google Meet link (Viola's recurring family room).
+# Reused for every meeting; members already know it and it self-admits.
+KIMFAM_MEET_LINK = "https://meet.google.com/vrt-wjvn-opg"
+
+_MEETING_COLS_READY = False
+def _ensure_meeting_cols():
+    """Ensure meetings.meet_link exists; backfill NULLs with the standing KimFam link."""
+    global _MEETING_COLS_READY
+    if _MEETING_COLS_READY:
+        return
+    from db import execute as _exec
+    try:
+        _exec("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meet_link TEXT")
+        _exec("UPDATE meetings SET meet_link=%s WHERE meet_link IS NULL OR meet_link=''", (KIMFAM_MEET_LINK,))
+        _MEETING_COLS_READY = True
+    except Exception as e:
+        log.warning(f"_ensure_meeting_cols: {e}")
+
+
 _PROJECT_PARTICIPATION_COLS_READY = False
 def _ensure_project_participation_cols():
     """ADR-021: Ensure approved_by_chain column exists for co-authorization audit trail."""
@@ -563,9 +587,10 @@ def _next_or_create_meeting():
     days = (6 - today.weekday()) % 7  # Sunday = weekday 6; 0 if today is Sunday
     nxt_sunday = today + _td(days=days if days else 7)
     agenda = _build_default_agenda(None)
-    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, agenda)
-             VALUES (%s, %s::date, %s, %s::time, %s)""",
-          (ref, str(nxt_sunday), "Google Meet", "16:30", _json_nm.dumps(agenda)))
+    _ensure_meeting_cols()
+    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, agenda, meet_link)
+             VALUES (%s, %s::date, %s, %s::time, %s, %s)""",
+          (ref, str(nxt_sunday), "Google Meet", "16:30", _json_nm.dumps(agenda), KIMFAM_MEET_LINK))
     row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
     return row[0]["id"], ref
 
@@ -2253,8 +2278,9 @@ def _parse_meeting_date(raw: str):
 def get_meetings():
     """Meeting list from PostgreSQL with live action progress counts."""
     from db import query as _dbq
+    _ensure_meeting_cols()
     rows = _dbq("""
-        SELECT m.id, m.ref, m.date, m.start_time_eat, m.venue,
+        SELECT m.id, m.ref, m.date, m.start_time_eat, m.venue, m.meet_link,
                m.key_topics, m.key_decisions, m.next_actions, m.summary,
                m.minutes_url,
                m.conductor_item, m.conductor_started_at, m.conductor_ended_at,
@@ -2277,6 +2303,7 @@ def get_meetings():
             "meeting_date":    str(r["date"]) if r["date"] else "",
             "start_time_eat":  str(r["start_time_eat"]) if r["start_time_eat"] else None,
             "location":        r["venue"],
+            "meet_link":       r["meet_link"],
             "key_topics":      r["key_topics"],
             "key_decisions":   r["key_decisions"],
             "next_actions":    r["next_actions"],
@@ -2317,9 +2344,10 @@ async def create_meeting(request: Request):
     # Build default agenda from template + active projects
     agenda = _build_default_agenda(key_topics)
     import json as _json_ag
-    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, key_topics, agenda)
-             VALUES (%s, %s::date, %s, %s::time, %s, %s)""",
-          (ref, date_str, venue, start_time, key_topics, _json_ag.dumps(agenda)))
+    _ensure_meeting_cols()
+    _exec("""INSERT INTO meetings (ref, date, venue, start_time_eat, key_topics, agenda, meet_link)
+             VALUES (%s, %s::date, %s, %s::time, %s, %s, %s)""",
+          (ref, date_str, venue, start_time, key_topics, _json_ag.dumps(agenda), KIMFAM_MEET_LINK))
     row = _dbq("SELECT id FROM meetings WHERE ref=%s", (ref,))
 
     # Announce the new meeting to the family group + all members (best-effort).
@@ -2338,6 +2366,7 @@ async def create_meeting(request: Request):
             f"*Date:* {date_str}\n"
             + (f"*Time:* {_t} EAT\n" if _t else "")
             + (f"*Venue:* {venue}\n" if venue else "")
+            + f"*Join:* {KIMFAM_MEET_LINK}\n"
             + _agenda_block
             + f"\nFull agenda and details on kimfamhub.com. See you there."
             + _notif_cm.SIGNOFF

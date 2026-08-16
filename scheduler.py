@@ -137,7 +137,7 @@ def _get_meeting_rows():
         cur.execute("""
             SELECT ref AS "Meeting Ref", date AS "Date",
                    start_time_eat AS "Start Time (EAT)", venue AS "Venue",
-                   key_topics AS "Agenda"
+                   key_topics AS "Agenda", meet_link AS "Meet Link"
             FROM meetings ORDER BY date DESC
         """)
         rows = [dict(r) for r in cur.fetchall()]
@@ -403,6 +403,7 @@ def check_meeting_reminders():
         date_str = str(r.get("Date", "") or r.get("Meeting Date", "")).strip()
         ref      = str(r.get("Meeting Ref", "") or r.get("Ref", "")).strip()
         venue    = str(r.get("Venue", "") or r.get("Location", "")).strip()
+        meet     = str(r.get("Meet Link", "") or "").strip()
         d = _parse_date(date_str)
         if d == tomorrow:
             # Dedup: only send once per ref per calendar day (guards against >1 scheduler
@@ -422,6 +423,7 @@ def check_meeting_reminders():
                 f"*Date:* {date_str}\n"
                 f"*Time:* 4:30pm EAT\n"
                 + (f"*Venue:* {venue}\n" if venue else "")
+                + (f"*Join:* {meet}\n" if meet else "")
                 + _fmt_agenda(r.get("Agenda")) +
                 f"_Come prepared. Minutes and actions tracked on kimfamhub.com_ 💻"
                 + _SIG
@@ -450,7 +452,7 @@ def check_meeting_today():
         pg = _pg()
         cur = pg.cursor(cursor_factory=__import__("psycopg2.extras", fromlist=["RealDictCursor"]).RealDictCursor)
         cur.execute("""
-            SELECT ref, date, start_time_eat, venue, key_topics FROM meetings
+            SELECT ref, date, start_time_eat, venue, key_topics, meet_link FROM meetings
             WHERE date = %s
         """, (today,))
         meetings = cur.fetchall()
@@ -462,6 +464,7 @@ def check_meeting_today():
     for r in meetings:
         ref   = str(r["ref"] or "").strip()
         venue = str(r["venue"] or "").strip()
+        meet  = str(r.get("meet_link") or "").strip()
         start = r["start_time_eat"]  # datetime.time or None
 
         if start:
@@ -499,6 +502,7 @@ def check_meeting_today():
             f"*Ref:* {ref}\n"
             f"*Time:* {start_fmt} EAT\n"
             + (f"*Venue:* {venue}\n" if venue else "")
+            + (f"*Join:* {meet}\n" if meet else "")
             + _fmt_agenda(r.get("key_topics")) +
             f"_Join on time. Minutes and actions tracked live on kimfamhub.com_ 💻"
             + _SIG
