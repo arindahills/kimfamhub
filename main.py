@@ -2067,7 +2067,10 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     minutes_url = None
     if _r2_pub.is_configured():
         try:
-            minutes_url = _r2_pub.upload(draft_path, r2_key, public=True)
+            _r2_pub.upload(draft_path, r2_key, public=True)
+            # 7-day share link (upload() alone returns a 1-hour link, too short for a
+            # link members tap days later). Members get a direct, working download link.
+            minutes_url = _r2_pub.presigned_url(r2_key, expires=604800)
         except Exception as _e:
             import logging as _lg
             _lg.getLogger("main").error(f"R2 upload failed: {_e}")
@@ -2085,10 +2088,12 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     recipient = "256775102684" if is_stg else "254716595631-1631997730@g.us"  # Hillary vs KIM FAM PROJECTS
     env_tag = " [STAGING TEST]" if is_stg else ""
     from notifications import SIGNOFF as _SIGNOFF
+    _link_line = (f"\n\nRead and download (link valid 7 days):\n{minutes_url}"
+                  if minutes_url else "\n\nOpen kimfamhub.com to read and download.")
     msg = (
         f"*KimFam Hub{env_tag}* — Meeting minutes ready\n\n"
-        f"*{mtg['ref']}* ({mtg['date']})\n\n"
-        f"Minutes have been published. Open KimFam Hub to read and download."
+        f"*{mtg['ref']}* ({mtg['date']})"
+        + _link_line
         + _SIGNOFF
     )
     try:
