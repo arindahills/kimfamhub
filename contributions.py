@@ -738,17 +738,43 @@ async def upload_expenditure_receipt(expense_id: int, request: Request):
     row = query("SELECT id FROM expenditure_records WHERE id=%s", (expense_id,))
     if not row:
         raise HTTPException(404, "Expenditure not found")
+    # Financial data: store outside the nginx web root, serve via an authed route
+    # (see the note in upload_receipt). Mirrors the contribution-receipt handling.
     _BASE = "/var/www/kimfamhub-staging" if _os.environ.get("KIMFAM_ENV")=="staging" else "/var/www/kimfamhub"
-    EXP_DIR = _Path(_BASE + "/static/expenditures")
-    EXP_DIR.mkdir(exist_ok=True)
+    EXP_DIR = _Path(_BASE + "-private/expenditures")
+    EXP_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = _re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "receipt")
+    for _old in _receipt_files(str(EXP_DIR), expense_id):   # drop any prior file for this expense
+        try: _os.remove(_old)
+        except Exception: pass
     dest = EXP_DIR / f"{expense_id}_{safe_name}"
     contents = await file.read()
     with open(dest, "wb") as f:
         f.write(contents)
-    url = f"/static/expenditures/{expense_id}_{safe_name}"
+    url = f"/api/contributions/expenditure-receipt/{expense_id}"
     execute("UPDATE expenditure_records SET receipt_url=%s WHERE id=%s", (url, expense_id))
     return {"ok": True, "expenditure_id": expense_id, "receipt_url": url}
+
+
+@router.get("/expenditure-receipt/{expense_id}")
+def get_expenditure_receipt_file(expense_id: int, request: Request):
+    """Serve an expenditure receipt image to a logged-in member (files live outside
+    the web root; this authed route is the only path). See get_receipt_file."""
+    import os as _os
+    from auth import verify_token
+    from fastapi.responses import FileResponse as _FR
+    if not verify_token(request.cookies.get("kimfam_token", "")):
+        raise HTTPException(401, "Not authenticated")
+    _BASE = "/var/www/kimfamhub-staging" if _os.environ.get("KIMFAM_ENV") == "staging" else "/var/www/kimfamhub"
+    matches = _receipt_files(_BASE + "-private/expenditures", expense_id)
+    if not matches:
+        raise HTTPException(404, "Receipt not found")
+    return _FR(max(matches, key=_os.path.getmtime))
+
+
+def _receipt_files(_dir, _id):
+    import glob as _glob, os as _os
+    return _glob.glob(_os.path.join(_dir, f"{_id}_*"))
 
 
 # ──────────────────────────────────────────────────────────
@@ -847,14 +873,25 @@ async def upload_receipt(payment_id: int, request: Request):
     receipt_file = form.get("file")
     if not receipt_file:
         raise HTTPException(400, "No file provided")
-    import os as _os; _BASE = "/var/www/kimfamhub-staging" if _os.environ.get("KIMFAM_ENV")=="staging" else "/var/www/kimfamhub"; RECEIPTS_DIR = _Path(_BASE+"/static/receipts")
-    RECEIPTS_DIR.mkdir(exist_ok=True)
+    import os as _os
+    # Receipts are financial data (bank screenshots). Store them OUTSIDE the nginx web
+    # root: nginx serves the whole app dir from disk (location /static/ + try_files),
+    # and this build does not normalise "//" or "/../", so ANY file under the web root
+    # is reachable unauthenticated via a path trick. A private sibling dir cannot be
+    # reached by any URL, and receipts are served only through the authenticated
+    # /api/contributions/receipt-file/{id} route below.
+    _BASE = "/var/www/kimfamhub-staging" if _os.environ.get("KIMFAM_ENV") == "staging" else "/var/www/kimfamhub"
+    RECEIPTS_DIR = _Path(_BASE + "-private/receipts")
+    RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = _re.sub(r'[^\w.]', '_', receipt_file.filename or 'receipt.jpg')
+    for _old in _receipt_files(str(RECEIPTS_DIR), payment_id):   # drop any prior file for this payment
+        try: _os.remove(_old)
+        except Exception: pass
     dest = RECEIPTS_DIR / f"{payment_id}_{safe_name}"
     contents = await receipt_file.read()
     with open(str(dest), "wb") as f_out:
         f_out.write(contents)
-    url = f"/static/receipts/{payment_id}_{safe_name}"
+    url = f"/api/contributions/receipt-file/{payment_id}"
     execute("UPDATE contribution_payments SET receipt_url=%s WHERE id=%s", (url, payment_id))
 
     _row = query(
@@ -863,22 +900,6 @@ async def upload_receipt(payment_id: int, request: Request):
         (payment_id,)
     )
     _r = _row[0] if _row else None
-
-    # Also file the receipt into Documents -> Receipts so it is browsable in the
-    # document library, not only via the payment row. Best-effort: a filing failure
-    # must never fail the receipt upload itself.
-    if _r:
-        try:
-            from main import _store_document_bytes
-            _ext = _Path(safe_name).suffix.lower() or ".jpg"
-            _fam = _r["family_name"].title()
-            _period = str(_r["period_month"])
-            _yr = _period[:4] if len(_period) >= 4 and _period[:4].isdigit() else ""
-            _docname = f"The {_fam} - {_period} - UGX {_r['amount_ugx']:,}{_ext}"
-            _store_document_bytes(contents, "receipts", _docname,
-                                  subgroup=(f"KimFam ({_yr})" if _yr else "KimFam"))
-        except Exception:
-            pass
 
     # WhatsApp notice ONLY for a pending payment (a fresh submission awaiting
     # confirmation). Back-filling a receipt onto an already-confirmed / historical
@@ -901,3 +922,23 @@ async def upload_receipt(payment_id: int, request: Request):
         except Exception:
             pass
     return {"url": url}
+
+
+# JUSTIFICATION-A3: net-new authenticated serve route for receipt images (they now
+# live outside the web root, so nginx cannot serve them; this is the only path).
+@router.get("/receipt-file/{payment_id}")
+def get_receipt_file(payment_id: int, request: Request):
+    """Serve a payment's receipt image to a logged-in member. Files live in a private
+    dir outside the nginx web root, so this authenticated route is the only way to
+    reach them. Goes through nginx location /api/ (always proxied), so no path-trick
+    bypass is possible."""
+    import os as _os, glob as _glob
+    from auth import verify_token
+    from fastapi.responses import FileResponse as _FR
+    if not verify_token(request.cookies.get("kimfam_token", "")):
+        raise HTTPException(401, "Not authenticated")
+    _BASE = "/var/www/kimfamhub-staging" if _os.environ.get("KIMFAM_ENV") == "staging" else "/var/www/kimfamhub"
+    matches = _receipt_files(_BASE + "-private/receipts", payment_id)
+    if not matches:
+        raise HTTPException(404, "Receipt not found")
+    return _FR(max(matches, key=_os.path.getmtime))

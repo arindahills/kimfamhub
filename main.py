@@ -70,24 +70,6 @@ async def _log_requests(request: Request, call_next):
     return resp
 
 
-# Receipts are financial data (bank screenshots), so /static/receipts requires a
-# logged-in member even though the rest of /static is public. This dedicated mount
-# is registered BEFORE the general /static mount so it matches /static/receipts/*
-# first. _get_tok / _auth_verify are module-level and resolved at request time
-# (defined/imported further down), so referencing them here is safe.
-class _AuthReceiptsStatic(StaticFiles):
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http":
-            from starlette.requests import Request as _Rq
-            from starlette.responses import PlainTextResponse as _PTR
-            if not _auth_verify(_get_tok(_Rq(scope))):
-                await _PTR("Not authenticated", status_code=401)(scope, receive, send)
-                return
-        await super().__call__(scope, receive, send)
-
-_RECEIPTS_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "receipts")
-os.makedirs(_RECEIPTS_STATIC_DIR, exist_ok=True)
-app.mount("/static/receipts", _AuthReceiptsStatic(directory=_RECEIPTS_STATIC_DIR), name="receipts-auth")
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # React frontend assets (built output from frontend/dist/assets)
@@ -3437,7 +3419,7 @@ def _friendly_name(path: Path) -> str:
         n = n.replace(p, "").strip()
     return n if n else path.stem
 
-_DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
+_DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
 
 _DOC_CATS = ["minutes", "governance", "projects", "financial", "receipts"]
 
@@ -5401,10 +5383,8 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
 import r2_storage as _r2
 
 _ALLOWED_DOC_CATEGORIES = {"minutes", "governance", "projects", "financial", "receipts"}
-# Types the Documents module accepts. Images (receipts) are listed in the tree
-# (_DOC_SUFFIXES includes them) and download via serve_doc, but are not embedded.
-_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp"}
-_EMBEDDABLE_SUFFIXES    = {".docx", ".pdf", ".pptx", ".xlsx"}   # images aren't embeddable
+_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".pptx", ".xlsx"}
+_EMBEDDABLE_SUFFIXES    = {".docx", ".pdf", ".pptx", ".xlsx"}
 
 def _trigger_embed():
     """Fire-and-forget re-embed so a new/updated doc is searchable in Ask KimFam."""
