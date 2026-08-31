@@ -832,16 +832,17 @@ async def upload_receipt(payment_id: int, request: Request):
     """Upload a bank receipt photo and link it to a pending payment."""
     import re as _re
     from pathlib import Path as _Path
-    token = request.cookies.get("kimfam_token", "")
-    import jwt as _jwt
-    JWT_SECRET = os.environ.get("JWT_SECRET", "kimfam-change-this-secret")
-    try:
-        _jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except Exception:
+    from auth import verify_token
+    user = verify_token(request.cookies.get("kimfam_token", ""))
+    if not user:
         raise HTTPException(401, "Not authenticated")
-    payment = query("SELECT id FROM contribution_payments WHERE id=%s", (payment_id,))
+    payment = query("SELECT id, status FROM contribution_payments WHERE id=%s", (payment_id,))
     if not payment:
         raise HTTPException(404, "Payment not found")
+    # Attaching to a pending payment is the normal submit flow (any member). Back-filling
+    # a receipt onto an already-confirmed payment is an admin (Hellen/Hillary) action.
+    if payment[0]["status"] == "confirmed" and user.get("sub") not in {'Hillary', 'Hellen'}:
+        raise HTTPException(403, "Only Hellen or Hillary can attach a receipt to a confirmed payment")
     form = await request.form()
     receipt_file = form.get("file")
     if not receipt_file:
@@ -855,30 +856,48 @@ async def upload_receipt(payment_id: int, request: Request):
         f_out.write(contents)
     url = f"/static/receipts/{payment_id}_{safe_name}"
     execute("UPDATE contribution_payments SET receipt_url=%s WHERE id=%s", (url, payment_id))
-    try:
-        _row = query(
-            "SELECT cp.amount_ugx, cp.period_month, cp.submitted_by_user_id, f.family_name"
-            " FROM contribution_payments cp JOIN families f ON f.id=cp.family_id WHERE cp.id=%s",
-            (payment_id,)
-        )
-        if _row:
+
+    _row = query(
+        "SELECT cp.amount_ugx, cp.period_month, cp.status, f.family_name"
+        " FROM contribution_payments cp JOIN families f ON f.id=cp.family_id WHERE cp.id=%s",
+        (payment_id,)
+    )
+    _r = _row[0] if _row else None
+
+    # Also file the receipt into Documents -> Receipts so it is browsable in the
+    # document library, not only via the payment row. Best-effort: a filing failure
+    # must never fail the receipt upload itself.
+    if _r:
+        try:
+            from main import _store_document_bytes
+            _ext = _Path(safe_name).suffix.lower() or ".jpg"
+            _fam = _r["family_name"].title()
+            _period = str(_r["period_month"])
+            _yr = _period[:4] if len(_period) >= 4 and _period[:4].isdigit() else ""
+            _docname = f"The {_fam} - {_period} - UGX {_r['amount_ugx']:,}{_ext}"
+            _store_document_bytes(contents, "receipts", _docname,
+                                  subgroup=(f"KimFam ({_yr})" if _yr else "KimFam"))
+        except Exception:
+            pass
+
+    # WhatsApp notice ONLY for a pending payment (a fresh submission awaiting
+    # confirmation). Back-filling a receipt onto an already-confirmed / historical
+    # payment must not spam the group with "awaiting Hellen's confirmation".
+    if _r and _r["status"] == "pending":
+        try:
             import os as _os2, requests as _req_lib2
-            _r = _row[0]
             _is_stg = _os2.environ.get("KIMFAM_ENV", "prod") == "staging"
             _base_url = "https://staging.kimfamhub.com" if _is_stg else "https://kimfamhub.com"
             _receipt_full = f"{_base_url}{url}"
             _group = "120363429341325971@g.us" if _is_stg else "254716595631-1631997730@g.us"
-            _fam = _r["family_name"].title()
             _receipt_msg = (
-                f"📎 Receipt attached for The {_fam}'s payment of UGX {_r['amount_ugx']:,} "
+                f"📎 Receipt attached for The {_r['family_name'].title()}'s payment of UGX {_r['amount_ugx']:,} "
                 f"(Period: {_r['period_month']}).\n"
                 f"View receipt: {_receipt_full}\n"
                 f"Payment #{payment_id} — awaiting Hellen's confirmation."
             )
-            try:
-                _req_lib2.post("http://localhost:8080/api/send",
-                               json={"recipient": _group, "message": _receipt_msg}, timeout=5)
-            except Exception:
-                pass
-    except Exception: pass
+            _req_lib2.post("http://localhost:8080/api/send",
+                           json={"recipient": _group, "message": _receipt_msg}, timeout=5)
+        except Exception:
+            pass
     return {"url": url}

@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../components/Toast'
 import ExpenditurePage from './ExpenditurePage'
 import { FAMILY_HEAD_AVATAR } from '../data/familyTree'
 
@@ -179,7 +180,8 @@ function toastMessage(familyLabel: string, curBal: number, rate: number, outstan
   return `${name} have UGX ${outstanding.toLocaleString()} outstanding. The club's growth depends on everyone keeping up — please reach out to Hellen if you need a payment plan 💛`
 }
 
-function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: boolean; onOpen?: () => void; onPay?: (familyId: number, amount: number) => void }) {
+function FamilyCard({ f, isMyFamily, isAdmin, onPay }: { f: FamilyBalance; isMyFamily: boolean; isAdmin?: boolean; onOpen?: () => void; onPay?: (familyId: number, amount: number) => void }) {
+  const toast = useToast()
   const rate = f.current_monthly_rate || 0
   const curBal = f.current_balance || 0
   const initBal = f.initial_balance || 0
@@ -194,6 +196,7 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
   const [showPayments, setShowPayments] = useState(false)
   const [payments, setPayments] = useState<FamilyPayment[]>([])
   const [loadingPayments, setLoadingPayments] = useState(false)
+  const [attachingId, setAttachingId] = useState<number | null>(null)   // back-fill: payment being attached
 
   // Show toaster shortly after mount for the logged-in user's card
   useEffect(() => {
@@ -225,17 +228,36 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
     : <span style={{ color: '#4ade80' }}>Cleared</span>
 
   // ── Payment History loader ──
+  const fetchPayments = async () => {
+    try {
+      const r = await fetch(`/api/contributions/family/${f.family_id}`, { credentials: 'include' })
+      if (r.ok) setPayments((await r.json()).payments || [])
+    } catch { /* leave existing */ }
+  }
   const loadPayments = async () => {
     if (payments.length > 0 || loadingPayments) return
     setLoadingPayments(true)
-    try {
-      const r = await fetch(`/api/contributions/family/${f.family_id}`, { credentials: 'include' })
-      if (r.ok) {
-        const data = await r.json()
-        setPayments(data.payments || [])
-      }
-    } catch {}
+    await fetchPayments()
     setLoadingPayments(false)
+  }
+
+  // ── Back-fill: admin attaches a bank screenshot to a past payment missing one ──
+  const attachReceipt = async (paymentId: number, file: File) => {
+    setAttachingId(paymentId)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const r = await fetch(`/api/contributions/${paymentId}/receipt`, {
+        method: 'POST', credentials: 'include', body: fd,
+      })
+      if (!r.ok) { toast.error('Could not attach the receipt'); return }
+      toast.success('Receipt attached and filed to Documents')
+      await fetchPayments()   // force refresh so the new "View receipt" link shows
+    } catch {
+      toast.error('Could not attach the receipt')
+    } finally {
+      setAttachingId(null)
+    }
   }
 
   // ── Calculator ──
@@ -460,6 +482,17 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
                         onClick={e => e.stopPropagation()}>
                         View receipt ↗
                       </a>
+                    )
+                    : isAdmin
+                    ? (
+                      // Back-fill: attach a bank screenshot to this past payment.
+                      <label style={{ fontSize: 11, color: attachingId === p.id ? '#64748b' : '#60a5fa', marginTop: 2, display: 'inline-block', cursor: attachingId === p.id ? 'default' : 'pointer' }}
+                        onClick={e => e.stopPropagation()}>
+                        {attachingId === p.id ? 'Attaching…' : '+ Attach receipt'}
+                        <input type="file" accept="image/*,.pdf" style={{ display: 'none' }}
+                          disabled={attachingId === p.id}
+                          onChange={e => { const file = e.target.files?.[0]; if (file) attachReceipt(p.id, file); e.target.value = '' }} />
+                      </label>
                     )
                     : p.status === 'confirmed' && (
                       <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>No receipt on file</div>
@@ -1413,6 +1446,7 @@ export default function FinancesPage() {
                 key={f.family_name}
                 f={f}
                 isMyFamily={myFamilyName !== null && f.family_name.toUpperCase() === myFamilyName}
+                isAdmin={isAdmin}
                 onOpen={() => {}}
                 onPay={(fid, amt) => { setPayTarget({ familyId: fid, amount: amt }); setShowPayment(true) }} />
             ))}

@@ -3419,7 +3419,7 @@ def _friendly_name(path: Path) -> str:
         n = n.replace(p, "").strip()
     return n if n else path.stem
 
-_DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls"}
+_DOC_SUFFIXES = {".docx", ".pdf", ".pptx", ".xlsx", ".doc", ".ppt", ".xls", ".png", ".jpg", ".jpeg", ".webp"}
 
 _DOC_CATS = ["minutes", "governance", "projects", "financial", "receipts"]
 
@@ -3479,9 +3479,14 @@ def _docs_build_cat(cat: str, groups: dict) -> dict:
 
 
 @app.get("/api/docs")
-def get_docs():
+def get_docs(request: Request = None):
     """Nested documents: category -> sub-groups (one folder deep) -> files.
-    Files directly under a category (no sub-folder) fall into a 'General' group."""
+    Files directly under a category (no sub-folder) fall into a 'General' group.
+    Requires a logged-in member for HTTP callers: the tree now lists receipt
+    filenames (family + amount). Internal callers pass no request and are trusted."""
+    if request is not None and not _auth_verify(_get_tok(request)):
+        from fastapi import HTTPException as _HE
+        raise _HE(status_code=401, detail="Not authenticated")
     result = {}
     if _r2.is_configured():
         for cat in _DOC_CATS:
@@ -3650,7 +3655,9 @@ async def doc_summary(request: Request, path: str = "", refresh: bool = False):
     return {"path": rel, "summary": summary, "cached": False, "truncated": truncated}
 
 @app.get("/api/docs/search")
-def search_docs(query: str = ""):
+def search_docs(request: Request, query: str = ""):
+    if not _auth_verify(_get_tok(request)):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     query_lower = query.lower().strip()
     if not query_lower:
         return {"query": query, "results": []}
@@ -3675,7 +3682,9 @@ def search_docs(query: str = ""):
     return {"query": query, "count": len(results), "results": results}
 
 @app.get("/api/docs/search-semantic")
-def search_docs_semantic(query: str = ""):
+def search_docs_semantic(request: Request, query: str = ""):
+    if not _auth_verify(_get_tok(request)):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     query_lower = query.lower().strip()
     if not query_lower:
         return {"query": query, "results": []}
@@ -5166,7 +5175,9 @@ def _r2_bytes(category: str, filename: str) -> bytes | None:
 # both use the greedy {filename:path} converter (to allow sub-group sub-paths like
 # "Chicken/Proposal.docx"); whichever is registered first wins for ".../view".
 @app.get("/docs/{category}/{filename:path}/view")
-def view_doc(category: str, filename: str):
+def view_doc(category: str, filename: str, request: Request):
+    if category in {"receipts", "financial"} and not _auth_verify(_get_tok(request)):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     path = DOCS_DIR / category / filename
     suffix = Path(filename).suffix.lower()
 
@@ -5252,7 +5263,12 @@ def view_doc(category: str, filename: str):
 
 
 @app.get("/docs/{category}/{filename:path}")
-def serve_doc(category: str, filename: str):
+def serve_doc(category: str, filename: str, request: Request):
+    # Receipts + financial docs contain member payment images / figures and have
+    # human-guessable filenames, so they require a logged-in member (same-origin
+    # download links carry the cookie). Other categories stay as before.
+    if category in {"receipts", "financial"} and not _auth_verify(_get_tok(request)):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     # filename may include a sub-group path, e.g. "Chicken/Proposal.docx".
     path = DOCS_DIR / category / filename
     base = Path(filename).name
@@ -5367,10 +5383,10 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
 import r2_storage as _r2
 
 _ALLOWED_DOC_CATEGORIES = {"minutes", "governance", "projects", "financial", "receipts"}
-# Only types the Documents module actually serves + can embed (no images: they would
-# upload but never appear in the doc tree, _DOC_SUFFIXES excludes them).
-_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".pptx", ".xlsx"}
-_EMBEDDABLE_SUFFIXES    = {".docx", ".pdf", ".pptx", ".xlsx"}
+# Types the Documents module accepts. Images (receipts) are listed in the tree
+# (_DOC_SUFFIXES includes them) and download via serve_doc, but are not embedded.
+_ALLOWED_DOC_SUFFIXES   = {".docx", ".pdf", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp"}
+_EMBEDDABLE_SUFFIXES    = {".docx", ".pdf", ".pptx", ".xlsx"}   # images aren't embeddable
 
 def _trigger_embed():
     """Fire-and-forget re-embed so a new/updated doc is searchable in Ask KimFam."""
