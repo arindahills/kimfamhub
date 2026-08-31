@@ -8896,7 +8896,10 @@ def _klafam_cycle_detail(cycle_id: int):
         "beneficiary_id":   c["beneficiary_id"],
         "beneficiary_slug": c["bene_slug"],
         "beneficiary_name": c["bene_name"],
-        "total_collected":  int(c["total_collected"]),
+        # Compute from the contribution rows (source of truth) rather than the cached
+        # total_collected column, which isn't updated when a payment is recorded and
+        # reads 0 on a freshly auto-created cycle.
+        "total_collected":  sum(int(ct["amount"]) for ct in contribs),
         "acknowledged_at":  c["acknowledged_at"].isoformat() if c["acknowledged_at"] else None,
         "acknowledged_by":  c["acknowledged_by"],
         "contributions": [
@@ -8925,25 +8928,40 @@ def klafam_overview(request: Request):
 
     today = date.today()
 
-    # Current cycle = this month
+    # A cycle's contributions are due on the 28th of the PREVIOUS month
+    # (_klafam_due_date), so the cycle being COLLECTED in the current calendar month
+    # is next month's payout cycle. e.g. during August we collect for the September
+    # payout (due 28 Aug). Using today.month showed the already-completed payout, so
+    # the card looked stale ("Aug, due 28 Jul") after that round had closed.
+    if today.month == 12:
+        cy, cm = today.year + 1, 1
+    else:
+        cy, cm = today.year, today.month + 1
     current = dbq(
         "SELECT id FROM klafam_cycles WHERE year=%s AND month=%s",
-        (today.year, today.month)
+        (cy, cm)
     )
     current_detail = _klafam_cycle_detail(current[0]["id"]) if current else None
 
-    # Next cycle = next month (to show who receives)
-    if today.month == 12:
-        ny, nm = today.year + 1, 1
+    # Next cycle = the month after the current collection cycle (who receives next).
+    if cm == 12:
+        ny, nm = cy + 1, 1
     else:
-        ny, nm = today.year, today.month + 1
+        ny, nm = cy, cm + 1
     next_cycle = dbq(
         "SELECT kc.id, km.display_name as bene_name, km.slug as bene_slug "
         "FROM klafam_cycles kc LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id "
         "WHERE kc.year=%s AND kc.month=%s",
         (ny, nm)
     )
-    next_info = {"bene_name": next_cycle[0]["bene_name"], "bene_slug": next_cycle[0]["bene_slug"]} if next_cycle else None
+    if next_cycle:
+        next_info = {"bene_name": next_cycle[0]["bene_name"], "bene_slug": next_cycle[0]["bene_slug"]}
+    else:
+        # That cycle row isn't created yet (cycles auto-create near month-end); derive
+        # the next beneficiary from the fixed rotation so the card still shows it.
+        _ns = _klafam_next_beneficiary(ny, nm)
+        _nm_row = dbq("SELECT display_name FROM klafam_members WHERE slug=%s", (_ns,))
+        next_info = {"bene_name": _nm_row[0]["display_name"] if _nm_row else _ns, "bene_slug": _ns}
 
     # Recent cycles (last 12)
     recent = dbq("""
