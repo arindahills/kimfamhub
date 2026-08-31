@@ -70,6 +70,24 @@ async def _log_requests(request: Request, call_next):
     return resp
 
 
+# Receipts are financial data (bank screenshots), so /static/receipts requires a
+# logged-in member even though the rest of /static is public. This dedicated mount
+# is registered BEFORE the general /static mount so it matches /static/receipts/*
+# first. _get_tok / _auth_verify are module-level and resolved at request time
+# (defined/imported further down), so referencing them here is safe.
+class _AuthReceiptsStatic(StaticFiles):
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            from starlette.requests import Request as _Rq
+            from starlette.responses import PlainTextResponse as _PTR
+            if not _auth_verify(_get_tok(_Rq(scope))):
+                await _PTR("Not authenticated", status_code=401)(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
+
+_RECEIPTS_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "receipts")
+os.makedirs(_RECEIPTS_STATIC_DIR, exist_ok=True)
+app.mount("/static/receipts", _AuthReceiptsStatic(directory=_RECEIPTS_STATIC_DIR), name="receipts-auth")
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # React frontend assets (built output from frontend/dist/assets)
