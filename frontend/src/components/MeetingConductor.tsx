@@ -179,6 +179,8 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const mediaRef   = useRef<MediaRecorder | null>(null)
   const seqRef     = useRef(0)                       // streamed-chunk sequence number
   const uploadChainRef = useRef<Promise<unknown>>(Promise.resolve())  // keep chunk uploads ordered
+  const audioCtxRef    = useRef<AudioContext | null>(null)   // mixer for mic + tab audio
+  const sourceStreamsRef = useRef<MediaStream[]>([])         // mic + tab streams to release on stop
 
   // ── Live secretary notes — typed throughout the meeting ─────────────────────
   const [notes, setNotes]           = useState('')
@@ -295,17 +297,78 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   }
 
   const startRecording = async () => {
+    // Declared outside the try so the outer catch can release a tab share that was
+    // granted before a later step (e.g. the mic prompt) failed.
+    let tabStream: MediaStream | null = null
     try {
-      // Mono + low bitrate: speech transcription doesn't need more, and it keeps
-      // even multi-hour meetings small (~24kbps mono ≈ 11MB/hour).
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // (1) Meet TAB audio FIRST, while the button click's transient activation is still
+      // fresh. getDisplayMedia requires that activation; awaiting the mic permission
+      // prompt before it would consume the gesture and make tab capture fail on first
+      // use. This is the whole fix: getUserMedia (mic) alone strips everyone else via
+      // echo cancellation, so the recording only ever had the presenter. Capturing the
+      // Meet tab's audio is the only browser-allowed way to record the remote
+      // participants (the farm device carrying Dad/Solomon/Mum, the treasurer, etc.).
+      // The picker requires a video request, so we ask for video then drop the video
+      // track. If the presenter cancels or forgets "Share tab audio", we fall back to
+      // mic-only with a clear warning.
+      try {
+        tabStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        })
+      } catch { tabStream = null }
+
+      // (2) Microphone = the presenter's own voice.
+      const micStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
+
+      let recordStream: MediaStream = micStream
+      let mixing = false
+      const tabAudioTracks = tabStream?.getAudioTracks() ?? []
+      if (tabAudioTracks.length > 0) {
+        // Mix mic + tab audio into one stream via the Web Audio API. The context can
+        // start 'suspended' under the autoplay policy, which would route NO audio to
+        // the destination (silent recording), so we resume and verify it is running
+        // before trusting the mixer; otherwise we record the mic directly.
+        const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+        const ctx = new AC()
+        audioCtxRef.current = ctx
+        try { await ctx.resume() } catch { /* fall through to state check */ }
+        if (ctx.state === 'running') {
+          const dest = ctx.createMediaStreamDestination()
+          ctx.createMediaStreamSource(micStream).connect(dest)
+          ctx.createMediaStreamSource(new MediaStream(tabAudioTracks)).connect(dest)
+          recordStream = dest.stream
+          mixing = true
+          setRecError('')
+        } else {
+          try { await ctx.close() } catch { /* noop */ }
+          audioCtxRef.current = null
+          setRecError('Could not mix the meeting audio, so only your microphone is being recorded. Stop and start recording again to retry capturing everyone.')
+          toast.info('Audio mixer unavailable — recording your mic only')
+        }
+      } else {
+        setRecError('Only your microphone is being recorded. To capture the whole meeting (everyone), stop and start recording again, then pick the Google Meet tab and tick "Share tab audio".')
+        toast.info('Recording your mic only — pick the Meet tab and tick "Share tab audio" to capture everyone')
+      }
+      if (mixing) {
+        // Keep the tab audio track feeding the mixer; only the video track is unused.
+        tabStream?.getVideoTracks().forEach(t => t.stop())
+        sourceStreamsRef.current = [micStream, tabStream as MediaStream]
+      } else {
+        // Not using the tab capture: release it fully so no "sharing this tab" banner lingers.
+        tabStream?.getTracks().forEach(t => t.stop())
+        sourceStreamsRef.current = [micStream]
+      }
+
       let mr: MediaRecorder
       try {
-        mr = new MediaRecorder(stream, { mimeType: 'audio/webm', audioBitsPerSecond: 24000 })
+        // 64kbps mono: enough headroom for accurate diarization of several voices,
+        // still only ~28MB/hour.
+        mr = new MediaRecorder(recordStream, { mimeType: 'audio/webm', audioBitsPerSecond: 64000 })
       } catch {
-        mr = new MediaRecorder(stream)  // fall back if options unsupported
+        mr = new MediaRecorder(recordStream)  // fall back if options unsupported
       }
       seqRef.current = 0
       // Stream a chunk every 15s. Each ondataavailable is uploaded immediately, so
@@ -318,13 +381,22 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
           uploadChunk(e.data, seq)
         }
       }
-      mr.onstop = () => { stream.getTracks().forEach(t => t.stop()) }
+      mr.onstop = () => {
+        sourceStreamsRef.current.forEach(s => s.getTracks().forEach(t => t.stop()))
+        sourceStreamsRef.current = []
+        audioCtxRef.current?.close().catch(() => { /* noop */ })
+        audioCtxRef.current = null
+      }
       mr.start(15000)
       mediaRef.current = mr
       setRecording(true)
-      setRecError('')
     } catch {
       // Mic blocked/unavailable — the meeting still runs but NO audio is captured.
+      // If a tab share was already granted before this failure, release it so the
+      // "sharing this tab" banner does not linger with no way to stop it.
+      tabStream?.getTracks().forEach(t => t.stop())
+      audioCtxRef.current?.close().catch(() => { /* noop */ })
+      audioCtxRef.current = null
       setRecError('Microphone is blocked, so this meeting is NOT being recorded. Allow microphone access in your browser and reopen the conductor, or rely on a Tactiq transcript / your typed notes for the minutes.')
       toast.error('Microphone blocked — this meeting is NOT being recorded')
     }
@@ -349,6 +421,18 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('beforeunload', flush)
     }
+  }, [])
+
+  // On unmount (conductor closed via the ✕ or navigation while still recording),
+  // stop the recorder and release EVERY captured resource: mic, the getDisplayMedia
+  // tab share (whose "sharing this tab" banner would otherwise linger) and the
+  // AudioContext. mr.onstop also runs this release, but only if stop() is reached.
+  useEffect(() => () => {
+    try { if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop() } catch { /* noop */ }
+    sourceStreamsRef.current.forEach(s => s.getTracks().forEach(t => t.stop()))
+    sourceStreamsRef.current = []
+    audioCtxRef.current?.close().catch(() => { /* noop */ })
+    audioCtxRef.current = null
   }, [])
 
   // ── Polling ──────────────────────────────────────────────────────────────

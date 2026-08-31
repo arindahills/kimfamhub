@@ -785,6 +785,51 @@ def _transcribe_audio(audio_bytes: bytes, audio_name: str, groq_key: str) -> str
             pass
 
 
+# JUSTIFICATION-A3: net-new Deepgram diarizing-transcription helper (no existing
+# equivalent); it is the core of the once-and-for-all minutes fix.
+def _transcribe_deepgram(audio_bytes: bytes, content_type: str = "audio/webm") -> str:
+    """Transcribe with Deepgram (nova-3) + speaker DIARIZATION. Returns a
+    speaker-labelled transcript, one utterance per line: "[Speaker 0] ...".
+    Diarization is the whole point: the shared farm device carries several people
+    (Dad, Solomon, Mum) under one meeting label, and only voice separation can
+    split them (see the attribution note in _generate_minutes_narrative). Deepgram
+    handles multi-hour files in a single request, so no chunking is needed.
+    Returns "" on any failure so the caller falls back to Whisper."""
+    import os as _os_d, logging as _lg_d
+    key = _os_d.getenv("DEEPGRAM_API_KEY", "")
+    if not key:
+        return ""
+    try:
+        import requests as _req_d
+        resp = _req_d.post(
+            "https://api.deepgram.com/v1/listen",
+            params={"model": "nova-3", "diarize": "true", "utterances": "true",
+                    "punctuate": "true", "smart_format": "true", "language": "en"},
+            headers={"Authorization": f"Token {key}", "Content-Type": content_type},
+            # nova-3 pre-recorded runs several times faster than realtime, so even a
+            # 3-hour file returns well inside this; a shorter cap means a hung request
+            # falls back to Whisper quickly instead of stacking 900s onto the endpoint.
+            data=audio_bytes, timeout=300)
+        if resp.status_code != 200:
+            _lg_d.getLogger("main").error(
+                f"Deepgram HTTP {resp.status_code}: {resp.text[:300]}")
+            return ""
+        j = resp.json()
+        utts = (j.get("results", {}) or {}).get("utterances", []) or []
+        lines = [f"[Speaker {u.get('speaker', 0)}] {u.get('transcript', '').strip()}"
+                 for u in utts if (u.get("transcript") or "").strip()]
+        if lines:
+            return "\n".join(lines)
+        # No utterances (rare): fall back to the flat transcript Deepgram still returns.
+        try:
+            return (j["results"]["channels"][0]["alternatives"][0].get("transcript", "") or "").strip()
+        except Exception:
+            return ""
+    except Exception as _e:
+        _lg_d.getLogger("main").error(f"Deepgram transcription failed: {_e}")
+        return ""
+
+
 @app.post("/api/meetings/{meeting_id}/process")
 async def process_meeting(meeting_id: int, request: Request):
     """Streamed wrapper: runs the (long) transcribe+extract work as a task while emitting
@@ -882,21 +927,40 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
         audio_file = _FakeFile()
 
     if audio_file and hasattr(audio_file, "filename"):
-        groq_key = _os.getenv("GROQ_API_KEY", "")
-        if not groq_key:
-            raise _HE(status_code=503, detail="Groq API key not configured")
         audio_bytes = await audio_file.read()
         audio_name = audio_file.filename or "audio.m4a"
         try:
-            # Handles recordings of any length: long audio is re-encoded + split
-            # into 15-min segments and transcribed chunk-by-chunk, then stitched.
-            # Runs in a thread so the long ffmpeg + Whisper work doesn't freeze the
-            # worker's event loop for the whole upload.
             import asyncio as _aio_t
-            audio_text = await _aio_t.to_thread(
-                _transcribe_audio, audio_bytes, audio_name, groq_key)
+            audio_text = ""
+            source_label = f"Audio: {audio_name}"
+            # Prefer Deepgram: it transcribes the whole (multi-hour) recording in one
+            # call AND diarizes, so the shared-device voices (Dad/Solomon/Mum) are split
+            # into distinct speakers. Groq Whisper is the fallback (no speaker labels,
+            # and needs manual 15-min chunking for long files).
+            if _os.getenv("DEEPGRAM_API_KEY"):
+                _an = (audio_name or "").lower()
+                _ct = ("audio/mpeg" if _an.endswith(".mp3")
+                       else "audio/mp4" if _an.endswith((".m4a", ".mp4"))
+                       else "audio/aac" if _an.endswith(".aac")
+                       else "audio/wav" if _an.endswith(".wav")
+                       else "audio/flac" if _an.endswith(".flac")
+                       else "audio/ogg" if _an.endswith((".ogg", ".opus"))
+                       else "audio/webm")
+                audio_text = await _aio_t.to_thread(
+                    _transcribe_deepgram, audio_bytes, _ct)
+                if audio_text:
+                    source_label = f"Audio (diarized by speaker): {audio_name}"
+            if not audio_text:
+                groq_key = _os.getenv("GROQ_API_KEY", "")
+                if not groq_key:
+                    raise _HE(status_code=503,
+                              detail="No transcription provider configured (need DEEPGRAM_API_KEY or GROQ_API_KEY)")
+                audio_text = await _aio_t.to_thread(
+                    _transcribe_audio, audio_bytes, audio_name, groq_key)
             if audio_text:
-                transcript_parts.append((f"Audio: {audio_name}", audio_text))
+                transcript_parts.append((source_label, audio_text))
+        except _HE:
+            raise
         except Exception as e:
             raise _HE(status_code=502, detail=f"Transcription failed: {e}")
 
@@ -1480,27 +1544,58 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
         transcript = transcript[:200000]
 
     # A 3-hour transcript is too large for one final pass (sonnet times out).
-    # MAP: split it and have haiku write DETAILED notes per chunk (preserving every
-    # figure, decision and assignment). REDUCE (further below): sonnet assembles the
-    # house-style minutes from these notes. This keeps the detail that makes good
-    # minutes while fitting the time budget.
+    # MAP: split it and have Sonnet write DETAILED notes per chunk (preserving every
+    # figure, decision and assignment, WITH who said it). REDUCE (further below):
+    # sonnet assembles the house-style minutes from these notes. The MAP calls are
+    # independent, so they run CONCURRENTLY (bounded pool) to keep the wall-clock near
+    # one chunk instead of the sum of all chunks, so MAP + REDUCE stays under the edge
+    # timeout even on a long meeting.
     if len(transcript) > 40000:
         _chunks = [transcript[i:i + 35000] for i in range(0, len(transcript), 35000)]
-        _digparts = []
         # Keep each part's notes compact so the final assemble prompt stays within the
         # size the CLI can handle in time (a ~30k prompt works; ~60k times out).
         _per_cap = max(3500, 22000 // max(1, len(_chunks)))
-        for _idx, _ch in enumerate(_chunks, 1):
+
+        def _map_chunk(_pair):
+            _idx, _ch = _pair
             _dp = (
                 f"This is part {_idx} of {len(_chunks)} of a KimFam Investment Club meeting "
-                f"transcript. Write CONCISE but COMPLETE minute notes for this part as short "
+                f"transcript. Speaker labels may appear as real names (from Tactiq), as voice-"
+                f"separated '[Speaker N]' turns (from the diarized recording), or as the shared "
+                f"farm device 'KIMFAM INVESTMENT CLUB' which carries Dad (Israel), Solomon and "
+                f"sometimes Mum. Write CONCISE but COMPLETE minute notes for this part as short "
                 f"bullet points: every topic, every figure and amount (UGX, percentages, USD), "
-                f"every decision, and every action assigned (who and any deadline). Keep all "
-                f"facts and numbers but no filler or dialogue. No em-dashes or en-dashes.\n\n"
+                f"every decision, and every action assigned. For each point KEEP WHO said or is "
+                f"responsible for it, using the real name where the labels or content make it "
+                f"clear; do not guess a name the evidence does not support. Keep all facts and "
+                f"numbers but no filler or dialogue. No em-dashes or en-dashes.\n\n"
                 f"PART {_idx}:\n{_ch}"
             )
-            _out = (_ask_claude(_dp, model="claude-haiku-4-5-20251001", timeout=180) or "")[:_per_cap]
-            _digparts.append(f"--- Notes from part {_idx} of {len(_chunks)} ---\n{_out or '(part unavailable)'}")
+            # Never let one chunk's failure abort the whole batch (ThreadPoolExecutor.map
+            # would propagate the exception); an empty chunk just becomes "(part
+            # unavailable)" and is logged so silent thinning is visible.
+            try:
+                return _idx, (_ask_claude(_dp, model="claude-sonnet-4-6", timeout=180) or "")[:_per_cap]
+            except Exception as _me:
+                import logging as _lg_m
+                _lg_m.getLogger("main").error(f"MAP chunk {_idx} failed: {_me}")
+                return _idx, ""
+
+        # Concurrency capped at 2: the MAP calls shell out to the Claude CLI which shares
+        # ~/.claude (config + OAuth token); 2 in flight bounds the wall-clock (MAP+REDUCE
+        # stays under the 1800s edge ceiling) without stressing that shared state.
+        import concurrent.futures as _cf
+        _mapped = {}
+        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 2)) as _ex:
+            for _idx, _out in _ex.map(_map_chunk, list(enumerate(_chunks, 1))):
+                _mapped[_idx] = _out
+        _empty = [i for i in range(1, len(_chunks) + 1) if not _mapped.get(i)]
+        if _empty:
+            import logging as _lg_m2
+            _lg_m2.getLogger("main").warning(
+                f"minutes MAP: {len(_empty)}/{len(_chunks)} chunks empty {_empty} (minutes may be thin)")
+        _digparts = [f"--- Notes from part {_i} of {len(_chunks)} ---\n{_mapped.get(_i) or '(part unavailable)'}"
+                     for _i in range(1, len(_chunks) + 1)]
         transcript = "\n\n".join(_digparts)
     acts_txt = "\n".join(
         f"- {a.get('ref','')}: {a.get('description','')[:90]} "
@@ -1539,6 +1634,15 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
     except Exception:
         prior_status = []
 
+    # Office-bearer roles for speaker attribution (who presents the finances, who chairs).
+    try:
+        _obm = {x["role_slug"]: x["member_name"] for x in (_dbq_n(
+            "SELECT role_slug, member_name FROM club_office_bearers WHERE effective_to IS NULL") or [])}
+    except Exception:
+        _obm = {}
+    _roles_note = (f"Chairman: {_obm.get('chairman', '?')}; Secretary: {_obm.get('secretary', '?')}; "
+                   f"Treasurer: {_obm.get('treasurer', '?')}.")
+
     prompt = f"""You are the Secretary writing the official, detailed minutes for KimFam
 Investment Club meeting {r['ref']} held {r['date']}, working from the full meeting
 transcript. Produce thorough, faithful minutes in the club's established house style.
@@ -1552,6 +1656,20 @@ STRICT STYLE RULES:
 - Refer to Simon and Viola together as "the Arungas" (the family prefers this).
 - Use the roll call below as the authoritative attendance; do not invent presence.
 - Do not invent figures, names, or decisions that are not in the inputs.
+
+SPEAKER ATTRIBUTION (critical: this is exactly where past minutes went wrong):
+- The MEETING RECORD may label turns three ways: real names (from a Tactiq transcript),
+  voice-separated "[Speaker N]" turns (from the diarized audio recording), and the shared
+  farm device labelled "KIMFAM INVESTMENT CLUB". That shared device carries Dad (Israel),
+  Solomon, and sometimes Mum, all in one room, so ONE such label is often several people.
+  Use the "[Speaker N]" voice separation and the content to tell them apart, and cross-
+  reference the two sources where they cover the same moment.
+- Office roles: {_roles_note} The Treasurer presents the financial report.
+- Attribute every figure, decision and action to the person the evidence supports. If the
+  speaker is genuinely unclear, write "a member" rather than guessing a specific name.
+- Do NOT attribute farm-operations content (cows, sheep, goats, trees/Prunus, washing bay,
+  chickens) to a member who was only briefly on the call; it is almost always the farm
+  device (Dad/Solomon/Mum).
 
 HOUSE STRUCTURE (use the sections that the meeting actually covered; add subsections freely):
 - OPENING (who opened, prayer, chair/secretary, quorum)
