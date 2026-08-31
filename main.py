@@ -1586,11 +1586,18 @@ subsections, paragraphs and bullets as the meeting needs):
     {{"number": "4", "title": "FOLLOW-UP ON ACTION POINTS", "paragraphs": [], "bullets": [],
       "subsections": [{{"number": "4.1", "title": "Item name (KIM/ref)", "paragraphs": ["..."], "bullets": ["..."]}}]}}
   ],
-  "decisions": ["Concise decision 1", "Concise decision 2"]
+  "decisions": [
+    {{"group": "Project or topic the decisions belong to", "items": ["Concise decision", "..."]}},
+    {{"group": "General / Governance", "items": ["Cross-cutting decision", "..."]}}
+  ]
 }}
 
 Number the sections sequentially from 1. Only include what the inputs support, but be
-exhaustive about what they do support."""
+exhaustive about what they do support.
+KEY DECISIONS must be sectionalised per project: group each decision under the project or
+topic it concerns, using the SAME names as the MAIN AGENDA / PROJECT UPDATES subsections,
+and put anything cross-cutting (governance, constitution, next meeting, membership) under a
+final "General / Governance" group. Keep each decision one crisp line."""
     # 900s: the exhaustive-minutes assembly over a full map-reduce digest of a long,
     # noisy Tactiq transcript genuinely takes ~10 min (measured: 9 sections in 605s for
     # KIM 015, and it varies). 300s/600s get killed at the wire -> empty -> None -> the
@@ -1761,11 +1768,22 @@ def _build_minutes_docx_v2(meeting_ref: str, mtg: dict, narrative: dict, actions
             rc[2].text = a.get("responsible", "")
             rc[3].text = a.get("outcome", "")
 
-    # Decisions
+    # Decisions — grouped per project (list of {"group","items"}) or flat list of strings
     if narrative.get("decisions"):
         doc.add_heading("KEY DECISIONS", 1)
-        for idx, d in enumerate(narrative["decisions"], 1):
-            doc.add_paragraph(f"{idx}. {d}")
+        dec = narrative["decisions"]
+        if dec and isinstance(dec[0], dict):
+            for g in dec:
+                gname = (g.get("group") or g.get("project") or "General").strip()
+                items = g.get("items") or g.get("decisions") or []
+                if not items:
+                    continue
+                doc.add_heading(gname, 2)
+                for idx, d in enumerate(items, 1):
+                    doc.add_paragraph(f"{idx}. {d}")
+        else:
+            for idx, d in enumerate(dec, 1):
+                doc.add_paragraph(f"{idx}. {d}")
 
     doc.add_paragraph()
     doc.add_paragraph(f"Prepared on KimFam Hub, {_date2.today().strftime('%-d %B %Y')}.")
@@ -1943,7 +1961,8 @@ EDIT INSTRUCTION:
 Return ONLY valid JSON (no markdown, no commentary) with exactly these keys:
 {{"attendance": {{"present":[],"apologies":[],"absent":[]}}, "chair":"...", "secretary":"...",
   "sections":[{{"number":"1","title":"...","paragraphs":["..."],"bullets":["..."],"subsections":[]}}],
-  "decisions":["..."]}}"""
+  "decisions":[{{"group":"Project or topic","items":["..."]}}]}}
+Keep "decisions" in the SAME per-group shape shown in CURRENT MINUTES above."""
 
         raw = ""
         try:
