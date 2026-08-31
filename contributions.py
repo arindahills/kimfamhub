@@ -123,6 +123,127 @@ def compute_family_balance(family_id: int):
     }
 
 
+# JUSTIFICATION-A3: net-new per-month arrears breakdown (no existing equivalent);
+# derives which months are owed / overdue / due-next from the SAME net math as
+# compute_family_balance, for the Finances-card clarity fix.
+def _month_label(ym: str) -> str:
+    """'2026-07' -> 'Jul 2026'."""
+    from datetime import date as _date
+    return _date.fromisoformat(ym + "-01").strftime("%b %Y")
+
+
+def _due_date_for(ym: str) -> str:
+    """A month's contribution is due the 10th of the FOLLOWING month.
+    '2026-08' -> '2026-09-10' (matches the scheduler's 'pay by the 10th')."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    return f"{ny:04d}-{nm:02d}-10"
+
+
+def compute_family_arrears_detail(family_id: int):
+    """Month-by-month coverage for a family: which months are still owed (with a
+    per-month `overdue` flag = past its 10th deadline), and which month is due
+    next. Uses the SAME window and net math as compute_family_balance (obligations
+    2023-01 through the last COMPLETED month; monthly pool = total confirmed paid
+    minus initial paid, applied oldest-first, UNCLAMPED), so total_arrears always
+    equals the monthly portion of the balance. Families paid in advance get a
+    future paid_through and next_due."""
+    from datetime import date as _date, datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        today = _dt.now(ZoneInfo("Africa/Kampala")).date()
+    except Exception:
+        today = _date.today()
+
+    # Window through the last COMPLETED month, identical to compute_family_balance.
+    if today.month == 1:
+        last_m, last_y = 12, today.year - 1
+    else:
+        last_m, last_y = today.month - 1, today.year
+    end_ym = f"{last_y:04d}-{last_m:02d}"
+
+    rates = _get_rates()
+    comps = [dict(c) for c in query(
+        "SELECT effective_from, effective_to, num_adults, num_children "
+        "FROM family_composition_history WHERE family_id=%s ORDER BY effective_from",
+        (family_id,))]
+    past = []
+    y, m = 2023, 1
+    while True:
+        ym = f"{y:04d}-{m:02d}"
+        ymd = _date.fromisoformat(ym + "-01")
+        adult_r, child_r = _rate_for_month(rates, ymd)
+        adults, children = _comp_for_month(comps, ymd)
+        past.append((ym, adults * adult_r + children * child_r))
+        if ym == end_ym:
+            break
+        m += 1
+        if m > 12:
+            m = 1; y += 1
+
+    init_rows = query("SELECT paid_ugx FROM initial_obligations WHERE family_id=%s", (family_id,))
+    init_paid = init_rows[0]["paid_ugx"] if init_rows else 0
+    total_paid = int(query(
+        "SELECT COALESCE(SUM(amount_ugx),0) t FROM contribution_payments "
+        "WHERE family_id=%s AND status='confirmed'", (family_id,))[0]["t"])
+    pool = total_paid - init_paid   # UNCLAMPED: matches compute_family_balance exactly
+
+    todays = today.isoformat()
+    paid_through = None
+    arrears = []
+    for ym, amt in past:
+        if amt <= 0:
+            paid_through = ym
+            continue
+        if pool >= amt:
+            pool -= amt
+            paid_through = ym
+        else:
+            owed = amt - pool   # pool may be negative (init shortfall) -> owed > amt, sum still matches balance
+            pool = 0
+            due = _due_date_for(ym)
+            arrears.append({"month": ym, "label": _month_label(ym),
+                            "amount_owed": owed, "due_date": due, "overdue": due < todays})
+
+    # Paid in advance: any leftover pool covers future months -> extend paid_through.
+    if not arrears and pool > 0:
+        fy, fm = last_y, last_m
+        while pool > 0:
+            fm += 1
+            if fm > 12:
+                fm = 1; fy += 1
+            fym = f"{fy:04d}-{fm:02d}"
+            amt = compute_monthly_obligation(family_id, fym)
+            if amt <= 0 or pool < amt:
+                break
+            pool -= amt
+            paid_through = fym
+
+    # Next payment due = current calendar month, or the month after paid_through
+    # if the family is paid ahead of the current month.
+    cur_ym = f"{today.year:04d}-{today.month:02d}"
+    if paid_through and paid_through >= cur_ym:
+        py, pm = int(paid_through[:4]), int(paid_through[5:7])
+        pm += 1
+        if pm > 12:
+            pm = 1; py += 1
+        nxt = f"{py:04d}-{pm:02d}"
+    else:
+        nxt = cur_ym
+    nxt_amt = compute_monthly_obligation(family_id, nxt)
+    next_due = ({"month": nxt, "label": _month_label(nxt),
+                 "amount_owed": nxt_amt, "due_date": _due_date_for(nxt)}
+                if nxt_amt > 0 else None)
+
+    return {
+        "paid_through":       paid_through,
+        "paid_through_label": _month_label(paid_through) if paid_through else None,
+        "arrears_months":     arrears,
+        "total_arrears":      sum(a["amount_owed"] for a in arrears),
+        "next_due":           next_due,
+    }
+
+
 # ──────────────────────────────────────────────────────────
 # GET /api/contributions/account-info
 # ──────────────────────────────────────────────────────────
@@ -193,8 +314,14 @@ def get_summary():
 # GET /api/contributions/ledger
 # ──────────────────────────────────────────────────────────
 @router.get("/ledger")
-def get_ledger():
-    """Per-family obligations, payments, and balances."""
+def get_ledger(request: Request = None):
+    """Per-family obligations, payments, and balances. Financial data, so HTTP
+    callers must be authenticated; internal callers (scheduler, Ask KimFam) invoke
+    get_ledger() with no request and are trusted."""
+    if request is not None:
+        from auth import verify_token
+        if not verify_token(request.cookies.get("kimfam_token", "")):
+            raise HTTPException(401, "Not authenticated")
     families = query("SELECT id, family_name, joined_date FROM families ORDER BY family_name")
     result = []
     for fam in families:
@@ -212,6 +339,7 @@ def get_ledger():
             "family_name":          fam["family_name"],
             "composition":          f"{adults} adults, {children} children",
             "current_monthly_rate": monthly_rate,
+            "arrears_detail":       compute_family_arrears_detail(fam["id"]),
             **bal,
         })
     return result
@@ -221,14 +349,18 @@ def get_ledger():
 # GET /api/contributions/family/{family_id}
 # ──────────────────────────────────────────────────────────
 @router.get("/family/{family_id}")
-def get_family_contributions(family_id: int):
-    """Full payment history for a family."""
+def get_family_contributions(family_id: int, request: Request):
+    """Full payment history for a family, including receipt links. Authenticated
+    members only (this returns receipt image URLs and full payment history)."""
+    from auth import verify_token
+    if not verify_token(request.cookies.get("kimfam_token", "")):
+        raise HTTPException(401, "Not authenticated")
     fam = query("SELECT * FROM families WHERE id=%s", (family_id,))
     if not fam:
         raise HTTPException(404, "Family not found")
     payments = query("""
         SELECT id, period_month, amount_ugx, payment_reference,
-               receipt_photo_path, status, confirmation_note,
+               receipt_photo_path, receipt_url, status, confirmation_note,
                submitted_at, confirmed_at, is_historical
         FROM contribution_payments
         WHERE family_id=%s

@@ -31,6 +31,20 @@ interface Summary {
   opening_obligations: number
 }
 
+interface ArrearsMonth {
+  month: string        // "2026-07"
+  label: string        // "Jul 2026"
+  amount_owed: number
+  due_date: string     // "2026-08-10"
+  overdue?: boolean    // past its 10th deadline
+}
+interface ArrearsDetail {
+  paid_through: string | null
+  paid_through_label: string | null
+  arrears_months: ArrearsMonth[]
+  total_arrears: number
+  next_due: ArrearsMonth | null
+}
 interface FamilyBalance {
   family_id: number
   family_name: string
@@ -39,6 +53,7 @@ interface FamilyBalance {
   current_balance: number
   initial_balance: number
   combined_balance: number
+  arrears_detail?: ArrearsDetail
 }
 
 interface PendingPayment {
@@ -58,6 +73,7 @@ interface FamilyPayment {
   amount_ugx: number
   payment_reference: string | null
   receipt_photo_path: string | null
+  receipt_url: string | null
   status: 'pending' | 'confirmed' | 'rejected'
   confirmation_note: string | null
   submitted_at: string
@@ -84,6 +100,21 @@ function paidToLabel(currentBalance: number, monthlyRate: number): string | null
   m += ahead
   while (m > 11) { m -= 12; y++ }
   return MONTHS[m] + ' ' + y
+}
+
+/** "2026-09-10" -> "10 Sep 2026". */
+function fmtDue(d: string): string {
+  const [y, m, day] = d.split('-').map(Number)
+  return `${day} ${MONTHS[m - 1]} ${y}`
+}
+
+/** N consecutive month labels starting at "YYYY-MM" -> "Aug 2026, Sep 2026". */
+function monthsFrom(startYm: string, n: number): string {
+  const [y0, m0] = startYm.split('-').map(Number)
+  const out: string[] = []
+  let y = y0, m = m0
+  for (let i = 0; i < n; i++) { out.push(`${MONTHS[m - 1]} ${y}`); m++; if (m > 12) { m = 1; y++ } }
+  return out.join(', ')
 }
 
 function ReconciliationBadge({ confirmed, computed }: { confirmed: number; computed: number }) {
@@ -213,12 +244,22 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
   const calcOpening = Math.max(0, initBal)
   const calcAdditionalAhead = Math.max(0, calcMonths * rate - calcExistingCredit)
   const calcTotal = calcArrears + calcOpening + calcAdditionalAhead
+  const ad = f.arrears_detail
+  const arrearsMonthsLabel = ad && ad.arrears_months.length
+    ? ` (${ad.arrears_months.map(a => a.label).join(', ')})` : ''
+  // Name only the months this payment ACTUALLY buys (calcAdditionalAhead / rate),
+  // starting at the first uncovered month (next_due). Existing credit already
+  // absorbs the earlier ones, so naming all calcMonths would list covered months.
+  const aheadStart = ad?.next_due?.month
+  const additionalMonths = rate > 0 ? Math.max(0, Math.round(calcAdditionalAhead / rate)) : 0
+  const aheadNames = (additionalMonths > 0 && aheadStart) ? ` (${monthsFrom(aheadStart, additionalMonths)})` : ''
+  const aheadCount = `${calcMonths} month${calcMonths > 1 ? 's' : ''} ahead`
   const calcRows: [string, string, string][] = []
-  if (calcArrears > 0) calcRows.push(['Clear monthly arrears', `UGX ${calcArrears.toLocaleString()}`, '#f87171'])
+  if (calcArrears > 0) calcRows.push([`Clear monthly arrears${arrearsMonthsLabel}`, `UGX ${calcArrears.toLocaleString()}`, '#f87171'])
   if (calcOpening > 0) calcRows.push(['Clear opening balance', `UGX ${calcOpening.toLocaleString()}`, '#fbbf24'])
   if (calcExistingCredit > 0) calcRows.push(['Existing credit (already paid ahead)', `− UGX ${calcExistingCredit.toLocaleString()}`, '#a5b4fc'])
-  if (calcMonths > 0 && calcAdditionalAhead > 0) calcRows.push([`${calcMonths} month${calcMonths > 1 ? 's' : ''} ahead`, `UGX ${calcAdditionalAhead.toLocaleString()}`, '#86efac'])
-  if (calcMonths > 0 && calcAdditionalAhead === 0) calcRows.push([`${calcMonths} month${calcMonths > 1 ? 's' : ''} ahead`, 'Already covered ✓', '#4ade80'])
+  if (calcMonths > 0 && calcAdditionalAhead > 0) calcRows.push([`${aheadCount}${aheadNames}`, `UGX ${calcAdditionalAhead.toLocaleString()}`, '#86efac'])
+  if (calcMonths > 0 && calcAdditionalAhead === 0) calcRows.push([aheadCount, 'Already covered ✓', '#4ade80'])
 
   const payLabel = (ym: string) => {
     const [y, m] = ym.split('-').map(Number)
@@ -285,6 +326,25 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
             : <span style={{ color: '#f87171' }}>UGX {outstanding.toLocaleString()}</span>
           }
         </div>
+
+        {/* Which months are owed, and when the next one is due */}
+        {ad && (ad.arrears_months.length > 0 || ad.next_due || ad.paid_through_label) && (
+          <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.5 }}>
+            {ad.arrears_months.length > 0 && (
+              <div style={{ color: '#f87171' }}>
+                Owed: {ad.arrears_months.map(a => `${a.label} (${a.overdue ? 'overdue since' : 'due'} ${fmtDue(a.due_date)})`).join(', ')}
+              </div>
+            )}
+            {ad.arrears_months.length === 0 && ad.paid_through_label && (
+              <div style={{ color: '#4ade80' }}>Paid through {ad.paid_through_label}</div>
+            )}
+            {ad.next_due && (
+              <div style={{ color: '#94a3b8' }}>
+                Next: UGX {ad.next_due.amount_owed.toLocaleString()} for {ad.next_due.label}, due {fmtDue(ad.next_due.due_date)}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Calculator toggle */}
         <button onClick={() => { setShowCalc(!showCalc); if (!showCalc) setCalcMonths(0) }}
@@ -391,14 +451,19 @@ function FamilyCard({ f, isMyFamily, onPay }: { f: FamilyBalance; isMyFamily: bo
                       {p.confirmation_note}
                     </div>
                   )}
-                  {/* Receipt link */}
-                  {p.receipt_photo_path && (
-                    <a href={p.receipt_photo_path} target="_blank" rel="noreferrer"
-                      style={{ fontSize: 11, color: '#22c55e', marginTop: 2, display: 'inline-block' }}
-                      onClick={e => e.stopPropagation()}>
-                      View receipt ↗
-                    </a>
-                  )}
+                  {/* Receipt link — receipts are stored in receipt_url (newer flow);
+                       receipt_photo_path is the legacy column kept as a fallback. */}
+                  {(p.receipt_url || p.receipt_photo_path)
+                    ? (
+                      <a href={p.receipt_url || p.receipt_photo_path || '#'} target="_blank" rel="noreferrer"
+                        style={{ fontSize: 11, color: '#22c55e', marginTop: 2, display: 'inline-block' }}
+                        onClick={e => e.stopPropagation()}>
+                        View receipt ↗
+                      </a>
+                    )
+                    : p.status === 'confirmed' && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>No receipt on file</div>
+                    )}
                 </div>
                 {statusBadge(p.status)}
               </div>
