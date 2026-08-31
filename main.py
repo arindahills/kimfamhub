@@ -1591,7 +1591,13 @@ subsections, paragraphs and bullets as the meeting needs):
 
 Number the sections sequentially from 1. Only include what the inputs support, but be
 exhaustive about what they do support."""
-    raw = _ask_claude(prompt, model="claude-sonnet-4-6", timeout=300)
+    # 900s: the exhaustive-minutes assembly over a full map-reduce digest of a long,
+    # noisy Tactiq transcript genuinely takes ~10 min (measured: 9 sections in 605s for
+    # KIM 015, and it varies). 300s/600s get killed at the wire -> empty -> None -> the
+    # thin v1 fallback (the "different format" bug) + "Could not load the full minutes
+    # to edit". nginx proxy_read_timeout is 1800s and confirm/edit stream via SSE, so a
+    # long call stays alive. (Follow-up: clean/shrink the digest to cut this time.)
+    raw = _ask_claude(prompt, model="claude-sonnet-4-6", timeout=900)
     def _parse(x):
         if not x: return None
         try: return _json_n2.loads(x)
@@ -1946,7 +1952,10 @@ Return ONLY valid JSON (no markdown, no commentary) with exactly these keys:
                 "claude", "-p", prompt, "--model", "claude-sonnet-4-6",
                 stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
             )
-            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=280)
+            # 600s: re-emitting a full multi-section narrative over a noisy transcript is
+            # slow (same reason the assembly needs 900s); 280s was too tight and returned
+            # empty -> the friendly "couldn't apply" message even on a valid instruction.
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=600)
             if proc.returncode == 0:
                 raw = stdout.decode().strip()
         except Exception:
