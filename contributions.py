@@ -364,7 +364,7 @@ def get_family_contributions(family_id: int, request: Request):
                submitted_at, confirmed_at, is_historical
         FROM contribution_payments
         WHERE family_id=%s
-        ORDER BY period_month DESC
+        ORDER BY submitted_at DESC NULLS LAST, period_month DESC, id DESC
     """, (family_id,))
     bal = compute_family_balance(family_id)
     return {
