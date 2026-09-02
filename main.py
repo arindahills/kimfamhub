@@ -6887,82 +6887,11 @@ async def sheep_detail(request: Request):
     if not ok:
         raise _HE(status_code=401, detail="Auth required")
 
-    capital_invested = 1710000
-    dorper_count     = 17
-    price_low        = 100000
-    price_high       = 150000
-    price_avg        = 125000
-
-    value_low  = dorper_count * price_low
-    value_high = dorper_count * price_high
-    value_avg  = dorper_count * price_avg
-
-    sold_proceeds     = 200000   # 1 young Dorper sold for ear-tagging
-    pending_ewes      = 12
-    pending_per_head  = 200000
-    pending_total     = pending_ewes * pending_per_head
-
-    net_position = value_avg + sold_proceeds - capital_invested
-
-    return {
-        "investment": {
-            "date":    "16 Aug 2024",
-            "amount":  capital_invested,
-            "paid_by": "Hellen Tusiime (ABSA → Stanbic)",
-            "ref":     "KIM PROJECT DORPER SHEEP",
-            "paid_to": "Tuhimbise Pricilla Arinaitwe",
-        },
-        "flock": {
-            "total":          40,
-            "dorper_count":   dorper_count,
-            "club_held":      2,
-            "sold":           1,
-            "sold_value":     sold_proceeds,
-            "note":           "1 young Dorper sold at UGX 200K to fund ear-tagging exercise",
-        },
-        "valuation": {
-            "price_low":   price_low,
-            "price_high":  price_high,
-            "price_avg":   price_avg,
-            "basis":       "Mum confirmed flat pricing UGX 200K/head; Dorpers typically command premium",
-            "value_low":   value_low,
-            "value_high":  value_high,
-            "value_avg":   value_avg,
-        },
-        "position": {
-            "capital_invested":   capital_invested,
-            "dorper_value_avg":   value_avg,
-            "sold_proceeds":      sold_proceeds,
-            "total_value":        value_avg + sold_proceeds,
-            "net_position":       net_position,
-            "return_pct":         round((net_position / capital_invested) * 100, 1),
-        },
-        "pipeline": {
-            "pending_ewes":       pending_ewes,
-            "pending_per_head":   pending_per_head,
-            "pending_total":      pending_total,
-            "action_id":          "KIM/07/26-4",
-            "note":               "12 old ewes ear-tagged, payment being processed via Hellen",
-        },
-        "next_steps": [
-            {"step": "Replough paddocks",  "target": "Sep 2026", "done": False},
-            {"step": "Broadcast pasture seeds", "target": "Sep 2026", "done": False},
-            {"step": "Harrow paddock area", "target": "Sep 2026", "done": False},
-            {"step": "Source new breeding ram", "target": "TBD", "done": False, "note": "Existing ram cannot breed with its own offspring"},
-            {"step": "KIM/07/26-4 payment settled", "target": "Jun 2026", "done": False},
-        ],
-        "breeding_model": {
-            "gestation_days":    150,
-            "lambs_per_birth":   "1-3",
-            "cycles_per_year":   "1-2",
-            "note":              "Dorper is a hair sheep — no shearing needed, hardy in tropical climate",
-            "harvest_age_months": 6,
-            "harvest_weight_kg": 30,
-        },
-        "receipts": [
-            {"date": "16 Aug 2024", "desc": "Dorper sheep purchase", "amount": 1710000, "ref": "ABSA→Stanbic TXN 17238007755249"},
-        ],
-    }
+    # Live from the sheep_* Postgres tables (in-app entry, not a spreadsheet). See ADR-026.
+    import sheep as _sheep
+    if not _sheep.ready():
+        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    return _sheep.sheep_detail_data()
 
 
 @app.get("/api/projects/washing_bay/detail")
