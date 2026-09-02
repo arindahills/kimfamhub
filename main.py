@@ -6894,6 +6894,95 @@ async def sheep_detail(request: Request):
     return _sheep.sheep_detail_data()
 
 
+# ── Sheep tracker writes — Solomon/admin only (Epic #16, ADR-026) ─────────────
+from sheep import SheepEventIn as _SheepEventIn, SheepExpenseIn as _SheepExpenseIn  # noqa: E402
+
+
+def _sheep_writer(request):
+    """Auth dependency: only Solomon or an admin may record sheep data. Returns the author name.
+    401 for no/expired token (clearer on the shared farm device), 403 for wrong member."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    if payload.get("sub") != "Solomon" and payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Only Solomon or an admin can record sheep data")
+    return payload.get("display") or payload.get("sub")
+
+
+@app.post("/api/projects/sheep/event")
+def sheep_add_event(body: _SheepEventIn, request: Request):
+    """Record a birth / death(+cause) / sale / purchase / opening adjustment."""
+    from fastapi import HTTPException as _HE
+    import sheep as _sheep
+    author = _sheep_writer(request)
+    if not _sheep.ready():
+        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    import datetime as _dtm
+    try:
+        _dtm.date.fromisoformat(body.event_date)
+    except (ValueError, TypeError):
+        raise _HE(status_code=422, detail="event_date must be YYYY-MM-DD")
+    ok, err = _sheep.validate_event(body.event_type, body.count, body.amount_ugx)
+    if not ok:
+        raise _HE(status_code=422, detail=err)
+    if body.event_type in ("death", "sale") and body.count > _sheep.current_alive():
+        raise _HE(status_code=422, detail="%d exceeds the current live flock — check the entry" % body.count)
+    _id = _sheep.insert_event(body.event_type, body.event_date, body.count, body.cause,
+                              body.amount_ugx, body.counterparty, body.note, author)
+    return {"ok": True, "id": _id}
+
+
+@app.post("/api/projects/sheep/expense")
+def sheep_add_expense(body: _SheepExpenseIn, request: Request):
+    """Record a categorized expense (vaccines = vet, ear-tag, pasture, feed/silage, …)."""
+    from fastapi import HTTPException as _HE
+    import sheep as _sheep
+    author = _sheep_writer(request)
+    if not _sheep.ready():
+        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    import datetime as _dtm
+    try:
+        _dtm.date.fromisoformat(body.spent_on)
+    except (ValueError, TypeError):
+        raise _HE(status_code=422, detail="spent_on must be YYYY-MM-DD")
+    ok, err = _sheep.validate_expense(body.category, body.amount_ugx)
+    if not ok:
+        raise _HE(status_code=422, detail=err)
+    _id = _sheep.insert_expense(body.category, body.amount_ugx, body.spent_on,
+                                body.paid_by, body.note, author)
+    return {"ok": True, "id": _id}
+
+
+# JUSTIFICATION-A3: net-new correction-path DELETE endpoints (reviewer-required reversibility); not a wrap.
+@app.delete("/api/projects/sheep/event/{event_id}")
+def sheep_delete_event(event_id: int, request: Request):
+    """Correction path for a wrong/duplicate event entry (Solomon/admin only)."""
+    from fastapi import HTTPException as _HE
+    import sheep as _sheep
+    _sheep_writer(request)
+    if not _sheep.ready():
+        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    removed = _sheep.delete_event(event_id, None)
+    if not removed:
+        raise _HE(status_code=404, detail="Event not found")
+    return {"ok": True, "deleted": removed}
+
+
+@app.delete("/api/projects/sheep/expense/{expense_id}")
+def sheep_delete_expense(expense_id: int, request: Request):
+    """Correction path for a wrong/duplicate expense entry (Solomon/admin only)."""
+    from fastapi import HTTPException as _HE
+    import sheep as _sheep
+    _sheep_writer(request)
+    if not _sheep.ready():
+        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    removed = _sheep.delete_expense(expense_id, None)
+    if not removed:
+        raise _HE(status_code=404, detail="Expense not found")
+    return {"ok": True, "deleted": removed}
+
+
 @app.get("/api/projects/washing_bay/detail")
 async def washing_bay_detail(request: Request):
     from fastapi import HTTPException as _HE

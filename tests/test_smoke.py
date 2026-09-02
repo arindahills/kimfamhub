@@ -111,6 +111,18 @@ class TestCoreAPI:
         r = requests.get(f"{BASE}/api/projects/fortune_credit/projection", timeout=30)
         assert r.status_code == 401
 
+    def test_sheep_write_requires_auth(self):
+        # no token → 401 (bare request, not the logged-in SESSION)
+        r = requests.post(f"{BASE}/api/projects/sheep/event", timeout=30,
+                          json={"event_type": "death", "event_date": "2026-09-03", "count": 1})
+        assert r.status_code == 401
+
+    def test_sheep_event_rejects_bad_enum(self, auth_headers):
+        # Hillary is admin → passes the gate, but a bad enum must 422 (not insert)
+        r = _post("/api/projects/sheep/event", headers=auth_headers,
+                  json={"event_type": "bogus", "event_date": "2026-09-03", "count": 1})
+        assert r.status_code == 422
+
     def test_admin_members_status(self, auth_headers):
         r = _get("/api/auth/admin/members-status", headers=auth_headers)
         assert r.status_code == 200

@@ -284,3 +284,99 @@ def sheep_detail_data():
         },
         "source": "Live from KimFam Hub (sheep_events / sheep_expenses) — entered in-app, not a spreadsheet. Valuation & wider-flock figures are context, to be confirmed with Solomon.",
     }
+
+
+# ── request models (in sheep.py so they're hermetically unit-testable) ────────
+from typing import Optional as _Optional
+from pydantic import BaseModel as _BM
+
+
+class SheepEventIn(_BM):
+    event_type: str
+    event_date: str
+    count: int = 1
+    cause: _Optional[str] = None          # Optional so the frontend's explicit JSON null is accepted
+    amount_ugx: _Optional[int] = None
+    counterparty: _Optional[str] = None
+    note: _Optional[str] = None
+
+
+class SheepExpenseIn(_BM):
+    category: str
+    amount_ugx: int
+    spent_on: str
+    paid_by: _Optional[str] = None
+    note: _Optional[str] = None
+
+
+# ── writes (Solomon/admin only; validators are pure + unit-tested) ────────────
+_MAX_COUNT = 1000
+_MAX_AMOUNT = 10_000_000_000   # 10 billion UGX — well below BIGINT overflow, above any real entry
+
+
+def validate_event(event_type, count, amount_ugx):
+    """Pure. Returns (ok: bool, error: str|None). Bounds guard typos + integer overflow."""
+    if event_type not in EVENT_TYPES:
+        return False, "event_type must be one of %s" % (EVENT_TYPES,)
+    try:
+        c = int(count)
+    except (TypeError, ValueError):
+        return False, "count must be an integer"
+    if c < 1:
+        return False, "count must be >= 1"
+    if c > _MAX_COUNT:
+        return False, "count looks too large (max %d) — check the entry" % _MAX_COUNT
+    if event_type in ("sale", "purchase"):
+        if amount_ugx is None or int(amount_ugx) < 0:
+            return False, "amount_ugx (>= 0) is required for a sale or purchase"
+        if int(amount_ugx) > _MAX_AMOUNT:
+            return False, "amount looks too large — check the entry"
+    return True, None
+
+
+def validate_expense(category, amount_ugx):
+    """Pure. Returns (ok: bool, error: str|None)."""
+    if category not in EXPENSE_CATEGORIES:
+        return False, "category must be one of %s" % (EXPENSE_CATEGORIES,)
+    if amount_ugx is None or int(amount_ugx) <= 0:
+        return False, "amount_ugx must be > 0"
+    if int(amount_ugx) > _MAX_AMOUNT:
+        return False, "amount looks too large — check the entry"
+    return True, None
+
+
+def current_alive():
+    """Dorper-line alive count from the event log (for the death/sale sanity check)."""
+    from db import query as _q
+    rows = _q("SELECT event_type, count FROM sheep_events")
+    return compute_flock([dict(r) for r in rows])["alive"]
+
+
+def delete_event(event_id, actor):
+    from db import execute as _exec
+    r = _exec("DELETE FROM sheep_events WHERE id=%s RETURNING id", (int(event_id),))
+    return r[0] if r else None
+
+
+def delete_expense(expense_id, actor):
+    from db import execute as _exec
+    r = _exec("DELETE FROM sheep_expenses WHERE id=%s RETURNING id", (int(expense_id),))
+    return r[0] if r else None
+
+
+def insert_event(event_type, event_date, count, cause, amount_ugx, counterparty, note, created_by):
+    from db import execute as _exec
+    r = _exec(
+        "INSERT INTO sheep_events (event_type, event_date, count, cause, amount_ugx, counterparty, note, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (event_type, event_date, int(count), cause, amount_ugx, counterparty, note, created_by))
+    return r[0] if r else None   # plain cursor → tuple; use r[0], never r["id"]
+
+
+def insert_expense(category, amount_ugx, spent_on, paid_by, note, created_by):
+    from db import execute as _exec
+    r = _exec(
+        "INSERT INTO sheep_expenses (category, amount_ugx, spent_on, paid_by, note, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+        (category, int(amount_ugx), spent_on, paid_by, note, created_by))
+    return r[0] if r else None

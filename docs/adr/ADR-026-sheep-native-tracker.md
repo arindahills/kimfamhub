@@ -1,6 +1,6 @@
 # ADR-026: Native Sheep Project Tracker (Postgres)
 
-## Status: Accepted (Slice 1 — data model, seed, live analytics)
+## Status: Accepted (Slice 1 — data model, seed, live analytics; Slice 2 — Solomon/admin entry)
 
 ## Context
 The Sheep & Dorper RAM project needs the same "how is it doing" visibility the chicken
@@ -42,9 +42,15 @@ A native tracker in `sheep.py`, three Postgres tables, data entered in-app (NOT 
   every future death/expense/sale updates it. Financial + action history in one place.
 - **Better**: pure aggregators are unit-tested (`test_sheep.py`, 8 tests); no invented
   figures — seed is documented facts only.
-- **Watch / next slices** (Epic #16): Solomon/admin-gated **entry forms + write endpoints**
-  (add death/vaccine/sale/purchase/expense) so the tracker is fed in-app; a live card panel
-  at chicken parity; mortality/drought alerts; birth-vs-death & expense charts. Until the
-  write endpoints ship, the tracker shows the seeded baseline only.
+- **Slice 2 (shipped): Solomon/admin entry.** Two Pydantic-validated, role-gated POST
+  endpoints — `/api/projects/sheep/event` (birth/death+cause/sale/purchase) and
+  `/api/projects/sheep/expense` (categorized; vaccines = `vet`). Gate `_sheep_writer`:
+  `sub=="Solomon" or role=="admin"` → else 403; author recorded from the token. Pure
+  `validate_event`/`validate_expense` (unit-tested) + ISO date check → 422 on bad input;
+  parameterized inserts return `r[0]` (plain tuple cursor). Frontend `SheepTracker.tsx`
+  (mobile forms) mounts on the sheep card for writers only and invalidates `['detail','sheep']`
+  so the Analysis card refreshes. The frontend gate is cosmetic; the backend is the enforcement.
+- **Watch / next slices** (Epic #16): live card panel at chicken parity; mortality/drought
+  alerts; birth-vs-death & expense charts.
 - The seed writes real financial history at first request; it is documented and idempotent,
   but is data, not schema — revisit if a project ever needs a clean unseeded start.

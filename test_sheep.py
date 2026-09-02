@@ -1,6 +1,44 @@
 """Unit tests for sheep.py pure logic — run: python3 test_sheep.py"""
 from sheep import (baseline_seed_rows, compute_flock, compute_financials,
+                   validate_event, validate_expense,
                    EVENT_TYPES, EXPENSE_CATEGORIES, ANIMAL_TYPES, ANIMAL_STATUSES, _SEED_TAG)
+
+
+def test_validate_event():
+    assert validate_event("death", 1, None)[0] is True
+    assert validate_event("birth", 3, None)[0] is True
+    assert validate_event("sale", 1, 200000)[0] is True
+    assert validate_event("purchase", 2, 0)[0] is True            # 0 allowed (>=0)
+    assert validate_event("bogus", 1, None)[0] is False           # bad type
+    assert validate_event("death", 0, None)[0] is False           # count < 1
+    assert validate_event("sale", 1, None)[0] is False            # sale needs amount
+    assert validate_event("purchase", 1, -5)[0] is False          # negative amount
+
+
+def test_validate_expense():
+    assert validate_expense("vet", 50000)[0] is True              # vaccines = vet
+    assert validate_expense("ear_tag", 1)[0] is True
+    assert validate_expense("bogus", 1000)[0] is False            # bad category
+    assert validate_expense("vet", 0)[0] is False                 # must be > 0
+    assert validate_expense("vet", None)[0] is False
+
+
+def test_validator_ceilings_block_typos():
+    assert validate_event("purchase", 10**6, 1000)[0] is False    # count > 1000
+    assert validate_event("sale", 1, 10**11)[0] is False          # amount > 10bn
+    assert validate_expense("vet", 10**11)[0] is False
+
+
+def test_pydantic_models_accept_frontend_explicit_nulls():
+    # The regression the reviewer caught: Pydantic v2 must accept explicit JSON null, which the
+    # frontend sends for cause/amount_ugx/counterparty/note. `Optional[...]=None` is required.
+    from sheep import SheepEventIn, SheepExpenseIn
+    e = SheepEventIn(event_type="death", event_date="2026-09-03", count=1,
+                     cause=None, amount_ugx=None, counterparty=None, note=None)
+    assert e.event_type == "death" and e.cause is None
+    x = SheepExpenseIn(category="vet", amount_ugx=50000, spent_on="2026-09-03",
+                       paid_by=None, note=None)
+    assert x.category == "vet" and x.paid_by is None
 
 
 def test_seed_is_documented_facts_only():
