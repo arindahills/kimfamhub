@@ -17,11 +17,11 @@ import { playPop } from '@/lib/sound'
 import { cn, ugx } from '@/lib/utils'
 
 interface ProjectData { label: string; value: string }
-interface ProjectUpdate { date: string; author: string; text: string; images: string[]; videos: string[] }
+interface ProjectUpdate { id?: number | null; date: string; author: string; text: string; images: string[]; videos: string[]; superseded?: boolean }
 interface Project {
   id: string; name: string; icon: string; category: string; status: string
   lead: string; headline: string; live?: boolean
-  data: ProjectData[]; update?: ProjectUpdate
+  data: ProjectData[]; update?: ProjectUpdate; updates?: ProjectUpdate[]
 }
 type LiveCell = { value: string; desc?: string }
 type LiveChicken = Record<string, LiveCell>
@@ -123,6 +123,53 @@ function ChickenLivePL({ c }: { c: LiveChicken }) {
 
 const fullActionBtn = 'flex h-11 w-full items-center gap-2.5 rounded-[10px] border border-[var(--border)] bg-[var(--card-inset)] px-4 text-[13px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--muted-2)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40'
 
+/* JUSTIFICATION-A3: net-new module-scope timeline components for the multi-update board (Phase 2); not a wrap. */
+/** One update in a project's timeline (own read-more state). */
+function UpdateItem({ u, dim }: { u: ProjectUpdate; dim?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const text = u.text ?? ''
+  const long = text.length > 160
+  return (
+    <div className={cn('rounded-[10px] bg-[var(--card)] p-2.5', dim && 'opacity-60')}>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-[var(--muted-2)]">{u.date}</span>
+        {u.superseded && <span className="rounded-full bg-[var(--card-inset)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted-2)]">superseded</span>}
+      </div>
+      <MediaCarousel images={u.images || []} videos={u.videos || []} />
+      <p className="mt-2 text-[13px] leading-relaxed text-[#cbd5e1]">
+        {long && !open ? text.slice(0, 160).trimEnd() + '…' : text}
+        {long && <button onClick={() => setOpen(o => !o)} className="ml-1 font-medium text-[var(--info)] hover:underline">{open ? 'Show less' : 'Read more'}</button>}
+      </p>
+      <div className="mt-1.5 text-[11px] text-[var(--muted-2)]">— {u.author}</div>
+    </div>
+  )
+}
+
+/** Newest-first update timeline: 2 latest expanded, older/superseded behind a toggle. */
+function UpdateTimeline({ updates }: { updates: ProjectUpdate[] }) {
+  const [showOlder, setShowOlder] = useState(false)
+  if (!updates?.length) return null
+  const head = updates.filter(u => !u.superseded).slice(0, 2)
+  const rest = updates.filter(u => !head.includes(u))   // preserves newest-first order
+  return (
+    <div className="mb-3 rounded-[12px] bg-[var(--card-inset)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">Updates</span>
+        <span className="text-[11px] text-[var(--muted-2)]">{updates.length}</span>
+      </div>
+      <div className="space-y-2">
+        {head.map((u, i) => <UpdateItem key={u.id ?? `h${i}`} u={u} />)}
+        {showOlder && rest.map((u, i) => <UpdateItem key={u.id ?? `r${i}`} u={u} dim={u.superseded} />)}
+      </div>
+      {rest.length > 0 && (
+        <button onClick={() => setShowOlder(s => !s)} className="mt-2 text-[11px] font-medium text-[var(--info)] hover:underline">
+          {showOlder ? 'Show less' : `Show ${rest.length} older update${rest.length > 1 ? 's' : ''}`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 /** Short "why join" pitch per venture category. */
 const JOIN_PITCH: Record<string, string> = {
   'Farming & Agriculture': 'A hands-on farming venture with steady produce income. Bring labour, oversight, or capital and share the harvest.',
@@ -220,7 +267,6 @@ function JoinBubble({
 
 function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; focused?: boolean }) {
   const [showDetails, setShowDetails] = useState(false)
-  const [updExpanded, setUpdExpanded] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
@@ -280,23 +326,8 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
           <Sparkline color={th.bar} />
         </div>
 
-        {/* Latest update */}
-        {p.update && (
-          <div className="mb-3 rounded-[12px] bg-[var(--card-inset)] p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">Latest Update</span>
-              <span className="text-[11px] text-[var(--muted-2)]">{p.update.date}</span>
-            </div>
-            <MediaCarousel images={p.update.images || []} videos={p.update.videos || []} />
-            <p className="mt-2.5 text-[13px] leading-relaxed text-[#cbd5e1]">
-              {p.update.text.length > 160 && !updExpanded ? p.update.text.slice(0, 160).trimEnd() + '…' : p.update.text}
-              {p.update.text.length > 160 && (
-                <button onClick={() => setUpdExpanded(e => !e)} className="ml-1 font-medium text-[var(--info)] hover:underline">{updExpanded ? 'Show less' : 'Read more'}</button>
-              )}
-            </p>
-            <div className="mt-1.5 text-[11px] text-[var(--muted-2)]">— {p.update.author}</div>
-          </div>
-        )}
+        {/* Update timeline (newest first; older/superseded collapsed) */}
+        <UpdateTimeline updates={p.updates ?? (p.update ? [p.update] : [])} />
 
         {/* Inline details */}
         {showDetails && (

@@ -3201,31 +3201,36 @@ def get_all_projects():
         except Exception:
             return None
 
-    # Fetch latest project_updates row per project
+    # Fetch the newest _TIMELINE_LIMIT project_updates PER project (bounded in SQL), for the timeline
+    _TIMELINE_LIMIT = 6
+    db_timeline = {}   # project_id -> [update dict, ...] newest first
     try:
         rows = _dbq(
-            "SELECT DISTINCT ON (project_id) project_id, author, text, media, "
-            "TO_CHAR(created_at AT TIME ZONE 'Africa/Nairobi', 'FMDD Mon YYYY') AS date_str, "
-            "created_at "
-            "FROM project_updates "
-            "ORDER BY project_id, created_at DESC"
+            "SELECT project_id, id, author, text, media, "
+            "TO_CHAR(created_at AT TIME ZONE 'Africa/Nairobi', 'FMDD Mon YYYY') AS date_str, created_at "
+            "FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS _rn "
+            "FROM project_updates) t WHERE _rn <= %s ORDER BY project_id, created_at DESC",
+            (_TIMELINE_LIMIT,)
         )
-        db_updates = {}
         for row in rows:
             media = row.get("media") or []
             if isinstance(media, str):
                 try: media = _json.loads(media)
                 except: media = []
-            db_updates[row["project_id"]] = {
+            db_timeline.setdefault(row["project_id"], []).append({
+                "id":     row.get("id"),
                 "date":   row["date_str"],
                 "author": row["author"],
                 "text":   row["text"],
                 "images": [m["url"] for m in media if m.get("type") == "image"],
                 "videos": [m["url"] for m in media if m.get("type") == "video"],
                 "created_at": row.get("created_at"),
-            }
+            })
     except Exception as _e:
-        db_updates = {}
+        import logging as _lg
+        _lg.getLogger("uvicorn.error").warning("project_updates timeline query failed: %s", _e)
+        db_timeline = {}
+    db_updates = {pid: lst[0] for pid, lst in db_timeline.items() if lst}  # newest per project
 
     def _best_update(project_id, hardcoded_update):
         db = db_updates.get(project_id)
@@ -3246,6 +3251,8 @@ def get_all_projects():
             hc_media = len(hardcoded_update.get("images",[]))+len(hardcoded_update.get("videos",[]))
             return db if db_media >= hc_media else hardcoded_update
         return db  # default to DB if we cannot compare
+
+    from project_timeline import build_timeline as _build_timeline
 
     projects = [
         {"id":"chicken","name":"Free Range Chicken","icon":"🐔","category":"Farming & Agriculture","status":"Operational","lead":"Solomon Ariho","headline":"60% production rate","live":True,"data":[
@@ -3329,7 +3336,8 @@ def get_all_projects():
     # Overlay live DB updates — newer DB entry wins over hardcoded update
     for p in projects:
         hc = p.get("update")
-        p["update"] = _best_update(p["id"], hc)
+        p["update"]  = _best_update(p["id"], hc)       # backward-compat (may differ from updates[0] on a same-date media tiebreak)
+        p["updates"] = _build_timeline(db_timeline.get(p["id"], []), hc, _TIMELINE_LIMIT)
     return projects
 
 

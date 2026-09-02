@@ -93,6 +93,22 @@ class TestCoreAPI:
     def test_washing_bay_income_open(self):
         assert _get("/api/washing-bay/income").status_code == 200
 
+    def test_projects_all_has_updates_timeline(self):
+        """The board endpoint must return a list of projects each carrying an `updates`
+        timeline array (Phase 2 multi-update board). Guards the core Projects page."""
+        r = _get("/api/projects/all")
+        assert r.status_code == 200
+        projects = r.json()
+        assert isinstance(projects, list) and projects
+        for p in projects:
+            assert "updates" in p and isinstance(p["updates"], list)
+            for u in p["updates"]:
+                assert {"date", "author", "text"} <= set(u)
+                assert "superseded" in u
+
+    def test_projection_requires_auth(self):
+        assert _get("/api/projects/fortune_credit/projection").status_code == 401
+
     def test_admin_members_status(self, auth_headers):
         r = _get("/api/auth/admin/members-status", headers=auth_headers)
         assert r.status_code == 200
