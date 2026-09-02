@@ -107,7 +107,9 @@ class TestCoreAPI:
                 assert "superseded" in u
 
     def test_projection_requires_auth(self):
-        assert _get("/api/projects/fortune_credit/projection").status_code == 401
+        # bare request (NOT the shared logged-in SESSION) so the cookie doesn't leak in
+        r = requests.get(f"{BASE}/api/projects/fortune_credit/projection", timeout=30)
+        assert r.status_code == 401
 
     def test_admin_members_status(self, auth_headers):
         r = _get("/api/auth/admin/members-status", headers=auth_headers)
