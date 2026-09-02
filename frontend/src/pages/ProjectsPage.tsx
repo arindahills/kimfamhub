@@ -7,6 +7,7 @@ import { WashingBayIncome } from '@/components/projects/WashingBayIncome'
 import { WashingBayCapital } from '@/components/projects/WashingBayCapital'
 import { PortfolioModal } from '@/components/projects/PortfolioModal'
 import { DetailModal, ANALYSABLE } from '@/components/projects/DetailModal'
+import { ViabilityModal, PROJECTABLE } from '@/components/projects/ViabilityModal'
 import { InterestModal, TeamInterest } from '@/components/projects/InterestModal'
 import { MediaCarousel } from '@/components/projects/MediaCarousel'
 import { AnimatedHeadline } from '@/components/AnimatedHeadline'
@@ -223,9 +224,11 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
   const [actionsOpen, setActionsOpen] = useState(false)
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
+  const [viabilityOpen, setViabilityOpen] = useState(false)
   const [interestOpen, setInterestOpen] = useState(false)
   const hasAnalysis = ANALYSABLE.has(p.id)
   const hasAudit = AUDITABLE.has(p.id)
+  const hasProjection = PROJECTABLE.has(p.id)
   const th = categoryTheme(p.category)
   const { ref, seen } = useInView<HTMLDivElement>()
 
@@ -320,6 +323,7 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
         </button>
         {actionsOpen && (
           <div className="mt-2 space-y-2">
+            {hasProjection && <button className={fullActionBtn} onClick={() => setViabilityOpen(true)}><TrendingUp size={15} className="text-[#4ade80]" /> Viability Matrix</button>}
             {hasAnalysis && <button className={fullActionBtn} onClick={() => setAnalysisOpen(true)}><BarChart3 size={15} className="text-[#60a5fa]" /> Analysis</button>}
             {hasAudit && <button className={fullActionBtn} onClick={() => setAuditOpen(true)}><ClipboardList size={15} className="text-[#94a3b8]" /> Audit</button>}
             <button className={fullActionBtn} onClick={() => setShowDetails(s => !s)}>
@@ -336,6 +340,7 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
 
       {hasAnalysis && <DetailModal projectId={p.id} projectName={p.name.replace(/ \(.*\)/, '')} icon={p.icon} open={analysisOpen} onOpenChange={setAnalysisOpen} />}
       {hasAudit && <AuditModal projectId={p.id} projectName={p.name.replace(/ \(.*\)/, '')} icon={p.icon} open={auditOpen} onOpenChange={setAuditOpen} />}
+      {hasProjection && <ViabilityModal projectId={p.id} projectName={p.name.replace(/ \(.*\)/, '')} icon={p.icon} open={viabilityOpen} onOpenChange={setViabilityOpen} />}
       <InterestModal projectId={p.id} projectName={p.name} open={interestOpen} onOpenChange={setInterestOpen} />
     </div>
   )

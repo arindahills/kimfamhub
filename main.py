@@ -3333,6 +3333,59 @@ def get_all_projects():
     return projects
 
 
+# JUSTIFICATION-A3: net-new read-only endpoint (investment projection); not a wrap of existing code.
+@app.get("/api/projects/{project_id}/projection")
+def get_project_projection(project_id: str, request: Request,
+                           start: str = None, capital: int = None,
+                           term: int = None, own: int = None):
+    """Illustrative investment viability matrix for an investment-category project
+    (e.g. Fortune Credit). Auth-gated because it exposes club money. Pure projection
+    computed in investment.py — no funds are committed by calling this. See ADR-024."""
+    from fastapi import HTTPException as _HE
+    from datetime import date as _date, datetime as _dt
+    import investment
+    token = _get_tok(request)
+    if not _auth_verify(token):
+        raise _HE(status_code=401, detail="Auth required")
+    terms = investment.INVESTMENT_TERMS.get(project_id)
+    if not terms:
+        raise _HE(status_code=404, detail="No projection model for this project")
+    # live bank balance (confirmed ABSA figure preferred, else computed). Never project
+    # from a silent 0 — that would show confidently-wrong money figures on a family board.
+    try:
+        from contributions import get_summary as _gs
+        _summ = _gs()
+        bank_now = int(_summ.get("confirmed_bank_balance") or _summ.get("computed_balance") or 0)
+    except Exception:
+        bank_now = 0
+    if bank_now <= 0:
+        raise _HE(status_code=503, detail="Bank balance unavailable — cannot compute projection right now")
+    # resolve inputs with safe defaults
+    term_v = int(term) if term else terms["default_term_months"]
+    if term_v not in terms["term_months_options"]:
+        term_v = terms["default_term_months"]
+    capital_v = max(0, int(capital)) if capital is not None else terms["min_investment_ugx"]
+    own_v = max(0, min(int(own), capital_v)) if own is not None else 0
+    borrowed_v = capital_v - own_v
+    try:
+        start_v = _dt.strptime(start, "%Y-%m-%d").date() if start else _date.today()
+    except Exception:
+        start_v = _date.today()
+    result = investment.project_investment_matrix(
+        project_id, start_v, own_v, borrowed_v, term_v, bank_now)
+    result["lender_examples"] = [
+        investment.member_lender_payout(project_id, amt, term_v, start_v)
+        for amt in (1_000_000, 5_000_000, 7_000_000, 13_000_000)]
+    result["inputs"] = {
+        "start_date": start_v.isoformat(), "capital": capital_v,
+        "own_capital": own_v, "borrowed_capital": borrowed_v, "term_months": term_v}
+    result["terms"] = {k: terms[k] for k in (
+        "monthly_return_pct", "member_lend_rate_pct", "term_months_options",
+        "min_investment_ugx", "max_investment_ugx", "default_term_months",
+        "currency_note", "committed")}
+    return result
+
+
 @app.get("/api/projects/pitches")
 async def get_project_pitches(request: Request):
     """AI-cooked one-line "why join" enticements per project (figure-led).

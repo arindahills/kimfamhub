@@ -6,7 +6,7 @@ workspace {
         kimfam = softwareSystem "KimFam Hub" "Family investment club portal" {
             frontend = container "React SPA" "Vite + React 19 + TS + Tailwind v4. Renders all screens; mobile bottom-sheet modals; design system per docs/design-system.md." "TypeScript / React" {
                 designSystem = component "Design System"   "ui/ primitives (Button, Card, Dialog/sheet, Tabs, Badge) + tokens in index.css. shadcn/Radix style."
-                projectsUI   = component "Projects UI"      "Cards, Audit/Analysis/Portfolio modals, Team Interest accordion, Express Interest sheet"
+                projectsUI   = component "Projects UI"      "Cards, Audit/Analysis/Portfolio/Viability-Matrix modals, Team Interest accordion, Express Interest sheet"
                 proposalsUI  = component "Proposals UI"      "Submit + AI scorecard (criteria bars, support-readiness), versioned per project owner"
                 i18n         = component "i18n"             "react-i18next — en / sw / rny"
                 query        = component "Data Layer"       "TanStack Query against the FastAPI JSON API"
@@ -15,7 +15,8 @@ workspace {
                 authApi     = component "Auth API"          "/api/auth/* — login, WhatsApp OTP reset, JWT cookie"
                 askApi      = component "Ask KimFam API"    "/api/ask/stream — SSE RAG pipeline"
                 financeApi  = component "Finance API"       "Contributions, loans, equity, projects, balances"
-                projectApi  = component "Projects API"       "/api/projects/* — detail, audit, narrative, interests; /api/portfolio/* ranking + new ventures"
+                projectApi  = component "Projects API"       "/api/projects/* — detail, audit, narrative, interests, projection (viability matrix); /api/portfolio/* ranking + new ventures"
+                investmentEngine = component "Investment Projection Engine" "investment.py — pure, unit-tested month-by-month viability matrix (own vs borrowed capital, member-lender payout, mandatory downside). See ADR-024"
                 adminApi    = component "Admin API"         "Member management, config, documents"
                 docsApi     = component "Documents API"      "/api/docs — nested category/sub-group repo over R2; serve/preview docx/pdf/pptx/xlsx"
                 proposalsApi = component "Proposals API"     "/api/proposals — upload, Claude-only AI scoring vs the Project Proposal Template + reward guidelines, support-readiness, versioning/archiving"
@@ -56,6 +57,8 @@ workspace {
         askApi   -> groq      "Final fallback"
         askApi   -> chromadb  "Embedding search (local sentence-transformers)"
         projectApi -> claudeCli "Audit/narrative/portfolio AI"
+        projectApi -> investmentEngine "Computes viability matrix (pure function)"
+        projectApi -> financeApi "Reads confirmed bank balance (get_summary) for the projection"
         proposalsApi -> claudeCli "Proposal scoring (Claude only; framework docs as context; SSE progress)"
         proposalsApi -> cloudflare "Stores proposal files (projects/Proposals/<title>/v<n>)"
         proposalsApi -> pg "proposals table (scores, versions, readiness, file_hash, uploaded_at)"
