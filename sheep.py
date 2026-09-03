@@ -442,10 +442,11 @@ def compute_alerts(events, today=None):
         d = e.get("event_date")
         try:
             ed = _dt_alert.date.fromisoformat(str(d)[:10])
+            cnt = int(e.get("count") or 0)
         except (ValueError, TypeError):
             continue
         if ed >= cutoff:
-            recent_deaths += int(e.get("count") or 0)
+            recent_deaths += cnt
             causes.add((e.get("cause") or "unknown"))
     if recent_deaths >= _MORTALITY_ALERT_COUNT:
         cause_txt = "cause unknown — investigate & vaccinate" if causes == {"unknown"} else ("causes: " + ", ".join(sorted(causes)))
@@ -454,5 +455,5 @@ def compute_alerts(events, today=None):
     # drought → silage contingency (seasonal flag)
     if today.month in _DRY_MONTHS:
         alerts.append({"level": "info", "kind": "drought",
-                       "text": "Dry season — prepare silage and consider moving animals to the home farm (KIM 015 contingency)."})
+                       "text": "Dry-season window (Jun–Sep) — prepare silage and consider moving animals to the home farm (KIM 015 contingency)."})
     return alerts

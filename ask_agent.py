@@ -452,7 +452,17 @@ def tool_project_analysis(project_id: str) -> str:
             lines.append(f"  pending: {pend.get('item')} ({pend.get('amount_ugx')} UGX, {pend.get('status')})")
         alerts = data.get("alerts", [])
         if alerts:
-            lines.append("  alerts: " + "; ".join(a.get("text", "") for a in alerts))
+            lines.append("  alerts: " + "; ".join(a.get("text", "") for a in alerts if isinstance(a, dict)))
+        # Carry the caveats so the AI never states Dorper-only counts or the illustrative
+        # valuation as whole-flock fact to the family.
+        fl = data.get("flock", {})
+        if isinstance(fl, dict) and (fl.get("scope") or fl.get("wider_flock_note")):
+            lines.append(("  scope: %s %s" % (fl.get("scope", ""), fl.get("wider_flock_note", ""))).strip())
+        val = data.get("valuation", {})
+        if isinstance(val, dict) and val.get("basis"):
+            lines.append(f"  valuation basis: {val.get('basis')}")
+        if data.get("source"):
+            lines.append(f"  source: {data.get('source')}")
         return "\n".join(lines)
     ov = data.get("overview", {})
     if isinstance(ov, dict):
@@ -485,7 +495,12 @@ def tool_portfolio_overview() -> str:
             continue
         name = _PROJECT_NAMES.get(pid, pid)
         fm = data.get("financial_metrics", {})
-        parts = [f"{k}={v}" for k, v in list(fm.items())[:4]]
+        if not fm and isinstance(data.get("summary"), dict):   # live-tracker shape (sheep)
+            s = data["summary"]
+            parts = [f"flock(Dorper)={s.get('dorper_line_alive')}", f"deaths={s.get('total_deaths')}",
+                     f"expenses={s.get('expenses_to_date')}", f"net_est={s.get('net_position')}"]
+        else:
+            parts = [f"{k}={v}" for k, v in list(fm.items())[:4]]
         lines.append(f"  {name}: {', '.join(parts) if parts else '-'}")
     return "\n".join(lines)
 
