@@ -9007,19 +9007,26 @@ def klafam_overview(request: Request):
 
     today = date.today()
 
-    # A cycle's contributions are due on the 28th of the PREVIOUS month
-    # (_klafam_due_date), so the cycle being COLLECTED in the current calendar month
-    # is next month's payout cycle. e.g. during August we collect for the September
-    # payout (due 28 Aug). Using today.month showed the already-completed payout, so
-    # the card looked stale ("Aug, due 28 Jul") after that round had closed.
-    if today.month == 12:
-        cy, cm = today.year + 1, 1
+    # A cycle's contributions are due on the 28th of the PREVIOUS month (_klafam_due_date).
+    # BEFORE the 28th we are still collecting for THIS month's payout; from the 28th onward
+    # collection for next month's payout opens, so roll forward then. (Rolling forward
+    # unconditionally — the earlier off-by-one fix — pointed at a not-yet-created cycle
+    # mid-month, e.g. Oct on 3 Sep, and blanked the current-month card.)
+    if today.day >= 28:
+        if today.month == 12:
+            cy, cm = today.year + 1, 1
+        else:
+            cy, cm = today.year, today.month + 1
     else:
-        cy, cm = today.year, today.month + 1
+        cy, cm = today.year, today.month
     current = dbq(
         "SELECT id FROM klafam_cycles WHERE year=%s AND month=%s",
         (cy, cm)
     )
+    # Defensive: never blank the card. If that exact cycle row doesn't exist yet (schedule not
+    # extended), fall back to the most recent existing cycle so the status always renders.
+    if not current:
+        current = dbq("SELECT id FROM klafam_cycles ORDER BY year DESC, month DESC LIMIT 1")
     current_detail = _klafam_cycle_detail(current[0]["id"]) if current else None
 
     # Next cycle = the month after the current collection cycle (who receives next).
