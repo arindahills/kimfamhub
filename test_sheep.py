@@ -1,7 +1,28 @@
 """Unit tests for sheep.py pure logic — run: python3 test_sheep.py"""
+from datetime import date
 from sheep import (baseline_seed_rows, compute_flock, compute_financials, compute_monthly,
-                   validate_event, validate_expense,
+                   compute_alerts, validate_event, validate_expense,
                    EVENT_TYPES, EXPENSE_CATEGORIES, ANIMAL_TYPES, ANIMAL_STATUSES, _SEED_TAG)
+
+
+def test_alerts_mortality_and_drought():
+    ev = [{"event_type": "death", "event_date": "2026-08-30", "count": 1, "cause": "unknown"} for _ in range(3)]
+    a = compute_alerts(ev, today=date(2026, 9, 3))   # Sep = dry month; 3 recent deaths
+    kinds = {x["kind"] for x in a}
+    assert "mortality" in kinds and "drought" in kinds
+    mort = next(x for x in a if x["kind"] == "mortality")
+    assert mort["level"] == "warn" and "3 sheep deaths" in mort["text"] and "vaccinate" in mort["text"]
+
+
+def test_alerts_none_when_quiet_and_wet_season():
+    # 1 old death (outside 90d) + non-dry month → no alerts
+    ev = [{"event_type": "death", "event_date": "2026-01-01", "count": 1, "cause": "unknown"}]
+    assert compute_alerts(ev, today=date(2026, 3, 15)) == []
+
+
+def test_alerts_drought_only_in_dry_months():
+    assert any(x["kind"] == "drought" for x in compute_alerts([], today=date(2026, 7, 1)))
+    assert not any(x["kind"] == "drought" for x in compute_alerts([], today=date(2026, 12, 1)))
 
 
 def test_compute_monthly_flock_trend():

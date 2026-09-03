@@ -56,7 +56,12 @@ A native tracker in `sheep.py`, three Postgres tables, data entered in-app (NOT 
   `ChickenLivePL`) renders KPI tiles + flock-trend line + births-vs-deaths bars + expense
   breakdown bars. Counts and money are kept in separate charts (MiniChart's y-axis is a money
   formatter).
-- **Watch / next slices** (Epic #16): mortality alert (unusual lamb deaths); drought→silage
-  contingency flag.
+- **Slice 4 (shipped): alerts + Ask-KimFam knowledge.** Pure `compute_alerts(events, today)`
+  (unit-tested): a **mortality** warning when ≥2 deaths fall in the last 90 days (surfaces the
+  KIM 015 unknown-cause lamb deaths automatically — "investigate & vaccinate"), and a seasonal
+  **drought→silage** flag in the dry months (Jun–Sep, per KIM 015 contingency). Rendered as
+  banners atop `SheepLivePanel`. The live `sheep/detail` endpoint is also reachable by the
+  Ask-KimFam AI (project-analysis tool) so members can ask "how is the sheep project doing?"
+  and get live flock/mortality/expense data — no separate embedding needed (live > stale index).
 - The seed writes real financial history at first request; it is documented and idempotent,
   but is data, not schema — revisit if a project ever needs a clean unseeded start.

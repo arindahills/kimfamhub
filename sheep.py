@@ -271,6 +271,7 @@ def sheep_detail_data():
         },
         "expense_breakdown": fin["expense_by_category"],
         "chart": compute_monthly(events),   # flock trend + births/deaths for the live card charts
+        "alerts": compute_alerts(events),   # mortality + drought/silage contingency flags
         "recent_events": events[:12],
         "recent_expenses": expenses[:12],
         "next_steps": [
@@ -416,3 +417,42 @@ def compute_monthly(events):
         births.append(buckets[m]["births"])
         deaths.append(buckets[m]["deaths"])
     return {"months": months, "flock": flock, "births": births, "deaths": deaths}
+
+
+# ── alerts (pure, unit-tested) — mortality + drought/silage contingency ───────
+import datetime as _dt_alert
+
+# Dry-season window for this region (per KIM 015 drought→silage contingency): Jun–Sep.
+_DRY_MONTHS = (6, 7, 8, 9)
+_MORTALITY_WINDOW_DAYS = 90
+_MORTALITY_ALERT_COUNT = 2
+
+
+def compute_alerts(events, today=None):
+    """Pure. Returns a list of {level, kind, text}. `today` is a date (defaults to today)."""
+    if today is None:
+        today = _dt_alert.date.today()
+    alerts = []
+    # mortality: unusual recent deaths → investigate & vaccinate
+    cutoff = today - _dt_alert.timedelta(days=_MORTALITY_WINDOW_DAYS)
+    recent_deaths, causes = 0, set()
+    for e in events:
+        if e.get("event_type") != "death":
+            continue
+        d = e.get("event_date")
+        try:
+            ed = _dt_alert.date.fromisoformat(str(d)[:10])
+        except (ValueError, TypeError):
+            continue
+        if ed >= cutoff:
+            recent_deaths += int(e.get("count") or 0)
+            causes.add((e.get("cause") or "unknown"))
+    if recent_deaths >= _MORTALITY_ALERT_COUNT:
+        cause_txt = "cause unknown — investigate & vaccinate" if causes == {"unknown"} else ("causes: " + ", ".join(sorted(causes)))
+        alerts.append({"level": "warn", "kind": "mortality",
+                       "text": "%d sheep deaths in the last %d days (%s)." % (recent_deaths, _MORTALITY_WINDOW_DAYS, cause_txt)})
+    # drought → silage contingency (seasonal flag)
+    if today.month in _DRY_MONTHS:
+        alerts.append({"level": "info", "kind": "drought",
+                       "text": "Dry season — prepare silage and consider moving animals to the home farm (KIM 015 contingency)."})
+    return alerts

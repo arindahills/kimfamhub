@@ -434,6 +434,26 @@ def tool_project_analysis(project_id: str) -> str:
         return f"PROJECT {project_id}: live data unavailable."
     name = _PROJECT_NAMES.get(project_id, project_id.replace("_", " ").title())
     lines = [f"PROJECT ANALYSIS - {name} (live from app):"]
+    # JUSTIFICATION-A3: net-new formatter branch for the live sheep-tracker response shape; not a wrap.
+    # New live-tracker shape (sheep): summary/flock/mortality/financials/expense_breakdown/alerts.
+    # The old formatter below reads overview/financial_metrics which this shape lacks, so handle it here.
+    if data.get("summary") and (data.get("mortality") or data.get("flock")):
+        for k, v in (data.get("summary") or {}).items():
+            if not isinstance(v, (dict, list)):
+                lines.append(f"  {k}: {v}")
+        mort = data.get("mortality", {})
+        if isinstance(mort, dict) and mort.get("by_cause"):
+            lines.append(f"  deaths by cause: {mort.get('by_cause')}")
+        eb = data.get("expense_breakdown", {})
+        if eb:
+            lines.append(f"  expenses by category: {eb}")
+        pend = data.get("pending_pipeline", {})
+        if isinstance(pend, dict) and pend.get("amount_ugx"):
+            lines.append(f"  pending: {pend.get('item')} ({pend.get('amount_ugx')} UGX, {pend.get('status')})")
+        alerts = data.get("alerts", [])
+        if alerts:
+            lines.append("  alerts: " + "; ".join(a.get("text", "") for a in alerts))
+        return "\n".join(lines)
     ov = data.get("overview", {})
     if isinstance(ov, dict):
         for k, v in ov.items():
@@ -622,6 +642,7 @@ Guidance:
 - "what did we spend on X" / "expenses" → tools=["expenditure"]
 - "my payment history" / "what have I paid" → tools=["my_payments"]
 - "what is [project] payback/ROI/revenue/profit" → tools=["project_analysis"], project_id="<pid>"
+- "how is the sheep project doing" / "how many sheep died / sheep deaths / mortality" / "sheep flock / how many sheep" / "sheep vaccines / vet / feed / expenses" / "money sent to buy lambs" → tools=["project_analysis"], project_id="sheep"
 - "how was [metric] calculated" / "show assumptions" / "is [project] profitable" → tools=["project_audit"], project_id="<pid>"
 - "rank projects" / "best investment" / "compare projects" / "portfolio" → tools=["portfolio_overview"]
 - "equity model" / "model A vs B vs C" / "the vote" / "how does my family stand under each model" / "which model" → tools=["equity_models"], use_rag=true, doc_type_filter="constitution" (combine live numbers with the explainer doc; stay neutral)

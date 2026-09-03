@@ -10,6 +10,7 @@ interface SheepDetail {
   summary?: { dorper_line_alive: number; total_deaths: number; mortality_rate_pct: number; expenses_to_date: number; net_position: number; sales_income: number }
   chart?: { months: string[]; flock: number[]; births: number[]; deaths: number[] }
   expense_breakdown?: Record<string, number>
+  alerts?: { level: string; kind: string; text: string }[]
 }
 
 const fmtMonth = (ym: string) => {
@@ -49,6 +50,14 @@ export function SheepLivePanel() {
       <div className="mb-2.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--success)]">
         <BarChart3 size={12} /> Live sheep tracker
       </div>
+      {(data?.alerts || []).map((a, i) => (
+        <div key={i} className="mb-2 flex items-start gap-1.5 rounded-[8px] p-2 text-[11px]"
+          style={a.level === 'warn'
+            ? { border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.08)', color: '#fca5a5' }
+            : { border: '1px solid rgba(234,179,8,0.3)', background: 'rgba(234,179,8,0.08)', color: '#fcd34d' }}>
+          <span className="shrink-0">{a.level === 'warn' ? '⚠' : 'ℹ'}</span><span>{a.text}</span>
+        </div>
+      ))}
       <div className="grid grid-cols-4 gap-2">
         <Kpi label="Flock" value={String(s.dorper_line_alive)} color="#4ade80" />
         <Kpi label="Deaths" value={String(s.total_deaths)} color="#f87171" />
