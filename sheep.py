@@ -241,6 +241,7 @@ def sheep_detail_data():
             "dorper_line_alive": dorper_alive,
             "total_deaths": flock["deaths"],
             "mortality_rate": f"{flock['mortality_rate_pct']}% (Dorper line)",
+            "mortality_rate_pct": flock["mortality_rate_pct"],   # numeric, for the KPI tile
             "capital_invested": fin["capital_invested"],
             "expenses_to_date": fin["expense_total"],
             "sales_income": fin["sales_income"],
@@ -269,6 +270,7 @@ def sheep_detail_data():
             "status": "in flight",
         },
         "expense_breakdown": fin["expense_by_category"],
+        "chart": compute_monthly(events),   # flock trend + births/deaths for the live card charts
         "recent_events": events[:12],
         "recent_expenses": expenses[:12],
         "next_steps": [
@@ -380,3 +382,37 @@ def insert_expense(category, amount_ugx, spent_on, paid_by, note, created_by):
         "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
         (category, int(amount_ugx), spent_on, paid_by, note, created_by))
     return r[0] if r else None
+
+
+# ── monthly time-series for the live card charts (pure, unit-tested) ──────────
+def compute_monthly(events):
+    """events with event_type/event_date/count → per-event-month buckets with cumulative
+    flock and births/deaths, for the flock-trend + births-vs-deaths charts.
+    Returns {'months': [...], 'flock': [...], 'births': [...], 'deaths': [...]}."""
+    def _ym(d):
+        s = str(d or "")
+        return s[:7] if len(s) >= 7 else None        # 'YYYY-MM' from date/ISO; None if unusable
+    buckets = {}
+    for e in events:
+        m = _ym(e.get("event_date"))
+        if not m:
+            continue
+        b = buckets.setdefault(m, {"births": 0, "deaths": 0, "inflow": 0, "outflow": 0})
+        c = int(e.get("count") or 0)
+        t = e.get("event_type")
+        if t == "birth":
+            b["births"] += c; b["inflow"] += c
+        elif t in ("opening", "purchase"):
+            b["inflow"] += c
+        elif t == "death":
+            b["deaths"] += c; b["outflow"] += c
+        elif t == "sale":
+            b["outflow"] += c
+    months = sorted(buckets)
+    flock, births, deaths, running = [], [], [], 0
+    for m in months:
+        running += buckets[m]["inflow"] - buckets[m]["outflow"]
+        flock.append(max(0, running))
+        births.append(buckets[m]["births"])
+        deaths.append(buckets[m]["deaths"])
+    return {"months": months, "flock": flock, "births": births, "deaths": deaths}

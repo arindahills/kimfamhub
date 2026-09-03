@@ -50,7 +50,13 @@ A native tracker in `sheep.py`, three Postgres tables, data entered in-app (NOT 
   parameterized inserts return `r[0]` (plain tuple cursor). Frontend `SheepTracker.tsx`
   (mobile forms) mounts on the sheep card for writers only and invalidates `['detail','sheep']`
   so the Analysis card refreshes. The frontend gate is cosmetic; the backend is the enforcement.
-- **Watch / next slices** (Epic #16): live card panel at chicken parity; mortality/drought
-  alerts; birth-vs-death & expense charts.
+- **Slice 3 (shipped): live card panel (chicken parity).** Pure `compute_monthly(events)` →
+  cumulative flock trend + births/deaths per event-month (unit-tested); `sheep_detail_data`
+  returns it under `chart`. `SheepLivePanel.tsx` (under Show Details on the sheep card, like
+  `ChickenLivePL`) renders KPI tiles + flock-trend line + births-vs-deaths bars + expense
+  breakdown bars. Counts and money are kept in separate charts (MiniChart's y-axis is a money
+  formatter).
+- **Watch / next slices** (Epic #16): mortality alert (unusual lamb deaths); drought→silage
+  contingency flag.
 - The seed writes real financial history at first request; it is documented and idempotent,
   but is data, not schema — revisit if a project ever needs a clean unseeded start.

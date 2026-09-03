@@ -1,7 +1,26 @@
 """Unit tests for sheep.py pure logic — run: python3 test_sheep.py"""
-from sheep import (baseline_seed_rows, compute_flock, compute_financials,
+from sheep import (baseline_seed_rows, compute_flock, compute_financials, compute_monthly,
                    validate_event, validate_expense,
                    EVENT_TYPES, EXPENSE_CATEGORIES, ANIMAL_TYPES, ANIMAL_STATUSES, _SEED_TAG)
+
+
+def test_compute_monthly_flock_trend():
+    m = compute_monthly(baseline_seed_rows()["events"])
+    # event-months: 2024-08 (purchase 17), 2026-06 (sale 1), 2026-08 (3 deaths)
+    assert m["months"] == ["2024-08", "2026-06", "2026-08"]
+    assert m["flock"] == [17, 16, 13]              # cumulative: 17 → 16 → 13
+    assert m["deaths"] == [0, 0, 3]
+    assert m["births"] == [0, 0, 0]
+
+
+def test_compute_monthly_empty_and_births():
+    assert compute_monthly([]) == {"months": [], "flock": [], "births": [], "deaths": []}
+    ev = [{"event_type": "opening", "event_date": "2026-01-05", "count": 10},
+          {"event_type": "birth", "event_date": "2026-02-10", "count": 4},
+          {"event_type": "death", "event_date": "2026-02-20", "count": 1}]
+    m = compute_monthly(ev)
+    assert m["flock"] == [10, 13]                   # 10, then +4 −1
+    assert m["births"] == [0, 4] and m["deaths"] == [0, 1]
 
 
 def test_validate_event():

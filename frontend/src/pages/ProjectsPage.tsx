@@ -6,6 +6,7 @@ import { AuditModal, AUDITABLE } from '@/components/projects/AuditModal'
 import { WashingBayIncome } from '@/components/projects/WashingBayIncome'
 import { WashingBayCapital } from '@/components/projects/WashingBayCapital'
 import { SheepTracker } from '@/components/projects/SheepTracker'
+import { SheepLivePanel } from '@/components/projects/SheepLivePanel'
 import { PortfolioModal } from '@/components/projects/PortfolioModal'
 import { DetailModal, ANALYSABLE } from '@/components/projects/DetailModal'
 import { ViabilityModal, PROJECTABLE } from '@/components/projects/ViabilityModal'
@@ -342,6 +343,7 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
               ))}
             </div>
             {p.id === 'chicken' && live && <ChickenLivePL c={live} />}
+            {p.id === 'sheep' && <SheepLivePanel />}
           </div>
         )}
 
