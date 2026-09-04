@@ -36,7 +36,14 @@ function Flash({ show }: { show: boolean }) {
 function EventForm({ onSaved }: { onSaved: () => void }) {
   const [f, setF] = useState({ event_type: 'death', event_date: today(), count: '1', cause: '', amount_ugx: '', counterparty: '', note: '' })
   const [ok, setOk] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const money = f.event_type === 'sale' || f.event_type === 'purchase'
+  const summary = () => {
+    const parts = [f.event_type.toUpperCase(), `${Number(f.count) || 1} sheep`, f.event_date]
+    if (f.event_type === 'death') parts.push(`cause: ${f.cause.trim() || 'not specified'}`)
+    if (money) { parts.push(`${f.amount_ugx.trim() ? Number(f.amount_ugx).toLocaleString() : '—'} UGX`); if (f.counterparty.trim()) parts.push(f.counterparty.trim()) }
+    return parts.join('  ·  ')
+  }
   const m = useMutation({
     mutationFn: () => send('/api/projects/sheep/event', 'POST', {
       event_type: f.event_type, event_date: f.event_date, count: Number(f.count) || 1,
@@ -44,7 +51,7 @@ function EventForm({ onSaved }: { onSaved: () => void }) {
       amount_ugx: money ? numOrNull(f.amount_ugx) : null,   // blank → null so backend 422s, not silent 0
       counterparty: f.counterparty || null, note: f.note || null,
     }),
-    onSuccess: () => { setOk(true); setTimeout(() => setOk(false), 2500); setF(s => ({ ...s, count: '1', cause: '', amount_ugx: '', counterparty: '', note: '' })); onSaved() },
+    onSuccess: () => { setOk(true); setConfirming(false); setTimeout(() => setOk(false), 2500); setF(s => ({ ...s, count: '1', cause: '', amount_ugx: '', counterparty: '', note: '' })); onSaved() },
   })
   return (
     <div className="rounded-[10px] bg-[var(--card-inset)] p-3">
@@ -68,9 +75,20 @@ function EventForm({ onSaved }: { onSaved: () => void }) {
           <input className={inputCls} value={f.note} onChange={e => setF(s => ({ ...s, note: e.target.value }))} /></label>
       </div>
       {m.isError && <div className="mt-1.5 text-[11px] text-[#f87171]">{(m.error as Error).message}</div>}
-      <button onClick={() => m.mutate()} disabled={m.isPending} className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[8px] bg-[var(--primary)] text-[13px] font-semibold text-[#0b1220] disabled:opacity-50">
-        <PlusCircle size={14} /> {m.isPending ? 'Saving…' : 'Add event'}
-      </button>
+      {!confirming ? (
+        <button onClick={() => setConfirming(true)} className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[8px] border border-[var(--border)] bg-[var(--card)] text-[13px] font-semibold text-white">
+          <PlusCircle size={14} /> Review event
+        </button>
+      ) : (
+        <div className="mt-2 rounded-[8px] border border-[rgba(248,113,113,0.35)] bg-[rgba(248,113,113,0.06)] p-2.5">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-[var(--muted-2)]">Confirm — this saves for the whole family</div>
+          <div className="mb-2.5 text-[13px] font-semibold text-[#fca5a5]">{summary()}</div>
+          <div className="flex gap-2">
+            <button onClick={() => setConfirming(false)} className="h-9 flex-1 rounded-[8px] border border-[var(--border)] text-[13px] text-[var(--muted)]">Cancel</button>
+            <button onClick={() => m.mutate()} disabled={m.isPending} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[8px] bg-[var(--primary)] text-[13px] font-semibold text-[#0b1220] disabled:opacity-50"><Check size={14} /> {m.isPending ? 'Saving…' : 'Confirm & save'}</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -78,12 +96,15 @@ function EventForm({ onSaved }: { onSaved: () => void }) {
 function ExpenseForm({ onSaved }: { onSaved: () => void }) {
   const [f, setF] = useState({ category: 'vet', amount_ugx: '', spent_on: today(), paid_by: '', note: '' })
   const [ok, setOk] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const summary = () => [f.category, `${f.amount_ugx.trim() ? Number(f.amount_ugx).toLocaleString() : '—'} UGX`, f.spent_on]
+    .concat(f.paid_by.trim() ? [`paid by ${f.paid_by.trim()}`] : []).join('  ·  ')
   const m = useMutation({
     mutationFn: () => send('/api/projects/sheep/expense', 'POST', {
       category: f.category, amount_ugx: numOrNull(f.amount_ugx), spent_on: f.spent_on,
       paid_by: f.paid_by || null, note: f.note || null,
     }),
-    onSuccess: () => { setOk(true); setTimeout(() => setOk(false), 2500); setF(s => ({ ...s, amount_ugx: '', paid_by: '', note: '' })); onSaved() },
+    onSuccess: () => { setOk(true); setConfirming(false); setTimeout(() => setOk(false), 2500); setF(s => ({ ...s, amount_ugx: '', paid_by: '', note: '' })); onSaved() },
   })
   return (
     <div className="mt-2 rounded-[10px] bg-[var(--card-inset)] p-3">
@@ -103,9 +124,20 @@ function ExpenseForm({ onSaved }: { onSaved: () => void }) {
           <input className={inputCls} value={f.note} onChange={e => setF(s => ({ ...s, note: e.target.value }))} /></label>
       </div>
       {m.isError && <div className="mt-1.5 text-[11px] text-[#f87171]">{(m.error as Error).message}</div>}
-      <button onClick={() => m.mutate()} disabled={m.isPending} className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[8px] bg-[var(--primary)] text-[13px] font-semibold text-[#0b1220] disabled:opacity-50">
-        <PlusCircle size={14} /> {m.isPending ? 'Saving…' : 'Add expense'}
-      </button>
+      {!confirming ? (
+        <button onClick={() => setConfirming(true)} className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-[8px] border border-[var(--border)] bg-[var(--card)] text-[13px] font-semibold text-white">
+          <PlusCircle size={14} /> Review expense
+        </button>
+      ) : (
+        <div className="mt-2 rounded-[8px] border border-[rgba(96,165,250,0.35)] bg-[rgba(96,165,250,0.06)] p-2.5">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-[var(--muted-2)]">Confirm — this saves for the whole family</div>
+          <div className="mb-2.5 text-[13px] font-semibold text-[#93c5fd]">{summary()}</div>
+          <div className="flex gap-2">
+            <button onClick={() => setConfirming(false)} className="h-9 flex-1 rounded-[8px] border border-[var(--border)] text-[13px] text-[var(--muted)]">Cancel</button>
+            <button onClick={() => m.mutate()} disabled={m.isPending} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[8px] bg-[var(--primary)] text-[13px] font-semibold text-[#0b1220] disabled:opacity-50"><Check size={14} /> {m.isPending ? 'Saving…' : 'Confirm & save'}</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
