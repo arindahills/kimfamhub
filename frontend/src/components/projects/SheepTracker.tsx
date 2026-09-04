@@ -146,27 +146,39 @@ interface Detail { recent_events?: { id: number; date: string; event_type: strin
 
 function RecentEntries({ onChanged }: { onChanged: () => void }) {
   const { data } = useQuery<Detail>({ queryKey: ['detail', 'sheep'], queryFn: () => send('/api/projects/sheep/detail', 'GET') })
+  const [confirmKey, setConfirmKey] = useState<string | null>(null)
   const del = useMutation({
     mutationFn: (v: { kind: 'event' | 'expense'; id: number }) => send(`/api/projects/sheep/${v.kind}/${v.id}`, 'DELETE'),
-    onSuccess: onChanged,
+    onSuccess: () => { setConfirmKey(null); onChanged() },
   })
   const ev = data?.recent_events?.slice(0, 5) || []
   const ex = data?.recent_expenses?.slice(0, 5) || []
   if (!ev.length && !ex.length) return null
+  // tap trash → asks to confirm (Yes/No); nothing is deleted on a single tap
+  const controls = (key: string, kind: 'event' | 'expense', id: number) =>
+    confirmKey === key ? (
+      <span className="flex shrink-0 items-center gap-2">
+        <span className="text-[10px] text-[var(--muted-2)]">delete?</span>
+        <button onClick={() => del.mutate({ kind, id })} disabled={del.isPending} className="font-semibold text-[#f87171]">Yes</button>
+        <button onClick={() => setConfirmKey(null)} className="text-[var(--muted-2)]">No</button>
+      </span>
+    ) : (
+      <button onClick={() => setConfirmKey(key)} className="shrink-0 text-[var(--muted-2)] hover:text-[#f87171]"><Trash2 size={13} /></button>
+    )
   return (
     <div className="mt-2 rounded-[10px] bg-[var(--card-inset)] p-3">
-      <div className="mb-1.5 text-[11px] font-semibold text-[var(--muted)]">Recent entries — tap 🗑 to undo a mistake</div>
+      <div className="mb-1.5 text-[11px] font-semibold text-[var(--muted)]">Recent entries — tap 🗑 to remove a mistake (asks to confirm)</div>
       <div className="space-y-1">
         {ev.map(e => (
           <div key={`ev${e.id}`} className="flex items-center justify-between gap-2 text-[11px] text-[#cbd5e1]">
             <span className="truncate">{e.date} · <b>{e.event_type}</b> ×{e.count}</span>
-            <button onClick={() => del.mutate({ kind: 'event', id: e.id })} className="shrink-0 text-[var(--muted-2)] hover:text-[#f87171]"><Trash2 size={13} /></button>
+            {controls(`ev${e.id}`, 'event', e.id)}
           </div>
         ))}
         {ex.map(x => (
           <div key={`ex${x.id}`} className="flex items-center justify-between gap-2 text-[11px] text-[#cbd5e1]">
             <span className="truncate">{x.spent_on} · <b>{x.category}</b> {ugx(x.amount_ugx)}</span>
-            <button onClick={() => del.mutate({ kind: 'expense', id: x.id })} className="shrink-0 text-[var(--muted-2)] hover:text-[#f87171]"><Trash2 size={13} /></button>
+            {controls(`ex${x.id}`, 'expense', x.id)}
           </div>
         ))}
       </div>

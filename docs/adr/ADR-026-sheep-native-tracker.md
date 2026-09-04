@@ -52,7 +52,9 @@ A native tracker in `sheep.py`, three Postgres tables, data entered in-app (NOT 
   so the Analysis card refreshes. The frontend gate is cosmetic; the backend is the enforcement.
   **Two-stage entry (2026-09-04):** a single tap no longer commits — the button is *Review
   event/expense*, which shows a summary ("DEATH · 1 sheep · date · cause") and only *Confirm &
-  save* writes. Added after an accidental single-tap saved a blank-cause death on prod.
+  save* writes. Added after an accidental single-tap saved a blank-cause death on prod. The
+  recent-entries **delete** buttons are likewise tap-to-confirm ("delete? Yes/No") — no
+  destructive action on the tracker commits on a single tap.
 - **Slice 3 (shipped): live card panel (chicken parity).** Pure `compute_monthly(events)` →
   cumulative flock trend + births/deaths per event-month (unit-tested); `sheep_detail_data`
   returns it under `chart`. `SheepLivePanel.tsx` (under Show Details on the sheep card, like
