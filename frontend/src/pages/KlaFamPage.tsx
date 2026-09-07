@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useAuth } from '@/context/AuthContext'
 
 const API = (p: string) => p
 
@@ -11,6 +12,7 @@ interface Contribution {
   id: number; slug: string; display_name: string; is_active: boolean
   amount: number; status: string; paid_date: string | null
   offset_reason: string | null; notes: string | null
+  recorded_by?: string | null   // set when the beneficiary/admin logged it on the member's behalf
 }
 interface Cycle {
   id: number; year: number; month: number; month_label: string
@@ -162,7 +164,10 @@ export default function KlaFamPage() {
   const [loading, setLoading]     = useState(true)
   const [showPay, setShowPay]     = useState(false)
   const [ackLoading, setAckLoading] = useState(false)
+  const [markSlug, setMarkSlug]   = useState<string | null>(null)   // row awaiting confirm
+  const [markLoading, setMarkLoading] = useState(false)
   const [err, setErr]             = useState('')
+  const { user } = useAuth()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -191,6 +196,26 @@ export default function KlaFamPage() {
     setAckLoading(false)
   }
 
+  /** Record a contribution I actually received from another member (beneficiary/admin only).
+   *  Two-step: the row asks to confirm first — nothing is recorded on a single tap. */
+  async function recordFor(cycleId: number, slug: string, amount: number) {
+    setMarkLoading(true)
+    try {
+      const r = await fetch(API('/api/klafam/contributions/record-for'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cycle_id: cycleId, member_slug: slug, amount }),
+      })
+      if (!r.ok) {
+        const d = (await r.json().catch(() => ({})))?.detail
+        throw new Error(typeof d === 'string' ? d : `could not record (${r.status})`)
+      }
+      setMarkSlug(null)
+      await load()
+    } catch (e: any) { alert(e.message) }
+    setMarkLoading(false)
+  }
+
   if (loading) return (
     <div style={{ padding: 32, color: '#94a3b8' }}>Loading KlaFam...</div>
   )
@@ -207,6 +232,9 @@ export default function KlaFamPage() {
   const { current_cycle: cur, next_cycle: next, member_stats: stats, recent_cycles: recent } = data
   const myContrib = cur?.contributions.find(c => c.slug === mySlug)
   const isBeneficiary = cur?.beneficiary_slug === mySlug
+  // The beneficiary physically receives the money, so they (or an admin) can log a member's
+  // contribution on their behalf — always attributed, never silently posted as the member.
+  const canRecordForOthers = isBeneficiary || user?.role === 'admin'
 
   // Sort stats: active members first, then historical
   const activeStats = stats.filter(m => m.is_active)
@@ -271,16 +299,55 @@ export default function KlaFamPage() {
                   </span>
                   <Pill status={c.status} />
                 </div>
+                {/* JUSTIFICATION-A3: net-new per-row receipt action + attribution for the
+                    beneficiary; the existing amount/offset spans are unchanged. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   {c.amount > 0 && (
                     <span style={{ fontSize: 13, color: '#94a3b8' }}>
                       {fmt(c.amount)}
                     </span>
                   )}
+                  {c.recorded_by && c.status === 'paid' && (
+                    <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
+                      recorded by {c.recorded_by}
+                    </span>
+                  )}
                   {c.offset_reason && (
                     <span style={{ fontSize: 11, color: '#facc15', maxWidth: 160, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                       {c.offset_reason}
                     </span>
+                  )}
+                  {/* I received this member's money in person — log it for them (two-step) */}
+                  {canRecordForOthers && c.slug !== mySlug && c.status !== 'paid' && c.status !== 'offset' && (
+                    markSlug === c.slug ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>Received {fmt(300000)}?</span>
+                        <button
+                          onClick={() => recordFor(cur.id, c.slug, 300000)}
+                          disabled={markLoading}
+                          style={{
+                            fontSize: 11, fontWeight: 700, background: '#1a3326', color: '#4ade80',
+                            border: '1px solid #4ade80', borderRadius: 8, padding: '3px 10px', cursor: 'pointer',
+                          }}
+                        >{markLoading ? '...' : 'Yes, record'}</button>
+                        <button
+                          onClick={() => setMarkSlug(null)}
+                          style={{
+                            fontSize: 11, background: 'transparent', color: '#64748b',
+                            border: '1px solid #334155', borderRadius: 8, padding: '3px 10px', cursor: 'pointer',
+                          }}
+                        >No</button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setMarkSlug(c.slug)}
+                        style={{
+                          fontSize: 11, fontWeight: 600, background: 'transparent', color: '#60a5fa',
+                          border: '1px solid #334155', borderRadius: 8, padding: '3px 10px',
+                          cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}
+                      >Mark received</button>
+                    )
                   )}
                 </div>
               </div>

@@ -8794,6 +8794,27 @@ def _klafam_slug(request) -> str | None:
     return _KLAFAM_PERSON_TO_SLUG.get(name)
 
 
+_KLAFAM_COLS_READY = False
+
+
+def _ensure_klafam_cols():
+    """Idempotent — add the `recorded_by` attribution column. The klafam_* tables are owned by
+    the app role, so this ALTER succeeds (unlike the postgres-owned legacy tables). Never raises."""
+    global _KLAFAM_COLS_READY
+    if _KLAFAM_COLS_READY:
+        return
+    from db import query as _q, execute as _exec
+    try:
+        if _q("""SELECT 1 FROM information_schema.columns
+                 WHERE table_name='klafam_contributions' AND column_name='recorded_by'"""):
+            _KLAFAM_COLS_READY = True
+            return
+        _exec("ALTER TABLE klafam_contributions ADD COLUMN IF NOT EXISTS recorded_by TEXT")
+        _KLAFAM_COLS_READY = True
+    except Exception as e:
+        log.warning(f"_ensure_klafam_cols: {e}")
+
+
 # JUSTIFICATION-A3: restoring two endpoints (rotation, create_cycle) lost with the
 # module + adding the due-date rule fix; all genuinely new code, not a wrapper.
 # Rotation order (fixed): arindas → turamyes → priscilla → alex → repeat.
@@ -8993,6 +9014,8 @@ def _klafam_cycle_detail(cycle_id: int):
                 "paid_date":  ct["paid_date"].isoformat() if ct.get("paid_date") else None,
                 "offset_reason": ct.get("offset_reason"),
                 "notes":      ct.get("notes"),
+                # who logged it — set when the beneficiary/admin records on a member's behalf
+                "recorded_by": ct.get("recorded_by"),
             }
             for ct in contribs
         ],
@@ -9005,6 +9028,7 @@ def klafam_overview(request: Request):
     from datetime import date
     import calendar
 
+    _ensure_klafam_cols()   # so contribution rows carry recorded_by attribution from first load
     today = date.today()
 
     # A cycle's contributions are due on the 28th of the PREVIOUS month (_klafam_due_date).
@@ -9168,6 +9192,77 @@ async def klafam_record_payment(request: Request):
           (int(tot[0]["t"]), cycle_id))
 
     return {"ok": True, "cycle_id": cycle_id, "member_slug": slug, "amount": amount}
+
+
+# JUSTIFICATION-A3: net-new endpoint letting the payout recipient record a contribution they
+# actually received from another member; not a wrapper around the self-service /pay route.
+@app.post("/api/klafam/contributions/record-for")
+async def klafam_record_for_member(request: Request):
+    """Record a contribution RECEIVED FROM another member.
+
+    In a Tanda the beneficiary physically holds the money, so they are the authoritative
+    witness that a member paid — same trust model the cycle-acknowledge route already uses.
+    Only this cycle's beneficiary (or an admin) may do it, and every entry is ATTRIBUTED via
+    recorded_by, so it is never posted as if the member had recorded it themselves."""
+    from fastapi import HTTPException as _HE
+    from db import query as dbq, execute as _exec
+    from datetime import date
+
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    actor_label = payload.get("display") or payload.get("sub", "")
+    is_admin = payload.get("role") == "admin"
+    actor_slug = _KLAFAM_PERSON_TO_SLUG.get(payload.get("sub", ""))
+
+    body = await request.json()
+    cycle_id = body.get("cycle_id")
+    member_slug = (body.get("member_slug") or "").strip()
+    if not cycle_id or not member_slug:
+        raise _HE(status_code=400, detail="cycle_id and member_slug required")
+    try:
+        amount = int(body.get("amount", 300000))
+    except (TypeError, ValueError):
+        raise _HE(status_code=422, detail="amount must be a number")
+    if amount <= 0 or amount > 10_000_000:
+        raise _HE(status_code=422, detail="amount looks wrong — check the entry")
+    paid_date = body.get("paid_date") or date.today().isoformat()
+    try:
+        date.fromisoformat(str(paid_date))
+    except (TypeError, ValueError):
+        raise _HE(status_code=422, detail="paid_date must be YYYY-MM-DD")
+
+    cyc = dbq("SELECT kc.id, km.slug AS bene_slug FROM klafam_cycles kc "
+              "LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id WHERE kc.id=%s", (cycle_id,))
+    if not cyc:
+        raise _HE(status_code=404, detail="Cycle not found")
+    if not is_admin and (not actor_slug or actor_slug != cyc[0]["bene_slug"]):
+        raise _HE(status_code=403,
+                  detail="Only this cycle's beneficiary (who received the money) or an admin can record for another member")
+
+    mem = dbq("SELECT id FROM klafam_members WHERE slug=%s", (member_slug,))
+    if not mem:
+        raise _HE(status_code=404, detail="Member not found")
+    member_id = mem[0]["id"]
+
+    _ensure_klafam_cols()
+    notes = body.get("notes", "")
+    existing = dbq("SELECT id FROM klafam_contributions WHERE cycle_id=%s AND member_id=%s",
+                   (cycle_id, member_id))
+    if existing:
+        _exec("UPDATE klafam_contributions SET amount=%s, status='paid', paid_date=%s, notes=%s, "
+              "offset_reason=NULL, recorded_by=%s WHERE id=%s",
+              (amount, paid_date, notes, actor_label, existing[0]["id"]))
+    else:
+        _exec("INSERT INTO klafam_contributions (cycle_id, member_id, amount, status, paid_date, notes, recorded_by) "
+              "VALUES (%s,%s,%s,'paid',%s,%s,%s)",
+              (cycle_id, member_id, amount, paid_date, notes, actor_label))
+
+    tot = dbq("SELECT COALESCE(SUM(amount),0) AS t FROM klafam_contributions "
+              "WHERE cycle_id=%s AND status='paid'", (cycle_id,))
+    _exec("UPDATE klafam_cycles SET total_collected=%s WHERE id=%s", (int(tot[0]["t"]), cycle_id))
+    return {"ok": True, "cycle_id": cycle_id, "member_slug": member_slug,
+            "amount": amount, "recorded_by": actor_label}
 
 
 @app.post("/api/klafam/contributions/offset")
