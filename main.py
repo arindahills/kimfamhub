@@ -8802,17 +8802,18 @@ def _ensure_klafam_cols():
     the app role, so this ALTER succeeds (unlike the postgres-owned legacy tables). Never raises."""
     global _KLAFAM_COLS_READY
     if _KLAFAM_COLS_READY:
-        return
+        return True
     from db import query as _q, execute as _exec
     try:
         if _q("""SELECT 1 FROM information_schema.columns
                  WHERE table_name='klafam_contributions' AND column_name='recorded_by'"""):
             _KLAFAM_COLS_READY = True
-            return
+            return True
         _exec("ALTER TABLE klafam_contributions ADD COLUMN IF NOT EXISTS recorded_by TEXT")
         _KLAFAM_COLS_READY = True
     except Exception as e:
         log.warning(f"_ensure_klafam_cols: {e}")
+    return _KLAFAM_COLS_READY
 
 
 # JUSTIFICATION-A3: restoring two endpoints (rotation, create_cycle) lost with the
@@ -9215,22 +9216,32 @@ async def klafam_record_for_member(request: Request):
     is_admin = payload.get("role") == "admin"
     actor_slug = _KLAFAM_PERSON_TO_SLUG.get(payload.get("sub", ""))
 
-    body = await request.json()
-    cycle_id = body.get("cycle_id")
-    member_slug = (body.get("member_slug") or "").strip()
-    if not cycle_id or not member_slug:
-        raise _HE(status_code=400, detail="cycle_id and member_slug required")
+    try:
+        body = await request.json()
+    except Exception:
+        raise _HE(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise _HE(status_code=400, detail="Invalid JSON body")
+    try:
+        cycle_id = int(body.get("cycle_id"))
+    except (TypeError, ValueError):
+        raise _HE(status_code=422, detail="cycle_id must be a number")
+    member_slug = str(body.get("member_slug") or "").strip()
+    if not member_slug:
+        raise _HE(status_code=400, detail="member_slug required")
     try:
         amount = int(body.get("amount", 300000))
     except (TypeError, ValueError):
         raise _HE(status_code=422, detail="amount must be a number")
     if amount <= 0 or amount > 10_000_000:
         raise _HE(status_code=422, detail="amount looks wrong — check the entry")
-    paid_date = body.get("paid_date") or date.today().isoformat()
+    paid_date = str(body.get("paid_date") or date.today().isoformat())
     try:
-        date.fromisoformat(str(paid_date))
+        date.fromisoformat(paid_date)
     except (TypeError, ValueError):
         raise _HE(status_code=422, detail="paid_date must be YYYY-MM-DD")
+    notes = str(body.get("notes") or "")[:500]
+    overwrite = bool(body.get("overwrite"))
 
     cyc = dbq("SELECT kc.id, km.slug AS bene_slug FROM klafam_cycles kc "
               "LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id WHERE kc.id=%s", (cycle_id,))
@@ -9240,23 +9251,28 @@ async def klafam_record_for_member(request: Request):
         raise _HE(status_code=403,
                   detail="Only this cycle's beneficiary (who received the money) or an admin can record for another member")
 
-    mem = dbq("SELECT id FROM klafam_members WHERE slug=%s", (member_slug,))
+    # Active members only — inactive/historical members are not seeded into cycles, and
+    # inventing a row for them would inflate total_collected for someone not in the round.
+    mem = dbq("SELECT id FROM klafam_members WHERE slug=%s AND is_active=TRUE", (member_slug,))
     if not mem:
-        raise _HE(status_code=404, detail="Member not found")
+        raise _HE(status_code=404, detail="Active member not found")
     member_id = mem[0]["id"]
 
-    _ensure_klafam_cols()
-    notes = body.get("notes", "")
-    existing = dbq("SELECT id FROM klafam_contributions WHERE cycle_id=%s AND member_id=%s",
+    if not _ensure_klafam_cols():
+        raise _HE(status_code=503, detail="Attribution column unavailable — check klafam table ownership")
+
+    # Never create a ledger row, and never silently overwrite one the member already owns:
+    # an existing paid/offset entry (with its own attribution) must be resolved deliberately.
+    existing = dbq("SELECT id, status FROM klafam_contributions WHERE cycle_id=%s AND member_id=%s",
                    (cycle_id, member_id))
-    if existing:
-        _exec("UPDATE klafam_contributions SET amount=%s, status='paid', paid_date=%s, notes=%s, "
-              "offset_reason=NULL, recorded_by=%s WHERE id=%s",
-              (amount, paid_date, notes, actor_label, existing[0]["id"]))
-    else:
-        _exec("INSERT INTO klafam_contributions (cycle_id, member_id, amount, status, paid_date, notes, recorded_by) "
-              "VALUES (%s,%s,%s,'paid',%s,%s,%s)",
-              (cycle_id, member_id, amount, paid_date, notes, actor_label))
+    if not existing:
+        raise _HE(status_code=404, detail="That member has no row in this cycle")
+    if existing[0]["status"] in ("paid", "offset") and not overwrite:
+        raise _HE(status_code=409,
+                  detail="Already recorded as %s — ask the member or an admin to change it" % existing[0]["status"])
+    _exec("UPDATE klafam_contributions SET amount=%s, status='paid', paid_date=%s, notes=%s, "
+          "offset_reason=NULL, recorded_by=%s WHERE id=%s",
+          (amount, paid_date, notes, actor_label, existing[0]["id"]))
 
     tot = dbq("SELECT COALESCE(SUM(amount),0) AS t FROM klafam_contributions "
               "WHERE cycle_id=%s AND status='paid'", (cycle_id,))

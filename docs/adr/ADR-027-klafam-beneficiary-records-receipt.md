@@ -20,11 +20,19 @@ Extend that existing trust model to per-member receipts.
   another member. Authorised only for **this cycle's beneficiary** (the person who physically
   received the money) **or an admin**; anyone else gets 403. Validates amount (0 < x ≤ 10M) and
   an ISO `paid_date`, then recomputes the cycle's `total_collected` exactly as `/pay` does.
+- **It can only settle an existing pending row, never invent one.** The member must be
+  `is_active` and must already have a row in that cycle (cycles seed only active members), else
+  404 — otherwise a slug like the inactive `boaz` would create a phantom paid row and inflate
+  `total_collected`. If the row is already `paid`/`offset` the call returns **409**; the
+  member's own entry and attribution are never silently overwritten. An explicit
+  `"overwrite": true` is required to replace one deliberately.
 - **Attribution is mandatory.** A new `recorded_by` column on `klafam_contributions` stores who
   logged it, and the cycle detail returns it, so the UI shows "recorded by Hillary". A
   beneficiary-logged payment is never presented as though the member recorded it themselves.
-  The column is added by idempotent runtime DDL (`_ensure_klafam_cols`) — the `klafam_*` tables
-  are owned by the app role, so the ALTER succeeds; no manual server step, git-only.
+  The column is added by idempotent runtime DDL (`_ensure_klafam_cols`) — verified 2026-09-07
+  that all three `klafam_*` tables are owned by the `kimfam` app role (`pg_tables.tableowner`),
+  so the ALTER succeeds; no manual server step, git-only. If it ever fails, the endpoint returns
+  503 rather than a bare 500.
 - **UI is two-step.** On the current cycle, a pending member row shows *Mark received* for the
   beneficiary/admin; tapping it asks "Received UGX 300,000? Yes, record / No". Nothing is written
   on a single tap (same rule adopted for the sheep tracker after an accidental one-tap save).
@@ -41,3 +49,13 @@ payment); and auto-confirming from WhatsApp text alone (no reliable proof of who
   are the counterparty with the least incentive to inflate someone else's credit — but the
   attribution and the member's own view are the check. If disputes ever arise, add a member-side
   "confirm/deny" on rows recorded by someone else.
+- **Watch**: a beneficiary is scoped to their own cycle, but an **admin is unscoped** and can
+  record against any historical cycle, including acknowledged ones. Accepted for now (admins are
+  Hillary/Hellen/Israel) and recorded here so it is a known property, not a surprise.
+- **Testing**: the deny path cannot be exercised in production (the only real account is an
+  admin, who always passes) and `kimfamhub_test` has **no klafam tables at all**, so KlaFam
+  changes have no staging coverage — the root cause of the Sep-2026 current-cycle regression.
+  The gate is therefore pinned by unit tests in `tests/test_api.py::TestKlaFamRecordFor`
+  (non-beneficiary → 403, NULL-beneficiary cycle → 403, non-admin beneficiary → recorded and
+  attributed, already-recorded → 409, inactive/absent member → 404). Applying the klafam
+  migration to `kimfamhub_test` is the outstanding fix for real staging coverage.

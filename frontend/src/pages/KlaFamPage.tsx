@@ -27,6 +27,7 @@ interface Overview {
 }
 
 const fmt = (n: number) => 'UGX ' + n.toLocaleString()
+const DEFAULT_CONTRIBUTION = 300000   // standard monthly Tanda contribution
 
 const STATUS_PILL: Record<string, { label: string; bg: string; color: string }> = {
   paid:    { label: 'Paid',     bg: '#1a3326', color: '#4ade80' },
@@ -318,12 +319,12 @@ export default function KlaFamPage() {
                     </span>
                   )}
                   {/* I received this member's money in person — log it for them (two-step) */}
-                  {canRecordForOthers && c.slug !== mySlug && c.status !== 'paid' && c.status !== 'offset' && (
+                  {canRecordForOthers && c.slug !== mySlug && (c.status === 'pending' || c.status === 'missed') && (
                     markSlug === c.slug ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
-                        <span style={{ fontSize: 11, color: '#94a3b8' }}>Received {fmt(300000)}?</span>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>Received {fmt(DEFAULT_CONTRIBUTION)}?</span>
                         <button
-                          onClick={() => recordFor(cur.id, c.slug, 300000)}
+                          onClick={() => recordFor(cur.id, c.slug, DEFAULT_CONTRIBUTION)}
                           disabled={markLoading}
                           style={{
                             fontSize: 11, fontWeight: 700, background: '#1a3326', color: '#4ade80',
