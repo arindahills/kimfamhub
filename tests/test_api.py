@@ -323,23 +323,30 @@ class TestKlaFamRecordFor:
         monkeypatch.setattr(_db, "execute", fake_execute)
 
     @staticmethod
-    def _client_as(name, password):
+    def _client_as(name, role="member"):
+        """Mint the JWT directly rather than logging in — other tests in this file rotate
+        Alex's and Esther's passwords, so the login flow is not dependable here."""
+        import jwt as _jwt
+        from datetime import datetime as _dtm, timezone as _tz, timedelta as _td
         from fastapi.testclient import TestClient as _TC
+        tok = _jwt.encode(
+            {"sub": name, "display": name, "role": role,
+             "exp": _dtm.now(_tz.utc) + _td(hours=1)},
+            os.environ["JWT_SECRET"], algorithm="HS256")
         c = _TC(app)
-        r = c.post("/api/auth/login", json={"name": name, "password": password})
-        assert r.status_code == 200, r.text
+        c.cookies.set("kimfam_token", tok)
         return c
 
     def test_non_beneficiary_member_is_denied(self, monkeypatch):
         self._stub_db(monkeypatch, bene_slug="arindas")
-        c = self._client_as("Alex", "TestPass3")            # klafam 'alex', role member
+        c = self._client_as("Alex")            # klafam 'alex', role member
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 403
 
     def test_denied_when_cycle_has_no_beneficiary(self, monkeypatch):
         self._stub_db(monkeypatch, bene_slug=None)
-        c = self._client_as("Alex", "TestPass3")
+        c = self._client_as("Alex")
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 403                          # None == None must not authorise
@@ -347,7 +354,7 @@ class TestKlaFamRecordFor:
     def test_beneficiary_records_and_is_attributed(self, monkeypatch):
         execs = []
         self._stub_db(monkeypatch, bene_slug="arindas", execs=execs)
-        c = self._client_as("Esther", "TestPass4")           # klafam 'arindas', NOT an admin
+        c = self._client_as("Esther")           # klafam 'arindas', NOT an admin
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 200, r.text
@@ -356,21 +363,21 @@ class TestKlaFamRecordFor:
 
     def test_already_recorded_is_conflict_not_silent_overwrite(self, monkeypatch):
         self._stub_db(monkeypatch, bene_slug="arindas", existing_status="paid")
-        c = self._client_as("Esther", "TestPass4")
+        c = self._client_as("Esther")
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 409                          # never clobber the member's own entry
 
     def test_inactive_or_unknown_member_rejected(self, monkeypatch):
         self._stub_db(monkeypatch, bene_slug="arindas", member_found=False)
-        c = self._client_as("Esther", "TestPass4")
+        c = self._client_as("Esther")
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "boaz"})
         assert r.status_code == 404                          # no phantom ledger rows
 
     def test_no_row_in_cycle_rejected(self, monkeypatch):
         self._stub_db(monkeypatch, bene_slug="arindas", existing_status=None)
-        c = self._client_as("Esther", "TestPass4")
+        c = self._client_as("Esther")
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 404
