@@ -43,3 +43,15 @@ Return a per-project `updates[]` timeline and render it as a collapsible feed.
 - **Watch**: `INVESTMENT_TERMS`-style structured data is unaffected; the supersede heuristic
   is deliberately weak (ref-mention + text-only) — if members want manual "pin/hide"
   control later, revisit here.
+
+## Amendment 2026-09-25: one media shape, tolerant readers
+
+- **Incident**: `project_updates.media` had two writers with different shapes. The WhatsApp
+  agent posted bare URL strings; the board timeline read `{type, url}` objects, and the
+  Updates page read strings. The first agent post that carried media threw inside the
+  timeline query, and the blanket `except` blanked **every** project's DB updates.
+- **Decision**: `project_timeline.normalize_media` is the single seam. Both write endpoints
+  store `[{type, url}]` (type inferred from extension when missing); the board reads through
+  it and never raises on an odd row; `GET /api/updates` serves bare URL strings (the
+  UpdatesPage contract). Unit-tested for both shapes plus junk.
+- **Watch**: any new reader of `project_updates.media` must go through `normalize_media`.

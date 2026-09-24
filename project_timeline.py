@@ -26,6 +26,40 @@ def parse_hardcoded_date(s):
         return None
 
 
+# JUSTIFICATION-A3: no media normaliser exists; two writers disagree on shape and one
+# reader crashed on the other's rows, so a single shared normaliser is the minimal fix.
+_VIDEO_EXT = re.compile(r"\.(mp4|mov|webm|m4v|3gp)$", re.I)
+
+
+def normalize_media(media):
+    """Canonical media list: [{"type": "image"|"video", "url": str}, ...].
+
+    project_updates.media has two writers that disagreed on shape: the WhatsApp agent
+    posts bare URL strings, the board timeline read {"type","url"} objects. The first
+    agent post with media (2026-09-25) threw inside the timeline query and blanked every
+    project's DB updates. Accept both shapes (and a JSON string), drop junk, never raise."""
+    import json
+    if isinstance(media, str):
+        try:
+            media = json.loads(media)
+        except Exception:
+            return []
+    out = []
+    for m in media if isinstance(media, list) else []:
+        if isinstance(m, str):
+            url, kind = m, None
+        elif isinstance(m, dict):
+            url, kind = m.get("url"), m.get("type")
+        else:
+            continue
+        if not isinstance(url, str) or not url.strip():
+            continue
+        if kind not in ("image", "video"):
+            kind = "video" if _VIDEO_EXT.search(url.split("?")[0]) else "image"
+        out.append({"type": kind, "url": url})
+    return out
+
+
 def _media_count(u):
     return len(u.get("images") or []) + len(u.get("videos") or [])
 

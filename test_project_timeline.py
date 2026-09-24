@@ -1,6 +1,7 @@
 """Unit tests for project_timeline.build_timeline — run: python3 test_project_timeline.py"""
 from datetime import datetime, timezone
-from project_timeline import build_timeline
+import json
+from project_timeline import build_timeline, normalize_media
 
 
 def dt(y, m, d):
@@ -80,6 +81,26 @@ def test_no_mutation_of_input():
 def test_empty():
     assert build_timeline([], None) == []
     assert build_timeline(None, None) == []
+
+
+def test_normalize_media_agent_strings():
+    # The agent's shape: bare URL strings. This is the row that blanked the board.
+    out = normalize_media(["/static/a/clip.mp4", "/static/a/p.jpg", "/static/a/X.MOV?v=1"])
+    assert out == [{"type": "video", "url": "/static/a/clip.mp4"},
+                   {"type": "image", "url": "/static/a/p.jpg"},
+                   {"type": "video", "url": "/static/a/X.MOV?v=1"}]
+
+
+def test_normalize_media_objects_and_json_string():
+    objs = [{"type": "image", "url": "/a.jpg"}, {"url": "/b.webm"}]
+    assert normalize_media(objs) == [{"type": "image", "url": "/a.jpg"}, {"type": "video", "url": "/b.webm"}]
+    assert normalize_media(json.dumps(objs)) == normalize_media(objs)
+
+
+def test_normalize_media_never_raises_on_junk():
+    for junk in (None, "", "not json", 5, {"url": "/x"}, [None, 3, {}, {"url": ""}, {"url": 7}]):
+        assert normalize_media(junk) == []
+    assert normalize_media([None, "/ok.png"]) == [{"type": "image", "url": "/ok.png"}]
 
 
 if __name__ == "__main__":

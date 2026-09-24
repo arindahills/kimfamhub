@@ -3212,18 +3212,16 @@ def get_all_projects():
             "FROM project_updates) t WHERE _rn <= %s ORDER BY project_id, created_at DESC",
             (_TIMELINE_LIMIT,)
         )
+        from project_timeline import normalize_media as _norm_media
         for row in rows:
-            media = row.get("media") or []
-            if isinstance(media, str):
-                try: media = _json.loads(media)
-                except: media = []
+            media = _norm_media(row.get("media"))   # never raises: one odd row can't blank the board
             db_timeline.setdefault(row["project_id"], []).append({
                 "id":     row.get("id"),
                 "date":   row["date_str"],
                 "author": row["author"],
                 "text":   row["text"],
-                "images": [m["url"] for m in media if m.get("type") == "image"],
-                "videos": [m["url"] for m in media if m.get("type") == "video"],
+                "images": [m["url"] for m in media if m["type"] == "image"],
+                "videos": [m["url"] for m in media if m["type"] == "video"],
                 "created_at": row.get("created_at"),
             })
     except Exception as _e:
@@ -4745,6 +4743,7 @@ def _get_tok(request):
 @app.get("/api/updates")
 def get_updates(project_id: str = None):
     from db import query as dbq
+    from project_timeline import normalize_media as _norm_media
     if project_id:
         rows = dbq("""SELECT * FROM project_updates WHERE project_id=%s ORDER BY created_at DESC""", (project_id,))
     else:
@@ -4757,7 +4756,8 @@ def get_updates(project_id: str = None):
             "project_name": r["project_name"],
             "author":       r["author"],
             "text":         r["text"],
-            "media":        list(r["media"] or []),
+            # UpdatesPage expects bare URL strings (splits image/video by extension)
+            "media":        [m["url"] for m in _norm_media(r["media"])],
             "created_at":   r["created_at"].isoformat(),
         })
     return result
@@ -4782,9 +4782,10 @@ async def post_update(request: Request):
     if not project_id or not text:
         raise _HE(status_code=400, detail="project_id and text required")
     import json as _json
+    from project_timeline import normalize_media as _norm_media
     _exec("""INSERT INTO project_updates (project_id, project_name, author, text, media)
              VALUES (%s, %s, %s, %s, %s)""",
-          (project_id, project_name, author, text, _json.dumps(media)))
+          (project_id, project_name, author, text, _json.dumps(_norm_media(media))))
     return {"ok": True}
 
 
@@ -4816,10 +4817,11 @@ async def internal_post_update(request: Request):
     source_msgs  = body.get("source_messages", [])
     if not project_id or not text:
         raise _HE(status_code=400, detail="project_id and text required")
+    from project_timeline import normalize_media as _norm_media
     _exec(
         """INSERT INTO project_updates (project_id, project_name, author, text, media)
              VALUES (%s, %s, %s, %s, %s)""",
-        (project_id, project_name, author, text, _json.dumps(media))
+        (project_id, project_name, author, text, _json.dumps(_norm_media(media)))
     )
     from db import query as dbq
     row = dbq("SELECT id FROM project_updates ORDER BY id DESC LIMIT 1")
