@@ -170,7 +170,7 @@ def _groq():
     return _groq_client
 
 def _chat(prompt: str, max_tokens: int = 1024) -> str:
-    """Generate completion: Claude Sonnet → Gemini Flash → Groq llama-3.3-70b."""
+    """Generate completion: Claude Sonnet → Gemini 2.5 Flash → Groq gpt-oss-120b."""
     import subprocess, time
     last_err = None
 
@@ -207,7 +207,7 @@ def _chat(prompt: str, max_tokens: int = 1024) -> str:
     # Groq final fallback
     try:
         completion = _groq().chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt[:120000]}],
             max_tokens=max_tokens,
         )
@@ -713,7 +713,7 @@ def manager_node(state: KimFamState, sheet_context: str, progress_cb=None) -> Ki
         else:
             progress_cb("Gathering context...")
 
-    # Sheet context always included — meeting register + actions are small and always relevant
+    # Live context always included: meetings + actions from the app DB, small and always relevant
     state["sheet_result"] = sheet_context
 
     # Run selected data tools (live structured app data)
@@ -739,8 +739,8 @@ def _get_app_guide() -> str:
 
 _SYNTH_PROMPT_TEMPLATE = """You are KimFam Hub AI, the assistant for the KIM Investment Club — a Ugandan family investment club founded by the Arinda/Kikangi family.
 
-The live data block includes today's date and the full 2026 meeting register — use these to answer questions about the latest or most recent anything.
-Be helpful, warm, and concise. Cite your source (e.g., "from the May 2026 minutes" or "live data from the Sheet"). If you don't have the information, say so honestly rather than guessing.
+The live data block includes today's date, every meeting in the app (held and upcoming) and the action items. Use it to answer questions about the latest or most recent anything.
+Be helpful, warm, and concise. Cite your source (e.g., "from the KIM 016 minutes" or "live data from the Hub"). If you don't have the information, say so honestly rather than guessing.
 
 APP GUIDE (use this to answer ANY questions about how to use KimFam Hub — how to log in, submit payments, record washing bay income, use the calculator, reset a password, navigate to any tab, etc.):
 {app_guide}
@@ -824,7 +824,7 @@ def _fallback_answer(prompt: str) -> str | None:
         from groq import Groq
         gc2 = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
         completion = gc2.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt[:120000]}],
             max_tokens=1024,
         )

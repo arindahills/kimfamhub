@@ -116,7 +116,7 @@ def _via_gemini(prompt):
     try:
         from google import genai
         resp = genai.Client(api_key=key).models.generate_content(
-            model="gemini-2.0-flash", contents=prompt)
+            model="gemini-2.5-flash", contents=prompt)
         return (resp.text or "").strip()
     except Exception as e:
         log.warning("gemini error: %s", e)

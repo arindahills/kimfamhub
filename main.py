@@ -144,7 +144,21 @@ Currently open actions:
     # Keep only the last non-empty line (the semicolon list)
     lines = [l.strip() for l in result.strip().splitlines() if l.strip()]
     suggestion = lines[-1] if lines else ""
+    if not suggestion:
+        # Say why, instead of a silent blank (the UI shows this).
+        reason = ai_unavailable_reason() or "no suggestion returned"
+        return {"suggestion": "", "error": "AI unavailable (%s). Try again, or type the agenda." % reason}
     return {"suggestion": suggestion}
+
+
+@app.get("/api/ai/health")
+def ai_health(request: Request):
+    """Admin-only: last Claude CLI success/failure, so an outage is diagnosable in seconds."""
+    from fastapi import HTTPException as _HE
+    p = _auth_verify(_get_tok(request))
+    if not p or p.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admin only")
+    return dict(_AI_HEALTH, status="failing" if ai_unavailable_reason() else "ok")
 
 
 def _compute_next_ref():
@@ -696,7 +710,7 @@ async def _ai_complete(prompt: str, claude_timeout: int = 150) -> str:
                 from groq import Groq as _Groq
                 gp = prompt if len(prompt) <= 26000 else prompt[:26000] + "\n\n[Truncated to fit.]"
                 r = _Groq(api_key=gk).chat.completions.create(
-                    model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": gp}],
+                    model="openai/gpt-oss-120b", messages=[{"role": "user", "content": gp}],
                     max_tokens=2000, temperature=0.1)
                 raw = (r.choices[0].message.content or "").strip()
             except Exception as e:
@@ -1740,7 +1754,7 @@ final "General / Governance" group. Keep each decision one crisp line."""
             try:
                 from groq import Groq as _Groq
                 resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=8000, temperature=0.2)
                 data = _parse(resp.choices[0].message.content.strip())
@@ -2104,7 +2118,7 @@ Keep "decisions" in the SAME per-group shape shown in CURRENT MINUTES above."""
                 try:
                     from groq import Groq as _Groq
                     resp = await _aio.to_thread(lambda: _Groq(api_key=groq_key).chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model="openai/gpt-oss-120b",
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=8000, temperature=0.1))
                     raw = resp.choices[0].message.content.strip()
@@ -2830,7 +2844,7 @@ Return ONLY valid JSON (no markdown) in this exact shape:
             try:
                 from groq import Groq as _Groq
                 resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=2000, temperature=0.2,
                 )
@@ -4567,57 +4581,59 @@ def _read_all_docs() -> str:
     return result
 
 def _get_live_context() -> str:
-    """Pull live financial data + meeting register from Google Sheet."""
+    """Live meetings + actions for Ask KimFam, from the app's own database.
+
+    This used to read the Google Sheet "2026 Meeting Register" and "Action Tracker", which
+    stopped being maintained once meetings and actions moved into the app: in Sep 2026 Ask
+    KimFam still said the latest meeting was KIM 008 (June) while the app had KIM 016."""
     from datetime import date as _date
-    sections = [f"Today's date: {_date.today().strftime('%d %B %Y')}"]
+    from db import query as _dbq
+    today = _date.today()
+    sections = [f"Today's date: {today.strftime('%d %B %Y')}"]
+
+    def _t(v, n):
+        v = " ".join(str(v or "").split())
+        return v[:n] + ("..." if len(v) > n else "")
+
     try:
-        sh = gc().open_by_key(SHEET_ID)
-        # Meeting register (finances now come from DB tools, not the Sheet)
-        mr = sh.worksheet("2026 Meeting Register")
-        mr_rows = mr.get_all_values()[1:]  # skip header
-        meeting_lines = []
-        for r in mr_rows:
-            if len(r) >= 2 and r[1].strip():
-                ref = r[0] if r[0].strip() else "?"
-                dt = r[1]
-                topics = r[4][:200] if len(r) > 4 else ""
-                decisions = r[5][:200] if len(r) > 5 else ""
-                next_actions = r[6][:300] if len(r) > 6 else ""
-                entry = f"  {ref} | {dt}"
-                if topics: entry += f" | Topics: {topics}"
-                if decisions: entry += f" | Decisions: {decisions}"
-                if next_actions: entry += f" | Actions: {next_actions}"
-                meeting_lines.append(entry)
-        if meeting_lines:
-            sections.append("2026 MEETING REGISTER (all meetings, latest last):\n" + "\n".join(meeting_lines))
-        # Action Tracker — open items only
-        at = sh.worksheet("Action Tracker")
-        at_rows = at.get_all_values()[1:]  # skip header
-        open_actions = []
-        done_actions = []
-        for r in at_rows:
-            if len(r) < 5 or not r[0].strip():
-                continue
-            action_id = r[0]
-            desc = r[1][:120]
-            owner = r[2]
-            deadline = r[3]
-            status = r[4].strip()
-            update = r[6][:120] if len(r) > 6 else ""
-            line = f"  {action_id} | {owner} | {deadline} | {status} | {desc}"
-            if update:
-                line += f" | Update: {update}"
-            if status in ("Done", "Closed"):
-                done_actions.append(line)
-            else:
-                open_actions.append(line)
-        if open_actions:
-            sections.append("OPEN ACTION ITEMS (Action Tracker):\n" + "\n".join(open_actions))
-        if done_actions:
-            sections.append("COMPLETED ACTION ITEMS (Action Tracker):\n" + "\n".join(done_actions))
+        rows = _dbq("SELECT ref, date, venue, key_topics, key_decisions, next_actions, summary, "
+                    "conductor_ended_at FROM meetings ORDER BY date ASC, id ASC")
+        lines = []
+        for m in rows:
+            held = bool(m.get("conductor_ended_at")) or (m["date"] and m["date"] < today)
+            entry = f"  {m['ref']} | {m['date']} | {'held' if held else 'UPCOMING'}"
+            if m.get("venue"):         entry += f" | Venue: {_t(m['venue'], 60)}"
+            if m.get("key_topics"):    entry += f" | Topics: {_t(m['key_topics'], 250)}"
+            if m.get("key_decisions"): entry += f" | Decisions: {_t(m['key_decisions'], 400)}"
+            if m.get("next_actions"):  entry += f" | Actions: {_t(m['next_actions'], 250)}"
+            if m.get("summary"):       entry += f" | Summary: {_t(m['summary'], 300)}"
+            lines.append(entry)
+        if lines:
+            held = [l for l in lines if "| held" in l]
+            sections.append("MEETINGS (all, oldest first; the latest meeting HELD is the last "
+                            "'held' row, UPCOMING rows are scheduled):\n" + "\n".join(lines)
+                            + (f"\nLatest meeting held: {held[-1].split('|')[0].strip()}" if held else ""))
     except Exception as e:
-        sections.append(f"Sheet unavailable: {e}")
-    return "=== LIVE DATA (Google Sheet) ===\n" + "\n\n".join(sections)
+        sections.append(f"Meeting records unavailable: {e}")
+
+    try:
+        acts = _dbq("SELECT ref, description, assignees, assignee, deadline, status, closed_at "
+                    "FROM actions WHERE status IN ('open','in_progress','carried_over') "
+                    "ORDER BY deadline ASC NULLS LAST LIMIT 60")
+        if acts:
+            sections.append("OPEN ACTION ITEMS:\n" + "\n".join(
+                f"  {a['ref']} | {a.get('assignees') or a.get('assignee') or '?'} | "
+                f"due {a['deadline'] or 'n/a'} | {a['status']} | {_t(a['description'], 140)}"
+                for a in acts))
+        done = _dbq("SELECT ref, description, closed_at FROM actions WHERE status='done' "
+                    "ORDER BY closed_at DESC NULLS LAST LIMIT 20")
+        if done:
+            sections.append("RECENTLY COMPLETED ACTIONS:\n" + "\n".join(
+                f"  {a['ref']} | closed {str(a['closed_at'] or '')[:10]} | {_t(a['description'], 120)}"
+                for a in done))
+    except Exception as e:
+        sections.append(f"Action records unavailable: {e}")
+    return "=== LIVE DATA (KimFam Hub database) ===\n" + "\n\n".join(sections)
 
 @app.get("/api/ask/history")
 async def ask_history(request: Request):
@@ -7610,8 +7626,36 @@ def _build_audit_data(project_id: str):
     return {"project": project_id, "assumptions": [], "formula_derivations": [], "data_gaps": [], "what_would_change": []}
 
 
+# Last Claude CLI outcome, so a failure is visible (GET /api/ai/health, and the reason the
+# UI shows). Until 2026-09-25 both helpers swallowed stderr and returned "": a revoked token
+# made AI suggest, summaries and Ask KimFam go blank for two days with no error anywhere.
+_AI_HEALTH = {"last_ok_at": None, "last_error_at": None, "last_error": None}
+
+
+def _ai_failed(reason: str) -> None:
+    import logging as _lg, time as _t
+    reason = (reason or "unknown error").strip().replace("\n", " ")[:300]
+    if "401" in reason or "revoked" in reason or "expired" in reason:
+        reason += " | token rejected: after rotating CLAUDE_CODE_OAUTH_TOKEN, restart kimfamhub"
+    _AI_HEALTH.update(last_error_at=_t.time(), last_error=reason)
+    _lg.getLogger("uvicorn.error").warning("Claude CLI failed: %s", reason)
+
+
+def _ai_ok() -> None:
+    import time as _t
+    _AI_HEALTH["last_ok_at"] = _t.time()
+
+
+def ai_unavailable_reason() -> str:
+    """Short, family-readable reason for the last failure ('' if the last call succeeded)."""
+    e, ok = _AI_HEALTH.get("last_error_at"), _AI_HEALTH.get("last_ok_at")
+    if not e or (ok and ok >= e):
+        return ""
+    return "token rejected" if "token rejected" in (_AI_HEALTH["last_error"] or "") else "AI service error"
+
+
 def _ask_claude(prompt: str, model: str = "sonnet", timeout: int = 120) -> str:
-    """Call the Claude Code CLI. Returns response text or empty string on failure."""
+    """Call the Claude Code CLI. Returns response text, or "" on failure (logged + recorded)."""
     import subprocess as _sp, os as _os
     env = dict(_os.environ); env["HOME"] = "/root"
     try:
@@ -7619,8 +7663,16 @@ def _ask_claude(prompt: str, model: str = "sonnet", timeout: int = 120) -> str:
             ["claude", "-p", prompt, "--model", model],
             capture_output=True, text=True, timeout=timeout, env=env
         )
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
+        if r.returncode == 0 and r.stdout.strip():
+            _ai_ok()
+            return r.stdout.strip()
+        _ai_failed("rc=%s %s" % (r.returncode, (r.stderr or r.stdout or "")[-300:]))
+        return ""
+    except _sp.TimeoutExpired:
+        _ai_failed("timed out after %ss" % timeout)
+        return ""
+    except Exception as e:
+        _ai_failed(repr(e))
         return ""
 
 
@@ -7634,12 +7686,18 @@ async def _ask_claude_async(prompt: str, model: str = "haiku", timeout: int = 40
         proc = await _aio.create_subprocess_exec(
             "claude", "-p", prompt, "--model", model,
             stdout=_aio.subprocess.PIPE,
-            stderr=_aio.subprocess.DEVNULL,
+            stderr=_aio.subprocess.PIPE,
             env=env
         )
-        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=timeout)
-        return stdout.decode().strip() if proc.returncode == 0 else ""
-    except Exception:
+        stdout, stderr = await _aio.wait_for(proc.communicate(), timeout=timeout)
+        out = stdout.decode().strip()
+        if proc.returncode == 0 and out:
+            _ai_ok()
+            return out
+        _ai_failed("rc=%s %s" % (proc.returncode, (stderr.decode() or out)[-300:]))
+        return ""
+    except Exception as e:
+        _ai_failed("timed out after %ss" % timeout if isinstance(e, _aio.TimeoutError) else repr(e))
         if proc:
             try: proc.kill()
             except: pass
@@ -7771,14 +7829,14 @@ SURPRISING INSIGHT (one paragraph: something non-obvious the data reveals that t
             try:
                 from google import genai as _genai
                 resp = _genai.Client(api_key=_os.getenv("GEMINI_API_KEY")).models.generate_content(
-                    model="gemini-2.0-flash", contents=prompt)
+                    model="gemini-2.5-flash", contents=prompt)
                 txt = resp.text; prov = "Gemini"
             except Exception: pass
         if not txt and _os.getenv("GROQ_API_KEY",""):
             try:
                 from groq import Groq as _Groq
                 resp = _Groq(api_key=_os.getenv("GROQ_API_KEY")).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=[{"role":"user","content":prompt}], max_tokens=800)
                 txt = resp.choices[0].message.content; prov = "Groq"
             except Exception: pass
@@ -7893,7 +7951,7 @@ async def portfolio_ranking_stream(request: Request):
                     try:
                         from google import genai as _genai
                         _gr = _genai.Client(api_key=_gk).models.generate_content(
-                            model="gemini-2.0-flash", contents=haiku_prompt).text
+                            model="gemini-2.5-flash", contents=haiku_prompt).text
                         _gm = _re.search(r"\{.*\}", _re.sub(r"```[\w]*\n?", "", _gr or ""), _re.DOTALL)
                         if _gm: ranked = _json.loads(_gm.group())
                     except: pass
@@ -7903,7 +7961,7 @@ async def portfolio_ranking_stream(request: Request):
                     try:
                         from groq import Groq as _Groq
                         _qr = _Groq(api_key=_qk).chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="openai/gpt-oss-120b",
                             messages=[{"role": "user", "content": haiku_prompt}],
                             max_tokens=1200, response_format={"type": "json_object"}
                         ).choices[0].message.content
@@ -7962,7 +8020,7 @@ async def portfolio_ranking_stream(request: Request):
                     try:
                         from groq import Groq as _Groq
                         resp = _Groq(api_key=groq_key).chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="openai/gpt-oss-120b",
                             messages=[{"role":"user","content":insight_prompt}],
                             max_tokens=800, response_format={"type":"json_object"})
                         sonnet_raw = resp.choices[0].message.content
@@ -8070,7 +8128,7 @@ async def new_ventures_stream(request: Request):
                     try:
                         from groq import Groq as _Groq
                         resp = _Groq(api_key=groq_key).chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="openai/gpt-oss-120b",
                             messages=[{"role":"user","content":prompt}],
                             max_tokens=3000, response_format={"type":"json_object"})
                         full_text = resp.choices[0].message.content
@@ -8164,7 +8222,7 @@ Be direct, cite numbers, no fluff. The family needs to make money soon AND build
             try:
                 from google import genai as _genai
                 raw = _genai.Client(api_key=gemini_key).models.generate_content(
-                    model="gemini-2.0-flash", contents=prompt).text
+                    model="gemini-2.5-flash", contents=prompt).text
             except: pass
     if not raw:
         groq_key = _os.getenv("GROQ_API_KEY","")
@@ -8172,7 +8230,7 @@ Be direct, cite numbers, no fluff. The family needs to make money soon AND build
             try:
                 from groq import Groq as _Groq
                 resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=[{"role":"user","content":prompt}],
                     max_tokens=1500, response_format={"type":"json_object"})
                 raw = resp.choices[0].message.content
@@ -8302,7 +8360,7 @@ Use real Ugandan numbers. Be bold but realistic. The family wants to build gener
             try:
                 from google import genai as _genai
                 raw = _genai.Client(api_key=gemini_key).models.generate_content(
-                    model="gemini-2.0-flash", contents=prompt).text
+                    model="gemini-2.5-flash", contents=prompt).text
             except: pass
     if not raw:
         groq_key = _os.getenv("GROQ_API_KEY","")
@@ -8310,7 +8368,7 @@ Use real Ugandan numbers. Be bold but realistic. The family wants to build gener
             try:
                 from groq import Groq as _Groq
                 resp = _Groq(api_key=groq_key).chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=[{"role":"user","content":prompt}],
                     max_tokens=3000, response_format={"type":"json_object"})
                 raw = resp.choices[0].message.content

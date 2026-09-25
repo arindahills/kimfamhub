@@ -137,9 +137,10 @@ function EditMeetingModal({ m, onClose, onSaved }: { m: Meeting; onClose: () => 
     setSuggesting(true)
     try {
       const res = await fetch('/api/meetings/suggest-agenda', { credentials: 'include' })
-      const d = await res.json()
+      const d = await res.json().catch(() => ({}))
       if (d.suggestion) setTopics(d.suggestion)
-    } catch {/* ignore */} finally { setSuggesting(false) }
+      else toast.error(d.error || d.detail || 'AI suggest failed. Type the agenda instead.')
+    } catch { toast.error('AI suggest failed. Type the agenda instead.') } finally { setSuggesting(false) }
   }
 
   const save = async () => {
@@ -245,9 +246,10 @@ function NewMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreate
     setSuggesting(true)
     try {
       const res = await fetch('/api/meetings/suggest-agenda', { credentials: 'include' })
-      const d = await res.json()
+      const d = await res.json().catch(() => ({}))
       if (d.suggestion) setTopics(d.suggestion)
-    } catch {/* ignore */} finally {
+      else setError(d.error || d.detail || 'AI suggest failed. Type the agenda instead.')
+    } catch { setError('AI suggest failed. Type the agenda instead.') } finally {
       setSuggesting(false)
     }
   }

@@ -412,3 +412,33 @@ class TestKlaFamRecordFor:
                           headers={"X-Internal-Key": "nope"},
                           json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 401
+
+
+class TestAskClaudeFailureIsVisible:
+    """_ask_claude used to swallow CLI errors and return "": a revoked token blanked every
+    AI feature for two days with nothing logged. Failures are now recorded and explained."""
+
+    def _run(self, monkeypatch, rc, out="", err=""):
+        import subprocess, main as _m
+        class R:  # minimal CompletedProcess
+            returncode, stdout, stderr = rc, out, err
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+        return _m
+
+    def test_revoked_token_is_recorded_with_restart_hint(self, monkeypatch):
+        m = self._run(monkeypatch, 1, err="API Error: 401 OAuth access token has been revoked")
+        assert m._ask_claude("hi") == ""
+        assert m.ai_unavailable_reason() == "token rejected"
+        assert "restart kimfamhub" in m._AI_HEALTH["last_error"]
+
+    def test_success_clears_the_failure(self, monkeypatch):
+        m = self._run(monkeypatch, 1, err="boom")
+        m._ask_claude("hi")
+        m = self._run(monkeypatch, 0, out="agenda; items")
+        assert m._ask_claude("hi") == "agenda; items"
+        assert m.ai_unavailable_reason() == ""
+
+    def test_empty_stdout_with_rc0_is_a_failure(self, monkeypatch):
+        m = self._run(monkeypatch, 0, out="   ")
+        assert m._ask_claude("hi") == ""
+        assert m.ai_unavailable_reason() == "AI service error"
