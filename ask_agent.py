@@ -249,38 +249,89 @@ def _embed_query(text: str) -> tuple:
     return tuple(float(x) for x in vec)
 
 
+# The index tags every chunk doc_type="document", so filtering on the router's type
+# ("minutes", "constitution", ...) matched NOTHING and every meeting question got zero
+# documents. The real category is the top folder of the chunk's source path.
+_DOC_TYPE_FOLDERS = {"minutes": "minutes", "constitution": "governance", "proposal": "projects",
+                     "receipt": "receipts", "financial": "financial"}
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December"]
+
+
+def _meeting_ref_dates(question: str) -> list:
+    """'KIM 008' / 'KIM 8/2026' in the question -> that meeting's date(s). The minutes files
+    are named by date (…_June_7_2026.docx), not by KIM number, so without this a question
+    about KIM 008 retrieved June 2024 minutes."""
+    import re as _re
+    nums = {int(n) for n in _re.findall(r"\bKIM\s*0*(\d{1,3})\b", question or "", _re.I)}
+    if not nums:
+        return []
+    try:
+        from db import query as _q
+        rows = _q("SELECT ref, date FROM meetings")
+    except Exception as e:
+        log.warning(f"meeting ref lookup failed: {e}")
+        return []
+    out = []
+    for r in rows:
+        m = _re.match(r"KIM\s*0*(\d+)", r.get("ref") or "")
+        if m and int(m.group(1)) in nums and r.get("date"):
+            out.append(r["date"])
+    return out
+
+
 def rag_tool(question: str, doc_type_filter: str | None = None) -> str:
     cache_key = _cache_key("rag", question, doc_type_filter or "")
     cached = _cache_get(cache_key)
     if cached:
         return cached
 
-    collection = _get_collection()
-    embedding = list(_embed_query(question))
+    dates = _meeting_ref_dates(question)
+    query_text = question
+    if dates:
+        query_text += " " + " ".join(f"meeting minutes {_MONTHS[d.month - 1]} {d.day} {d.year}" for d in dates)
+    date_tokens = [f"{_MONTHS[d.month - 1]}_{d.day}_{d.year}" for d in dates]
 
-    where = {"doc_type": doc_type_filter} if doc_type_filter else None
+    collection = _get_collection()
+    embedding = list(_embed_query(query_text))
     try:
         results = collection.query(
             query_embeddings=[embedding],
-            n_results=RAG_TOP_K,
-            where=where,
+            n_results=RAG_TOP_K * 8,          # wide, then narrow by folder below
             include=["documents", "metadatas", "distances"],
         )
     except Exception as e:
         log.warning(f"ChromaDB query error: {e}")
         return ""
 
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
+    cands = []
+    for doc, meta, dist in zip(results.get("documents", [[]])[0], results.get("metadatas", [[]])[0],
+                               results.get("distances", [[]])[0]):
+        src = str(meta.get("source", "document"))
+        cands.append((1 - dist, src, doc))
 
-    chunks = []
-    for doc, meta, dist in zip(docs, metas, dists):
-        similarity = 1 - dist
-        if similarity < RAG_THRESHOLD:
-            continue
-        source = meta.get("source", "document")
-        chunks.append(f"[{source}]\n{doc}")
+    # Chunks from the named meeting's own minutes come first, whatever their score.
+    if date_tokens:
+        # Pull that meeting's minutes directly (a single fragment is not enough to answer
+        # "what was discussed at KIM 008"), in document order.
+        exact = []
+        try:
+            got = collection.get(include=["documents", "metadatas"], limit=5000)
+            exact = sorted(((1.0, str(m_.get("source", "")), d_, m_.get("chunk_index", 0))
+                            for d_, m_ in zip(got["documents"], got["metadatas"])
+                            if any(t in str(m_.get("source", "")) for t in date_tokens)),
+                           key=lambda x: (x[1], x[3]))
+            exact = [(sim, s_, d_) for sim, s_, d_, _ in exact][:RAG_TOP_K]
+        except Exception as e:
+            log.warning(f"minutes lookup by date failed: {e}")
+        seen = {(s_, d_) for _, s_, d_ in exact}
+        cands = exact + [c for c in cands if (c[1], c[2]) not in seen]
+
+    folder = _DOC_TYPE_FOLDERS.get(doc_type_filter or "")
+    pool = [c for c in cands if folder and c[1].split("/")[0] == folder] if folder else cands
+    if not pool:
+        pool = cands                          # the folder had nothing relevant: never return empty
+    chunks = [f"[{src}]\n{doc}" for sim, src, doc in pool if sim >= RAG_THRESHOLD][:RAG_TOP_K]
 
     result = "\n\n---\n\n".join(chunks) if chunks else ""
     _cache_set(cache_key, result)

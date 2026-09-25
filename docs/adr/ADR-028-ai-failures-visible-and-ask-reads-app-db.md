@@ -49,3 +49,12 @@
   minutes remain searchable through the documents. Measured: context 21k → 16.5k, prompt
   48k → 42.7k, growth ~120 characters per meeting instead of ~1.2k. Stale "Google Sheet"
   labels removed.
+- **Retrieval bug found while verifying**: every chunk in the Chroma index is tagged
+  `doc_type="document"`, but the router filters on `minutes` / `constitution` / `proposal` /
+  `receipt`, so every filtered question (all meeting and constitution questions) retrieved
+  ZERO documents, silently, since the index was built. `rag_tool` now searches wide and
+  narrows by the source path's top folder (`minutes/`, `governance/`, `projects/`,
+  `receipts/`, `financial/`), falling back to the best unfiltered matches instead of empty.
+  A question naming a meeting ("KIM 008") resolves it to its date from `meetings` and pulls
+  that day's minutes first (files are named by date; before this, June 2024 minutes won).
+  Re-tagging the index properly is the cleaner long-term fix.

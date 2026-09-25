@@ -464,3 +464,49 @@ class TestAskPromptFit:
     def test_question_is_at_the_top_of_the_template(self):
         from ask_agent import _SYNTH_PROMPT_TEMPLATE as t
         assert t.index("{question}") < t.index("{app_guide}")
+
+
+class TestAskRagRetrieval:
+    """Every indexed chunk is tagged doc_type='document', so the old where={'doc_type':
+    'minutes'} filter matched nothing and meeting/constitution questions got ZERO documents.
+    Category now comes from the source folder; a named meeting pulls its own minutes."""
+
+    class _FakeCollection:
+        def __init__(self, items):  # items: [(source, text)]
+            self.items = items
+        def query(self, query_embeddings, n_results, include):
+            its = self.items[:n_results]
+            return {"documents": [[t for _, t in its]],
+                    "metadatas": [[{"source": s, "doc_type": "document", "chunk_index": i} for i, (s, _) in enumerate(its)]],
+                    "distances": [[0.2] * len(its)]}
+        def get(self, include, limit):
+            return {"documents": [t for _, t in self.items],
+                    "metadatas": [{"source": s, "doc_type": "document", "chunk_index": i} for i, (s, _) in enumerate(self.items)]}
+
+    def _setup(self, monkeypatch, items, meetings=()):
+        import ask_agent as a, db as _db
+        monkeypatch.setattr(a, "_get_collection", lambda: self._FakeCollection(items))
+        monkeypatch.setattr(a, "_embed_query", lambda t: (0.0,))
+        monkeypatch.setattr(a, "_cache_get", lambda k: None)
+        monkeypatch.setattr(a, "_cache_set", lambda k, v: None)
+        monkeypatch.setattr(_db, "query", lambda sql, params=None: list(meetings))
+        return a
+
+    def test_minutes_filter_uses_the_folder_not_the_tag(self, monkeypatch):
+        a = self._setup(monkeypatch, [("projects/x.docx", "project text"),
+                                      ("minutes/KimFam (2026)/M_July_12_2026.docx", "minutes text")])
+        out = a.rag_tool("what did we decide", "minutes")
+        assert "minutes text" in out and "project text" not in out
+
+    def test_filter_with_no_match_falls_back_instead_of_empty(self, monkeypatch):
+        a = self._setup(monkeypatch, [("projects/x.docx", "project text")])
+        assert "project text" in a.rag_tool("anything", "receipt")
+
+    def test_named_meeting_pulls_its_own_minutes_first(self, monkeypatch):
+        from datetime import date
+        a = self._setup(monkeypatch,
+                        [("minutes/KimFam (2024)/M_June_9_2024.docx", "old 2024 text"),
+                         ("minutes/KimFam (2026)/M_June_7_2026.docx", "kim eight text")],
+                        meetings=[{"ref": "KIM 008/2026", "date": date(2026, 6, 7)}])
+        out = a.rag_tool("What happened at KIM 008?", "minutes")
+        assert out.index("kim eight text") < out.index("old 2024 text")
