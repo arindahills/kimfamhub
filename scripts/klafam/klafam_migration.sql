@@ -43,3 +43,11 @@ INSERT INTO klafam_members (slug, display_name, family_id, is_active, joined_dat
     ('tuhimbises', 'The Tuhimbises', 7, FALSE, '2021-01-01'),  -- merged into priscilla+alex by mid-2022
     ('boaz',       'Mr Boaz',        NULL, FALSE, '2021-01-01')  -- historical only
 ON CONFLICT (slug) DO NOTHING;
+
+-- Columns added after this script was first written (they exist in prod; runtime DDL in
+-- main.py also adds recorded_by). Kept here so a fresh database matches prod.
+ALTER TABLE klafam_contributions ADD COLUMN IF NOT EXISTS paid_date DATE;
+ALTER TABLE klafam_contributions ADD COLUMN IF NOT EXISTS recorded_by TEXT;
+ALTER TABLE klafam_cycles ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+ALTER TABLE klafam_cycles ADD COLUMN IF NOT EXISTS acknowledged_by VARCHAR(100);
+-- Tables must be owned by the app role (kimfam) or the runtime ALTERs fail (503).
