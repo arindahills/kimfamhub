@@ -180,7 +180,14 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
   const seqRef     = useRef(0)                       // streamed-chunk sequence number
   const uploadChainRef = useRef<Promise<unknown>>(Promise.resolve())  // keep chunk uploads ordered
   const audioCtxRef    = useRef<AudioContext | null>(null)   // mixer for mic + tab audio
+  const mixDestRef     = useRef<MediaStreamAudioDestinationNode | null>(null)  // what the recorder records
   const sourceStreamsRef = useRef<MediaStream[]>([])         // mic + tab streams to release on stop
+  // Recording, but only the presenter's mic (the Meet tab's audio was not shared, or its
+  // sharing was stopped). Not a failure: the "Capture everyone" button adds the tab audio
+  // into the running mixer, so it stays ONE continuous recording (a second MediaRecorder
+  // would restart at seq 0, which truncates the server file).
+  const [micOnly, setMicOnly]         = useState(false)
+  const [canMix, setCanMix]           = useState(false)   // a mixer is running, so tab audio can be added
 
   // ── Live secretary notes — typed throughout the meeting ─────────────────────
   const [notes, setNotes]           = useState('')
@@ -296,71 +303,85 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     return uploadChainRef.current
   }
 
+  const TAB_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+
+  // Plug a Meet-tab capture into the running mixer. Returns false (and releases the share)
+  // when there is no mixer or the presenter did not tick "Share tab audio".
+  const connectTab = (tabStream: MediaStream | null): boolean => {
+    const tracks = tabStream?.getAudioTracks() ?? []
+    const ctx = audioCtxRef.current, dest = mixDestRef.current
+    if (!tabStream || !ctx || !dest || tracks.length === 0) {
+      tabStream?.getTracks().forEach(t => t.stop())
+      return false
+    }
+    ctx.createMediaStreamSource(new MediaStream(tracks)).connect(dest)
+    tabStream.getVideoTracks().forEach(t => t.stop())   // only the audio is used
+    sourceStreamsRef.current.push(tabStream)
+    tracks[0].onended = () => {
+      // Presenter pressed Chrome's "Stop sharing": the recording carries on with the mic.
+      if (mediaRef.current?.state === 'recording') {
+        setMicOnly(true)
+        toast.info('Meeting audio stopped being shared, so only your mic is recording. Tap "Capture everyone" to add it back.')
+      }
+    }
+    setMicOnly(false)
+    return true
+  }
+
+  // Button handler: a fresh click gives getDisplayMedia the user gesture it needs.
+  const captureEveryone = async () => {
+    let tab: MediaStream | null = null
+    try { tab = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: TAB_AUDIO }) } catch { tab = null }
+    if (connectTab(tab)) toast.success('Now recording everyone in the meeting')
+    else toast.error('No meeting audio was shared. Pick the Google Meet tab and tick "Share tab audio".')
+  }
+
   const startRecording = async () => {
     // Declared outside the try so the outer catch can release a tab share that was
     // granted before a later step (e.g. the mic prompt) failed.
     let tabStream: MediaStream | null = null
     try {
       // (1) Meet TAB audio FIRST, while the button click's transient activation is still
-      // fresh. getDisplayMedia requires that activation; awaiting the mic permission
-      // prompt before it would consume the gesture and make tab capture fail on first
-      // use. This is the whole fix: getUserMedia (mic) alone strips everyone else via
-      // echo cancellation, so the recording only ever had the presenter. Capturing the
-      // Meet tab's audio is the only browser-allowed way to record the remote
-      // participants (the farm device carrying Dad/Solomon/Mum, the treasurer, etc.).
-      // The picker requires a video request, so we ask for video then drop the video
-      // track. If the presenter cancels or forgets "Share tab audio", we fall back to
-      // mic-only with a clear warning.
+      // fresh (getDisplayMedia needs it; awaiting the mic prompt first would consume it).
+      // The mic alone strips everyone else via echo cancellation, so capturing the Meet
+      // tab's audio is the only browser-allowed way to record the remote participants.
+      // The picker requires a video request, so we ask for video then drop that track.
       try {
-        tabStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        })
+        tabStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: TAB_AUDIO })
       } catch { tabStream = null }
 
       // (2) Microphone = the presenter's own voice.
       const micStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
+      sourceStreamsRef.current = [micStream]
 
+      // (3) ALWAYS record through a Web Audio mixer when the browser allows it, even for
+      // mic only, so the tab's audio can be added later without restarting the recorder.
+      // The context can start 'suspended' under the autoplay policy (silent recording),
+      // so we resume and verify it is running before trusting it.
       let recordStream: MediaStream = micStream
-      let mixing = false
-      const tabAudioTracks = tabStream?.getAudioTracks() ?? []
-      if (tabAudioTracks.length > 0) {
-        // Mix mic + tab audio into one stream via the Web Audio API. The context can
-        // start 'suspended' under the autoplay policy, which would route NO audio to
-        // the destination (silent recording), so we resume and verify it is running
-        // before trusting the mixer; otherwise we record the mic directly.
-        const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-        const ctx = new AC()
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const ctx = new AC()
+      try { await ctx.resume() } catch { /* fall through to state check */ }
+      if (ctx.state === 'running') {
+        const dest = ctx.createMediaStreamDestination()
+        ctx.createMediaStreamSource(micStream).connect(dest)
         audioCtxRef.current = ctx
-        try { await ctx.resume() } catch { /* fall through to state check */ }
-        if (ctx.state === 'running') {
-          const dest = ctx.createMediaStreamDestination()
-          ctx.createMediaStreamSource(micStream).connect(dest)
-          ctx.createMediaStreamSource(new MediaStream(tabAudioTracks)).connect(dest)
-          recordStream = dest.stream
-          mixing = true
-          setRecError('')
-        } else {
-          try { await ctx.close() } catch { /* noop */ }
-          audioCtxRef.current = null
-          setRecError('Could not mix the meeting audio, so only your microphone is being recorded. Stop and start recording again to retry capturing everyone.')
-          toast.info('Audio mixer unavailable — recording your mic only')
+        mixDestRef.current = dest
+        setCanMix(true)
+        recordStream = dest.stream
+        if (!connectTab(tabStream)) {
+          setMicOnly(true)
+          toast.info('Recording your mic only. Tap "Capture everyone" and pick the Meet tab to record the whole meeting.')
         }
       } else {
-        setRecError('Only your microphone is being recorded. To capture the whole meeting (everyone), stop and start recording again, then pick the Google Meet tab and tick "Share tab audio".')
-        toast.info('Recording your mic only — pick the Meet tab and tick "Share tab audio" to capture everyone')
-      }
-      if (mixing) {
-        // Keep the tab audio track feeding the mixer; only the video track is unused.
-        tabStream?.getVideoTracks().forEach(t => t.stop())
-        sourceStreamsRef.current = [micStream, tabStream as MediaStream]
-      } else {
-        // Not using the tab capture: release it fully so no "sharing this tab" banner lingers.
+        try { await ctx.close() } catch { /* noop */ }
         tabStream?.getTracks().forEach(t => t.stop())
-        sourceStreamsRef.current = [micStream]
+        setMicOnly(true)
+        toast.info('This browser could not mix audio, so only your mic is being recorded.')
       }
+      setRecError('')
 
       let mr: MediaRecorder
       try {
@@ -386,6 +407,9 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
         sourceStreamsRef.current = []
         audioCtxRef.current?.close().catch(() => { /* noop */ })
         audioCtxRef.current = null
+        mixDestRef.current = null
+        setMicOnly(false)
+        setCanMix(false)
       }
       mr.start(15000)
       mediaRef.current = mr
@@ -397,6 +421,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       tabStream?.getTracks().forEach(t => t.stop())
       audioCtxRef.current?.close().catch(() => { /* noop */ })
       audioCtxRef.current = null
+      mixDestRef.current = null
       setRecError('Microphone is blocked, so this meeting is NOT being recorded. Allow microphone access in your browser and reopen the conductor, or rely on a Tactiq transcript / your typed notes for the minutes.')
       toast.error('Microphone blocked — this meeting is NOT being recorded')
     }
@@ -433,6 +458,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
     sourceStreamsRef.current = []
     audioCtxRef.current?.close().catch(() => { /* noop */ })
     audioCtxRef.current = null
+    mixDestRef.current = null
   }, [])
 
   // ── Polling ──────────────────────────────────────────────────────────────
@@ -646,7 +672,7 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
           )}
           {/* REC badge — shown to ALL participants when recording. On the admin's own
               device, suppress it if the mic was blocked (recError) to avoid a false REC. */}
-          {state?.recording && !(isAdmin && recError) && (
+          {state?.recording && !(isAdmin && (recError || (recording && micOnly))) && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
               style={{ background: '#7f1d1d55', border: '1px solid #ef444466' }}>
               <div className="w-2 h-2 rounded-full flex-shrink-0"
@@ -660,6 +686,13 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
               <span className="text-[11px] font-semibold" style={{ color: '#fcd34d' }}>⚠ NOT recording</span>
             </div>
           )}
+          {isAdmin && !recError && recording && micOnly && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
+              style={{ background: '#78350f55', border: '1px solid #f59e0b66' }}>
+              <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: '#f59e0b' }} />
+              <span className="text-[11px] font-semibold" style={{ color: '#fcd34d' }}>REC · your mic only</span>
+            </div>
+          )}
           <button onClick={onClose} style={{ color: '#475569', fontSize: 18 }}>✕</button>
         </div>
       </div>
@@ -668,6 +701,22 @@ export default function MeetingConductor({ meetingId, meetingRef, isAdmin, onClo
       {isAdmin && recError && (
         <div className="px-4 py-2 text-xs text-center" style={{ background: '#78350f', color: '#fde68a' }}>
           {recError}
+        </div>
+      )}
+
+      {/* Mic-only banner: recording works, but the other participants are not captured.
+          One tap adds the Meet tab's audio to the SAME recording. */}
+      {isAdmin && !recError && recording && micOnly && (
+        <div className="px-4 py-2 text-xs flex items-center justify-center gap-3 flex-wrap"
+          style={{ background: '#78350f', color: '#fde68a' }}>
+          <span>Recording your microphone only, so the others in the meeting are not being captured.</span>
+          {canMix && (
+            <button onClick={captureEveryone}
+              className="px-3 py-1 rounded-full text-xs font-semibold"
+              style={{ background: '#fbbf24', color: '#1c1917' }}>
+              Capture everyone
+            </button>
+          )}
         </div>
       )}
 

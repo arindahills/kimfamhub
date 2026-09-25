@@ -19,3 +19,19 @@ KimFam meeting minutes were persistently wrong and needed heavy manual correctio
 - Better: the recording finally contains every participant; diarization separates the shared-device voices that Tactiq physically cannot; Sonnet MAP + attribution context sharply reduce the attribution/figure errors.
 - Worse / watch: one extra click per meeting (Share tab audio); a new external dependency and key (`DEEPGRAM_API_KEY`, ~$0.26/hr diarized, $200 free credit ≈ years — see the STT provider memory + swap table); concurrent Sonnet MAP spawns up to 2 `claude` CLI processes at once; full validation only possible at the next live meeting (KIM 015's audio was already mic-only and cannot be re-captured).
 - Swap path if Deepgram ever costs too much: AssemblyAI (same shape), then self-hosted pyannote + Groq Whisper (zero cost). Recorded in the STT provider reference memory.
+
+## Amendment 2026-09-25: add everyone's audio mid-meeting without restarting
+
+- **Context**: if the presenter skipped "Share tab audio" when the meeting started, only
+  their mic was recorded. The banner said "stop and start recording again", but no such
+  control existed: recording starts and ends only with the meeting, and the header badge
+  read "NOT recording" even though the mic was being recorded. A restart would also have
+  destroyed audio: a new recorder uploads from seq 0, which truncates the server file.
+- **Decision**: the conductor ALWAYS records through a Web Audio mixer (mic alone included)
+  when the browser allows it. A "Capture everyone" button in the mic-only banner asks for the
+  Meet tab and plugs its audio into the running mixer, so the recording stays one continuous
+  file. If the presenter presses Chrome's "Stop sharing", recording continues on the mic and
+  the button comes back. Badges: "REC · your mic only" (amber) while mic-only; "NOT
+  recording" only when the mic itself is blocked.
+- **Watch**: browsers where the AudioContext cannot start still record the mic directly,
+  with no add-later option (the banner says so and hides the button).
