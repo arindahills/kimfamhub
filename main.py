@@ -9212,6 +9212,10 @@ async def klafam_record_for_member(request: Request):
     from datetime import date
 
     payload = _auth_verify(_get_tok(request))
+    if not payload and _internal_key_ok(request):
+        # The WhatsApp agent, acting on the admin's explicit ">> klafam confirm" approval.
+        # It goes through the same guards below instead of writing the ledger itself.
+        payload = {"sub": "", "display": "Hillary (via WhatsApp)", "role": "admin"}
     if not payload:
         raise _HE(status_code=401, detail="Auth required")
     actor_label = payload.get("display") or payload.get("sub", "")

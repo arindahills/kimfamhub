@@ -59,3 +59,16 @@ payment); and auto-confirming from WhatsApp text alone (no reliable proof of who
   (non-beneficiary → 403, NULL-beneficiary cycle → 403, non-admin beneficiary → recorded and
   attributed, already-recorded → 409, inactive/absent member → 404). Applying the klafam
   migration to `kimfamhub_test` is the outstanding fix for real staging coverage.
+
+## Amendment 2026-09-25: the WhatsApp approval goes through this endpoint
+
+- **Context**: the WhatsApp agent's `>> klafam confirm <slug> <amount>` wrote the ledger
+  directly. It overwrote paid rows, could insert rows for inactive members, recorded no
+  attribution, and its reply path had never worked (undefined function, and the self-chat
+  reply was routed elsewhere).
+- **Decision**: `record-for` also accepts `X-Internal-Key` as admin-equivalent, attributed
+  "Hillary (via WhatsApp)". The agent calls it, so every guard here (active member, row
+  must exist, 409 on paid/offset, recorded_by) applies to WhatsApp approvals too. The
+  internal key is only held by server-side services on the box.
+- **Tests**: internal key records with WhatsApp attribution; still 409 on a paid row;
+  a wrong key is 401.

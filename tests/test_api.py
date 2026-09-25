@@ -381,3 +381,34 @@ class TestKlaFamRecordFor:
         r = c.post("/api/klafam/contributions/record-for",
                    json={"cycle_id": 1, "member_slug": "priscilla"})
         assert r.status_code == 404
+
+    def test_internal_key_records_with_whatsapp_attribution(self, monkeypatch):
+        # The WhatsApp agent's ">> klafam confirm" path: admin-equivalent, same guards.
+        execs = []
+        self._stub_db(monkeypatch, bene_slug="arindas", execs=execs)
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "test-internal-key")
+        from fastapi.testclient import TestClient as _TC
+        r = _TC(app).post("/api/klafam/contributions/record-for",
+                          headers={"X-Internal-Key": "test-internal-key"},
+                          json={"cycle_id": 1, "member_slug": "priscilla"})
+        assert r.status_code == 200, r.text
+        upd = [e for e in execs if "UPDATE klafam_contributions" in e[0]]
+        assert upd and "Hillary (via WhatsApp)" in upd[0][1]
+
+    def test_internal_key_still_refuses_to_clobber(self, monkeypatch):
+        self._stub_db(monkeypatch, bene_slug="arindas", existing_status="paid")
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "test-internal-key")
+        from fastapi.testclient import TestClient as _TC
+        r = _TC(app).post("/api/klafam/contributions/record-for",
+                          headers={"X-Internal-Key": "test-internal-key"},
+                          json={"cycle_id": 1, "member_slug": "priscilla"})
+        assert r.status_code == 409
+
+    def test_wrong_internal_key_is_unauthenticated(self, monkeypatch):
+        self._stub_db(monkeypatch, bene_slug="arindas")
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "test-internal-key")
+        from fastapi.testclient import TestClient as _TC
+        r = _TC(app).post("/api/klafam/contributions/record-for",
+                          headers={"X-Internal-Key": "nope"},
+                          json={"cycle_id": 1, "member_slug": "priscilla"})
+        assert r.status_code == 401
