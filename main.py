@@ -4580,6 +4580,9 @@ def _read_all_docs() -> str:
     _doc_cache["ts"] = now
     return result
 
+_LIVE_FULL_MEETINGS = 8
+
+
 def _get_live_context() -> str:
     """Live meetings + actions for Ask KimFam, from the app's own database.
 
@@ -4599,9 +4602,17 @@ def _get_live_context() -> str:
         rows = _dbq("SELECT ref, date, venue, key_topics, key_decisions, next_actions, summary, "
                     "conductor_ended_at FROM meetings ORDER BY date ASC, id ASC")
         lines = []
-        for m in rows:
+        # The last _LIVE_FULL_MEETINGS go in full (plus every upcoming one); older meetings get
+        # one line each. Every Ask question carries this block, and it grew ~1.2k characters
+        # per meeting; the full minutes stay searchable through the documents (RAG).
+        full_from = max(0, len(rows) - _LIVE_FULL_MEETINGS)
+        for i, m in enumerate(rows):
             held = bool(m.get("conductor_ended_at")) or (m["date"] and m["date"] < today)
             entry = f"  {m['ref']} | {m['date']} | {'held' if held else 'UPCOMING'}"
+            if i < full_from and held:
+                if m.get("key_topics"): entry += f" | Topics: {_t(m['key_topics'], 90)}"
+                lines.append(entry)
+                continue
             if m.get("venue"):         entry += f" | Venue: {_t(m['venue'], 60)}"
             if m.get("key_topics"):    entry += f" | Topics: {_t(m['key_topics'], 250)}"
             if m.get("key_decisions"): entry += f" | Decisions: {_t(m['key_decisions'], 400)}"
@@ -4610,8 +4621,9 @@ def _get_live_context() -> str:
             lines.append(entry)
         if lines:
             held = [l for l in lines if "| held" in l]
-            sections.append("MEETINGS (all, oldest first; the latest meeting HELD is the last "
-                            "'held' row, UPCOMING rows are scheduled):\n" + "\n".join(lines)
+            sections.append("MEETINGS (oldest first; the last %d in full, older ones as one line "
+                            "each, full minutes in the club documents; the latest meeting HELD is "
+                            "the last 'held' row, UPCOMING rows are scheduled):\n" % _LIVE_FULL_MEETINGS + "\n".join(lines)
                             + (f"\nLatest meeting held: {held[-1].split('|')[0].strip()}" if held else ""))
     except Exception as e:
         sections.append(f"Meeting records unavailable: {e}")

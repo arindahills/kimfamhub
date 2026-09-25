@@ -37,3 +37,15 @@
   summaries); watch prompt size as meetings accumulate and trim to the last N if needed.
 - Watch: model ids retire without warning. The same 404 pattern hit the WhatsApp agent
   (2026-09-08); check both when a provider announces deprecations.
+
+## Amendment 2026-09-25: the question survives, the context stays flat
+
+- **Context**: every Ask question carried all meetings in full (21k characters, growing ~1.2k
+  per meeting; prompts ~48k). Claude got `prompt[:100000]`, and the member's question was the
+  last block, so past 100k the question would be cut first, silently.
+- **Decision**: the question is also stated at the top of the prompt; `fit_prompt` trims the
+  middle (60% head, 40% tail), never the end, for Claude and Groq; the live context carries
+  the last 8 meetings in full (plus any upcoming) and one line per older meeting, whose full
+  minutes remain searchable through the documents. Measured: context 21k → 16.5k, prompt
+  48k → 42.7k, growth ~120 characters per meeting instead of ~1.2k. Stale "Google Sheet"
+  labels removed.

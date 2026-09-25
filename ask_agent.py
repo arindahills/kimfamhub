@@ -169,6 +169,19 @@ def _groq():
         _groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
     return _groq_client
 
+_TRIM_MARK = "\n\n[... context trimmed to fit ...]\n\n"
+
+
+def fit_prompt(prompt: str, limit: int) -> str:
+    """Trim an oversized prompt from the MIDDLE, never the end. A plain prompt[:limit] cut
+    the member's question (the last block) first. Keeps 60% head, 40% tail."""
+    if len(prompt) <= limit:
+        return prompt
+    keep = max(0, limit - len(_TRIM_MARK))
+    head = int(keep * 0.6)
+    return prompt[:head] + _TRIM_MARK + prompt[len(prompt) - (keep - head):]
+
+
 def _chat(prompt: str, max_tokens: int = 1024) -> str:
     """Generate completion: Claude Sonnet → Gemini 2.5 Flash → Groq gpt-oss-120b."""
     import subprocess, time
@@ -178,7 +191,7 @@ def _chat(prompt: str, max_tokens: int = 1024) -> str:
     try:
         env = dict(os.environ); env["HOME"] = "/root"
         r = subprocess.run(
-            ["claude", "-p", prompt[:100000], "--model", "sonnet"],
+            ["claude", "-p", fit_prompt(prompt, 100000), "--model", "sonnet"],
             capture_output=True, text=True, timeout=90, env=env
         )
         if r.returncode == 0 and r.stdout.strip():
@@ -208,7 +221,7 @@ def _chat(prompt: str, max_tokens: int = 1024) -> str:
     try:
         completion = _groq().chat.completions.create(
             model="openai/gpt-oss-120b",
-            messages=[{"role": "user", "content": prompt[:120000]}],
+            messages=[{"role": "user", "content": fit_prompt(prompt, 120000)}],
             max_tokens=max_tokens,
         )
         log.info("Ask KimFam: fell back to Groq")
@@ -739,7 +752,9 @@ def _get_app_guide() -> str:
 
 _SYNTH_PROMPT_TEMPLATE = """You are KimFam Hub AI, the assistant for the KIM Investment Club — a Ugandan family investment club founded by the Arinda/Kikangi family.
 
-The live data block includes today's date, every meeting in the app (held and upcoming) and the action items. Use it to answer questions about the latest or most recent anything.
+MEMBER QUESTION (answer this): {question}
+
+The live data block includes today's date, the recent meetings in full (with a one-line index of older ones; their full minutes are in the club documents) and the action items. Use it to answer questions about the latest or most recent anything.
 Be helpful, warm, and concise. Cite your source (e.g., "from the KIM 016 minutes" or "live data from the Hub"). If you don't have the information, say so honestly rather than guessing.
 
 APP GUIDE (use this to answer ANY questions about how to use KimFam Hub — how to log in, submit payments, record washing bay income, use the calculator, reset a password, navigate to any tab, etc.):
@@ -770,9 +785,9 @@ def synthesizer_node(state: KimFamState) -> KimFamState:
             f"Q: {t['q']}\nA: {t['a']}" for t in turns
         )
 
-    sheet_block = f"LIVE FINANCIAL DATA (Google Sheet):\n{state['sheet_result']}" if state["sheet_result"] else ""
+    sheet_block = f"LIVE MEETINGS AND ACTIONS (KimFam Hub):\n{state['sheet_result']}" if state["sheet_result"] else ""
     rag_block = f"CLUB DOCUMENTS (retrieved):\n{state['rag_result']}" if state["rag_result"] else ""
-    tool_block = f"LIVE APP DATA (authoritative — prefer this over the Sheet for balances/expenses):\n{state.get('tool_result','')}" if state.get("tool_result") else ""
+    tool_block = f"LIVE APP DATA (authoritative for balances/expenses):\n{state.get('tool_result','')}" if state.get("tool_result") else ""
 
     if not sheet_block and not rag_block and not tool_block:
         if state["is_followup"] and state["conversation_history"]:
@@ -825,7 +840,7 @@ def _fallback_answer(prompt: str) -> str | None:
         gc2 = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
         completion = gc2.chat.completions.create(
             model="openai/gpt-oss-120b",
-            messages=[{"role": "user", "content": prompt[:120000]}],
+            messages=[{"role": "user", "content": fit_prompt(prompt, 120000)}],
             max_tokens=1024,
         )
         return completion.choices[0].message.content

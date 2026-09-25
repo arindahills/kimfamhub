@@ -442,3 +442,25 @@ class TestAskClaudeFailureIsVisible:
         m = self._run(monkeypatch, 0, out="   ")
         assert m._ask_claude("hi") == ""
         assert m.ai_unavailable_reason() == "AI service error"
+
+
+class TestAskPromptFit:
+    """prompt[:100000] cut the member's question (the last block) first once a prompt grew
+    past the limit. fit_prompt trims the middle; the question is also at the top."""
+
+    def test_short_prompt_untouched(self):
+        from ask_agent import fit_prompt
+        assert fit_prompt("abc", 100) == "abc"
+
+    def test_long_prompt_keeps_head_and_the_question_at_the_end(self):
+        from ask_agent import fit_prompt
+        p = "HEAD-QUESTION " + "x" * 300000 + " MEMBER QUESTION: what did we decide?"
+        out = fit_prompt(p, 100000)
+        assert len(out) <= 100000
+        assert out.startswith("HEAD-QUESTION")
+        assert out.endswith("MEMBER QUESTION: what did we decide?")
+        assert "context trimmed" in out
+
+    def test_question_is_at_the_top_of_the_template(self):
+        from ask_agent import _SYNTH_PROMPT_TEMPLATE as t
+        assert t.index("{question}") < t.index("{app_guide}")
