@@ -30,7 +30,81 @@ interface ActionItem {
   parent_ref: string | null
   meeting_number: string | null
   meeting_ref: string | null
-  updated_at: string | null
+  note: string | null          // latest update text
+  note_at: string | null       // when it was written (ISO)
+  note_author: string | null
+  update_count: number
+}
+
+interface HistoryEntry {
+  id: number
+  at: string | null
+  author: string
+  type: string
+  text: string
+  old_value: string | null
+  new_value: string | null
+  media_url: string | null
+  media_name: string | null
+}
+
+// Every action update is dated and attributed; show it in club time (EAT).
+function fmtWhen(iso: string | null): string {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString('en-GB', {
+      timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    })
+  } catch { return iso }
+}
+
+const ENTRY_KIND: Record<string, { label: string; color: string }> = {
+  comment:       { label: 'Update',        color: '#93c5fd' },
+  status_change: { label: 'Status',        color: '#fbbf24' },
+  done:          { label: 'Closed',        color: '#4ade80' },
+}
+
+function kindOf(e: HistoryEntry) {
+  if (e.text.startsWith('[From minutes]')) return { label: 'Minutes', color: '#a78bfa' }
+  return ENTRY_KIND[e.type] ?? { label: e.type.replace(/_/g, ' '), color: '#94a3b8' }
+}
+
+function ActionHistory({ refId }: { refId: string }) {
+  const { data, isLoading, error } = useQuery<HistoryEntry[]>({
+    queryKey: ['action-history', refId],
+    queryFn: async () => {
+      const r = await fetch(`/api/actions/history?ref=${encodeURIComponent(refId)}`, { credentials: 'include' })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    },
+  })
+  if (isLoading) return <p className="text-[11px] mt-2" style={{ color: '#64748b' }}>Loading history…</p>
+  if (error || !data) return <p className="text-[11px] mt-2" style={{ color: '#f87171' }}>Could not load history.</p>
+  if (!data.length) return <p className="text-[11px] mt-2" style={{ color: '#64748b' }}>No updates yet.</p>
+  return (
+    <ol className="mt-2 space-y-2" style={{ borderLeft: '1px solid #1e293b', paddingLeft: 10 }}>
+      {data.map(e => {
+        const k = kindOf(e)
+        return (
+          <li key={e.id}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className="text-[10px] font-mono" style={{ color: '#94a3b8' }}>{fmtWhen(e.at)}</span>
+              <span className="text-[10px]" style={{ color: '#cbd5e1' }}>{e.author}</span>
+              <span className="text-[9px] px-1.5 rounded-full" style={{ color: k.color, background: k.color + '22' }}>{k.label}</span>
+            </div>
+            <p className="text-[11px] leading-snug mt-0.5" style={{ color: '#94a3b8', whiteSpace: 'pre-wrap' }}>
+              {e.text.replace(/^\[From minutes\]\s*/, '')}
+            </p>
+            {e.media_url && (
+              <a href={e.media_url} target="_blank" rel="noreferrer" className="text-[10px] hover:underline"
+                style={{ color: '#38bdf8' }}>{e.media_name || 'attachment'}</a>
+            )}
+          </li>
+        )
+      })}
+    </ol>
+  )
 }
 
 const TYPE_STYLE: Record<ItemType, { label: string; color: string; bg: string }> = {
@@ -98,6 +172,7 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
   const [saving, setSaving] = useState(false)
   const [showStatus, setShowStatus] = useState(false)
   const [showTag, setShowTag] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   const isTerminal = item.status === 'done' || item.status === 'cancelled'
 
@@ -193,13 +268,24 @@ function ActionCard({ item, carriedIntoRef, isAdmin, userName, onMarkDone, onAdd
         )}
       </div>
 
-      {/* Latest update */}
-      {item.updated_at && (
-        <div className="mt-2 flex items-start gap-1.5">
-          <span style={{ fontSize: 10, color: '#475569', flexShrink: 0, paddingTop: 1 }}>Update:</span>
-          <span style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>{item.updated_at}</span>
+      {/* Latest update: always with its date and author */}
+      {item.note && (
+        <div className="mt-2">
+          <div className="flex flex-wrap items-center gap-x-2">
+            <span style={{ fontSize: 10, color: '#475569' }}>Latest update</span>
+            {item.note_at && <span className="font-mono" style={{ fontSize: 10, color: '#94a3b8' }}>{fmtWhen(item.note_at)}</span>}
+            {item.note_author && <span style={{ fontSize: 10, color: '#cbd5e1' }}>{item.note_author}</span>}
+          </div>
+          <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>{item.note.replace(/^\[From minutes\]\s*/, '')}</p>
         </div>
       )}
+      {item.update_count > 0 && (
+        <button onClick={() => setShowHistory(h => !h)} className="text-[10px] mt-1 hover:underline"
+          style={{ color: '#64748b' }}>
+          {showHistory ? 'Hide history' : `History (${item.update_count})`}
+        </button>
+      )}
+      {showHistory && <ActionHistory refId={item.id} />}
 
       {/* Inline form */}
       {mode && (
@@ -416,7 +502,10 @@ export default function ActionsPage() {
             parent_ref: a.parent_ref || null,
             meeting_number: a.meeting ? String(a.meeting).replace(/^KIM\s*/i, '') || null : null,
             meeting_ref: a.meeting || null,
-            updated_at: a.note || null,
+            note: a.note || null,
+            note_at: a.note_at || null,
+            note_author: a.note_author || null,
+            update_count: a.update_count ?? 0,
           })
         }
       }

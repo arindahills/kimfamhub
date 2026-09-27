@@ -510,3 +510,32 @@ class TestAskRagRetrieval:
                         meetings=[{"ref": "KIM 008/2026", "date": date(2026, 6, 7)}])
         out = a.rag_tool("What happened at KIM 008?", "minutes")
         assert out.index("kim eight text") < out.index("old 2024 text")
+
+
+class TestActionHistory:
+    """Action updates are dated in the DB; the list used to send only the text."""
+
+    def test_history_newest_first_with_date_and_author(self, monkeypatch):
+        import db as _db
+        from datetime import datetime, timezone
+        rows = [{"id": 2, "created_at": datetime(2026, 9, 27, 16, 2, tzinfo=timezone.utc), "author": "Solomon",
+                 "type": "comment", "text": "later", "old_value": None, "new_value": None,
+                 "media_url": None, "media_name": None},
+                {"id": 1, "created_at": datetime(2026, 8, 16, 16, 52, tzinfo=timezone.utc), "author": "Hillary",
+                 "type": "status_change", "text": "earlier", "old_value": "open", "new_value": "in_progress",
+                 "media_url": None, "media_name": None}]
+        def fake_query(sql, params=None):
+            return [{"id": 7}] if "FROM actions WHERE ref" in sql else rows
+        monkeypatch.setattr(_db, "query", fake_query)
+        from fastapi.testclient import TestClient as _TC
+        r = _TC(app).get("/api/actions/history", params={"ref": "KIM/13/26-8"})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d[0]["at"].startswith("2026-09-27") and d[0]["author"] == "Solomon"
+        assert d[1]["type"] == "status_change" and d[1]["new_value"] == "in_progress"
+
+    def test_history_unknown_action_is_404(self, monkeypatch):
+        import db as _db
+        monkeypatch.setattr(_db, "query", lambda sql, params=None: [])
+        from fastapi.testclient import TestClient as _TC
+        assert _TC(app).get("/api/actions/history", params={"ref": "KIM/99/99-9"}).status_code == 404

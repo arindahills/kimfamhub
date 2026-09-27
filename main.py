@@ -387,9 +387,14 @@ def get_actions(status: str = "open"):
                a.status, a.related_meeting, a.priority, a.effort_hours,
                a.project_id, a.parent_ref, a.blocked_reason, a.item_type,
                m.ref AS meeting_ref,
-               (SELECT text FROM action_updates
-                WHERE action_id = a.id ORDER BY created_at DESC LIMIT 1) AS latest_update
+               lu.text AS latest_update, lu.created_at AS latest_update_at,
+               lu.author AS latest_update_author,
+               (SELECT count(*) FROM action_updates WHERE action_id = a.id) AS update_count
         FROM actions a
+        LEFT JOIN LATERAL (
+            SELECT text, created_at, author FROM action_updates
+            WHERE action_id = a.id ORDER BY created_at DESC LIMIT 1
+        ) lu ON TRUE
         LEFT JOIN meetings m ON m.id = a.meeting_id
         WHERE {where}
         ORDER BY a.ref DESC
@@ -417,6 +422,10 @@ def get_actions(status: str = "open"):
             "status":       r["status"],
             "meeting":      r["meeting_ref"] or r["related_meeting"] or "",
             "note":         r["latest_update"] or "",
+            # Every update is dated in the DB; the list used to drop it (only the text went out).
+            "note_at":      r["latest_update_at"].isoformat() if r.get("latest_update_at") else None,
+            "note_author":  r.get("latest_update_author") or None,
+            "update_count": int(r.get("update_count") or 0),
             "priority":     r["priority"],
             "effort_hours": float(r["effort_hours"]) if r["effort_hours"] else None,
             "project_id":   r["project_id"],
@@ -430,6 +439,24 @@ def get_actions(status: str = "open"):
         for p in people:
             by_person.setdefault(p, []).append(payload)
     return by_person
+
+
+@app.get("/api/actions/history")
+def get_action_history(ref: str):
+    """Every update on one action, newest first: when, who, what kind (comment, status
+    change, minutes carry-over) and what changed. Same visibility as GET /api/actions."""
+    from fastapi import HTTPException as _HE
+    from db import query as _dbq
+    a = _dbq("SELECT id FROM actions WHERE ref=%s", (ref.strip(),))
+    if not a:
+        raise _HE(status_code=404, detail="Action not found")
+    rows = _dbq("""SELECT id, created_at, author, type, text, old_value, new_value, media_url, media_name
+                   FROM action_updates WHERE action_id=%s ORDER BY created_at DESC, id DESC""",
+                (a[0]["id"],))
+    return [{"id": r["id"], "at": r["created_at"].isoformat() if r["created_at"] else None,
+             "author": r["author"] or "", "type": r["type"] or "comment", "text": r["text"] or "",
+             "old_value": r["old_value"], "new_value": r["new_value"],
+             "media_url": r["media_url"], "media_name": r["media_name"]} for r in rows]
 
 
 @app.patch("/api/actions/done")
