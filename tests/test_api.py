@@ -612,7 +612,7 @@ class TestLivestockEngine:
         monkeypatch.setattr(ls, "ready", lambda: True)
         monkeypatch.setattr(ls, "events", lambda pid: [])
         got = {}
-        monkeypatch.setattr(ls, "insert_event", lambda pid, b, who: got.update(pid=pid, owner=b.owner, who=who) or 1)
+        monkeypatch.setattr(ls, "insert_event", lambda pid, b, who, src=None: got.update(pid=pid, owner=b.owner, who=who) or 1)
         body = {"event_type": "opening", "event_date": "2026-09-28", "count": 4, "owner": "Alex"}
         assert TestKlaFamRecordFor._client_as("Alex").post("/api/projects/goats/livestock/event", json=body).status_code == 403
         r = TestKlaFamRecordFor._client_as("Merab").post("/api/projects/goats/livestock/event", json=body)
@@ -622,3 +622,63 @@ class TestLivestockEngine:
             json={"event_type": "birth", "event_date": "2026-09-28", "count": 1}).status_code == 403
         assert TestKlaFamRecordFor._client_as("Israel", role="admin").post("/api/projects/cows/livestock/event",
             json=body).status_code == 404
+
+
+class TestLivestockWhatsApp:
+    """ADR-030: the WhatsApp agent reports with the internal key + reported_by. Same recorder
+    rules as a login; replays are deduplicated; undo only removes the reporter's own entries."""
+
+    BODY = {"event_type": "death", "event_date": "2026-09-28", "count": 1, "owner": "Alex",
+            "cause": "diarrhoea", "reported_by": "Israel", "source_ref": "wa:ABC:0"}
+
+    def _setup(self, monkeypatch, existing=None, events=None, row=None):
+        import livestock as ls
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "k")
+        monkeypatch.setattr(ls, "ready", lambda: True)
+        monkeypatch.setattr(ls, "find_by_source", lambda pid, kind, src: existing)
+        monkeypatch.setattr(ls, "events", lambda pid: events if events is not None else
+                            [{"id": 1, "event_type": "opening", "count": 5, "owner": "Alex"}])
+        monkeypatch.setattr(ls, "row", lambda pid, kind, rid: row)
+        got = {}
+        monkeypatch.setattr(ls, "insert_event", lambda pid, b, who, src=None: got.update(who=who, src=src) or 42)
+        monkeypatch.setattr(ls, "soft_delete", lambda pid, kind, rid, who: got.update(deleted=rid, by=who) or rid)
+        from fastapi.testclient import TestClient as _TC
+        return _TC(app), got
+
+    def test_recorder_via_whatsapp_is_stamped_and_keeps_source_ref(self, monkeypatch):
+        c, got = self._setup(monkeypatch)
+        r = c.post("/api/projects/goats/livestock/event", json=self.BODY, headers={"X-Internal-Key": "k"})
+        assert r.status_code == 200, r.text
+        assert got == {"who": "Dad (Israel) via WhatsApp", "src": "wa:ABC:0"}
+
+    def test_non_recorder_via_whatsapp_is_refused(self, monkeypatch):
+        c, _ = self._setup(monkeypatch)
+        r = c.post("/api/projects/goats/livestock/event", json=dict(self.BODY, reported_by="Alex"),
+                   headers={"X-Internal-Key": "k"})
+        assert r.status_code == 403
+
+    def test_reported_by_is_ignored_without_the_internal_key(self, monkeypatch):
+        c, _ = self._setup(monkeypatch)
+        assert c.post("/api/projects/goats/livestock/event", json=self.BODY).status_code == 401
+        assert c.post("/api/projects/goats/livestock/event", json=self.BODY,
+                      headers={"X-Internal-Key": "wrong"}).status_code == 401
+
+    def test_replayed_message_is_not_recorded_twice(self, monkeypatch):
+        c, got = self._setup(monkeypatch, existing=7, events=[])   # would fail validation if re-validated
+        r = c.post("/api/projects/goats/livestock/event", json=self.BODY, headers={"X-Internal-Key": "k"})
+        assert r.status_code == 200 and r.json() == {"ok": True, "id": 7, "duplicate": True}
+        assert "who" not in got
+
+    def test_undo_only_removes_the_reporters_own_whatsapp_entry(self, monkeypatch):
+        c, got = self._setup(monkeypatch, row={"id": 9, "created_by": "Solomon"})
+        r = c.delete("/api/projects/goats/livestock/event/9", params={"reported_by": "Israel"},
+                     headers={"X-Internal-Key": "k"})
+        assert r.status_code == 404 and "deleted" not in got
+
+    def test_undo_that_would_go_negative_is_refused(self, monkeypatch):
+        evs = [{"id": 1, "event_type": "opening", "count": 2, "owner": "Alex"},
+               {"id": 2, "event_type": "death", "count": 2, "owner": "Alex"}]
+        c, got = self._setup(monkeypatch, events=evs, row={"id": 1, "created_by": "Dad (Israel) via WhatsApp"})
+        r = c.delete("/api/projects/goats/livestock/event/1", params={"reported_by": "Israel"},
+                     headers={"X-Internal-Key": "k"})
+        assert r.status_code == 409 and "Alex" in r.json()["detail"] and "deleted" not in got

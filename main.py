@@ -6955,19 +6955,32 @@ async def sheep_detail(request: Request):
 from sheep import SheepEventIn as _SheepEventIn, SheepExpenseIn as _SheepExpenseIn  # noqa: E402
 
 
-def _livestock_writer(request, project_id):
+def _livestock_writer(request, project_id, reported_by=None):
     """401 no/expired token (clearer on the shared farm device); 404 unknown project; 403 when
-    the member is not one of that project's recorders. Returns the author name."""
+    the member is not one of that project's recorders. Returns (author, via_whatsapp).
+
+    ADR-030: the WhatsApp agent calls with the server's internal key and `reported_by` (the
+    canonical member name it resolved from the sender's phone). The recorder rule is applied to
+    that member exactly as to a login, and the entry is stamped "<display> via WhatsApp"."""
     from fastapi import HTTPException as _HE
     import livestock as _ls
+    import auth as _auth
     if not _ls.config(project_id):
         raise _HE(status_code=404, detail="Not a livestock project")
     payload = _auth_verify(_get_tok(request))
+    via_wa = False
+    if not payload and reported_by and _internal_key_ok(request):
+        m = next((x for x in _auth.MEMBERS if x["name"] == reported_by), None)
+        if not m:
+            raise _HE(status_code=403, detail="Unknown reporter")
+        payload = {"sub": m["name"], "display": m["display"], "role": m["role"]}
+        via_wa = True
     if not payload:
         raise _HE(status_code=401, detail="Auth required")
     if not _ls.can_write(project_id, payload):
         raise _HE(status_code=403, detail="You are not one of the recorders for %s" % _ls.config(project_id)["plural"])
-    return payload.get("display") or payload.get("sub")
+    who = payload.get("display") or payload.get("sub")
+    return (who + " via WhatsApp" if via_wa else who), via_wa
 
 
 def _livestock_ready():
@@ -6981,8 +6994,12 @@ def _livestock_add_event(project_id, body, request):
     from fastapi import HTTPException as _HE
     import livestock as _ls
     import datetime as _dtm
-    author = _livestock_writer(request, project_id)
+    author, via_wa = _livestock_writer(request, project_id, body.reported_by)
     _livestock_ready()
+    src = body.source_ref if via_wa else None
+    dup = _ls.find_by_source(project_id, "event", src)
+    if dup:   # a replayed WhatsApp message: already recorded, do not validate or write again
+        return {"ok": True, "id": dup, "duplicate": True}
     try:
         _dtm.date.fromisoformat(body.event_date)
     except (ValueError, TypeError):
@@ -6991,7 +7008,7 @@ def _livestock_add_event(project_id, body, request):
                                  body.owner, _ls.events(project_id))
     if not ok:
         raise _HE(status_code=422, detail=err)
-    return {"ok": True, "id": _ls.insert_event(project_id, body, author)}
+    return {"ok": True, "id": _ls.insert_event(project_id, body, author, src)}
 
 
 def _livestock_add_expense(project_id, body, request):
@@ -6999,8 +7016,12 @@ def _livestock_add_expense(project_id, body, request):
     import livestock as _ls
     import sheep as _sheep
     import datetime as _dtm
-    author = _livestock_writer(request, project_id)
+    author, via_wa = _livestock_writer(request, project_id, body.reported_by)
     _livestock_ready()
+    src = body.source_ref if via_wa else None
+    dup = _ls.find_by_source(project_id, "expense", src)
+    if dup:
+        return {"ok": True, "id": dup, "duplicate": True}
     try:
         _dtm.date.fromisoformat(body.spent_on)
     except (ValueError, TypeError):
@@ -7014,14 +7035,24 @@ def _livestock_add_expense(project_id, body, request):
     cfg = _ls.config(project_id)
     if cfg["owned_by"] == "owners" and body.owner and body.owner not in cfg["owners"]:
         raise _HE(status_code=422, detail="owner must be one of the family members who own %s" % cfg["plural"])
-    return {"ok": True, "id": _ls.insert_expense(project_id, body, author)}
+    return {"ok": True, "id": _ls.insert_expense(project_id, body, author, src)}
 
 
 def _livestock_delete(project_id, kind, row_id, request):
     from fastapi import HTTPException as _HE
     import livestock as _ls
-    author = _livestock_writer(request, project_id)
+    author, via_wa = _livestock_writer(request, project_id, request.query_params.get("reported_by"))
     _livestock_ready()
+    r = _ls.row(project_id, kind, row_id)
+    if not r:
+        raise _HE(status_code=404, detail="%s not found" % kind.capitalize())
+    # WhatsApp "undo" may only remove that reporter's own WhatsApp entries (ADR-030).
+    if via_wa and r.get("created_by") != author:
+        raise _HE(status_code=404, detail="%s not found" % kind.capitalize())
+    if kind == "event":
+        err = _ls.delete_would_go_negative(project_id, row_id, _ls.events(project_id))
+        if err:
+            raise _HE(status_code=409, detail=err)
     removed = _ls.soft_delete(project_id, kind, row_id, author)
     if not removed:
         raise _HE(status_code=404, detail="%s not found" % kind.capitalize())

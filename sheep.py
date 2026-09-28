@@ -154,8 +154,8 @@ def livestock_cols_ready():
         return True
     try:
         from db import query as _q, db as _db
-        want = {("sheep_events", c) for c in ("project_id", "owner", "deleted_at", "deleted_by")} | \
-               {("sheep_expenses", c) for c in ("project_id", "owner", "deleted_at", "deleted_by")}
+        cols = ("project_id", "owner", "deleted_at", "deleted_by", "source_ref")
+        want = {("sheep_events", c) for c in cols} | {("sheep_expenses", c) for c in cols}
         have = {(r["table_name"], r["column_name"]) for r in _q(
             "SELECT table_name, column_name FROM information_schema.columns "
             "WHERE table_name IN ('sheep_events','sheep_expenses')")}
@@ -168,6 +168,11 @@ def livestock_cols_ready():
                         cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS owner TEXT" % t)
                         cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ" % t)
                         cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS deleted_by TEXT" % t)
+                        # ADR-030: one row per WhatsApp message part, so a replayed message
+                        # (agent restart) can never record the same event twice.
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS source_ref TEXT" % t)
+                        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS %s_source_ref_uq ON %s(project_id, source_ref) "
+                                    "WHERE source_ref IS NOT NULL" % (t, t))
                     cur.execute("CREATE INDEX IF NOT EXISTS sheep_events_project ON sheep_events(project_id, event_date)")
                     cur.execute("CREATE INDEX IF NOT EXISTS sheep_expenses_project ON sheep_expenses(project_id, spent_on)")
         _LIVESTOCK_COLS = True
@@ -356,6 +361,9 @@ class SheepEventIn(_BM):
     counterparty: _Optional[str] = None
     owner: _Optional[str] = None           # whose animal (goats are individually owned, ADR-029)
     note: _Optional[str] = None
+    # ADR-030: only honoured on the internal-key (WhatsApp) path; ignored for logged-in users.
+    reported_by: _Optional[str] = None
+    source_ref: _Optional[str] = None
 
 
 class SheepExpenseIn(_BM):
@@ -365,6 +373,8 @@ class SheepExpenseIn(_BM):
     paid_by: _Optional[str] = None
     owner: _Optional[str] = None
     note: _Optional[str] = None
+    reported_by: _Optional[str] = None
+    source_ref: _Optional[str] = None
 
 
 # ── writes (Solomon/admin only; validators are pure + unit-tested) ────────────

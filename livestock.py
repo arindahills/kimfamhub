@@ -167,22 +167,60 @@ def expenses(project_id):
                  "ORDER BY spent_on DESC, id DESC", (project_id,))
 
 
-def insert_event(project_id, b, created_by):
+def _existing(table, project_id, source_ref):
+    from db import query as _q
+    r = _q("SELECT id FROM %s WHERE project_id=%%s AND source_ref=%%s" % table, (project_id, source_ref))
+    return r[0]["id"] if r else None
+
+
+def find_by_source(project_id, kind, source_ref):
+    """The row a replayed WhatsApp message already created, if any (ADR-030)."""
+    if not source_ref:
+        return None
+    return _existing("sheep_events" if kind == "event" else "sheep_expenses", project_id, source_ref)
+
+
+def insert_event(project_id, b, created_by, source_ref=None):
     from db import execute as _exec
     r = _exec("INSERT INTO sheep_events (project_id, event_type, event_date, count, cause, amount_ugx, "
-              "counterparty, owner, note, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+              "counterparty, owner, note, created_by, source_ref) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+              "ON CONFLICT (project_id, source_ref) WHERE source_ref IS NOT NULL DO NOTHING RETURNING id",
               (project_id, b.event_type, b.event_date, int(b.count), b.cause,
                b.amount_ugx if b.event_type in ("sale", "purchase") else None,
-               b.counterparty, b.owner, b.note, created_by))
-    return r[0] if r else None
+               b.counterparty, b.owner, b.note, created_by, source_ref))
+    return r[0] if r else _existing("sheep_events", project_id, source_ref)
 
 
-def insert_expense(project_id, b, created_by):
+def insert_expense(project_id, b, created_by, source_ref=None):
     from db import execute as _exec
     r = _exec("INSERT INTO sheep_expenses (project_id, category, amount_ugx, spent_on, paid_by, owner, note, "
-              "created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-              (project_id, b.category, int(b.amount_ugx), b.spent_on, b.paid_by, b.owner, b.note, created_by))
-    return r[0] if r else None
+              "created_by, source_ref) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+              "ON CONFLICT (project_id, source_ref) WHERE source_ref IS NOT NULL DO NOTHING RETURNING id",
+              (project_id, b.category, int(b.amount_ugx), b.spent_on, b.paid_by, b.owner, b.note,
+               created_by, source_ref))
+    return r[0] if r else _existing("sheep_expenses", project_id, source_ref)
+
+
+def row(project_id, kind, row_id):
+    """One live row (for the delete guards), or None."""
+    from db import query as _q
+    table = "sheep_events" if kind == "event" else "sheep_expenses"
+    r = _q("SELECT * FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % table,
+           (int(row_id), project_id))
+    return dict(r[0]) if r else None
+
+
+def delete_would_go_negative(project_id, row_id, events_now):
+    """Removing an inflow (opening, birth, purchase) must not leave any owner, or the herd,
+    below zero when later deaths or sales depended on it. Returns an error string or None."""
+    rest = [e for e in events_now if e.get("id") != int(row_id)]
+    for o, b in compute_by_owner(rest).items():
+        if b["alive"] < 0:
+            return ("removing it would leave %s with %d %s on record; remove the later death or sale first"
+                    % (o, b["alive"], config(project_id)["plural"]))
+    if sum(b["alive"] for b in compute_by_owner(rest).values()) < 0:   # compute_flock clamps at 0
+        return "removing it would leave the herd below zero; remove the later death or sale first"
+    return None
 
 
 def soft_delete(project_id, kind, row_id, actor):
