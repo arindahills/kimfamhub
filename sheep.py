@@ -139,6 +139,42 @@ def compute_financials(events, expenses):
 
 
 _READY = False
+_LIVESTOCK_COLS = False
+_LIVESTOCK_LOCK_KEY = 778812
+
+
+def livestock_cols_ready():
+    """ADR-029: the sheep tables also hold goats (and later other livestock), scoped by
+    project_id, with an owner and soft-delete columns. Checked against information_schema first
+    and migrated under an advisory lock (two workers can race here). A failure here must never
+    take the working sheep tracker down: sheep reads fall back to the unscoped query, and only
+    the livestock features (goats, writes, deletes) report unavailable."""
+    global _LIVESTOCK_COLS
+    if _LIVESTOCK_COLS:
+        return True
+    try:
+        from db import query as _q, db as _db
+        want = {("sheep_events", c) for c in ("project_id", "owner", "deleted_at", "deleted_by")} | \
+               {("sheep_expenses", c) for c in ("project_id", "owner", "deleted_at", "deleted_by")}
+        have = {(r["table_name"], r["column_name"]) for r in _q(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_name IN ('sheep_events','sheep_expenses')")}
+        if not want <= have:
+            with _db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LIVESTOCK_LOCK_KEY,))
+                    for t in ("sheep_events", "sheep_expenses"):
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'sheep'" % t)
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS owner TEXT" % t)
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ" % t)
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS deleted_by TEXT" % t)
+                    cur.execute("CREATE INDEX IF NOT EXISTS sheep_events_project ON sheep_events(project_id, event_date)")
+                    cur.execute("CREATE INDEX IF NOT EXISTS sheep_expenses_project ON sheep_expenses(project_id, spent_on)")
+        _LIVESTOCK_COLS = True
+    except Exception as _e:
+        import logging
+        logging.getLogger("uvicorn.error").warning("livestock columns unavailable: %s", _e)
+    return _LIVESTOCK_COLS
 
 
 def ensure_sheep_tables():
@@ -159,6 +195,7 @@ def ready():
         ensure_sheep_tables()
         seed_sheep_baseline()
         _READY = True
+        livestock_cols_ready()   # best effort; sheep stays usable if this fails
     except Exception as _e:
         import logging
         logging.getLogger("uvicorn.error").warning("sheep.ready() failed: %s", _e)
@@ -215,10 +252,22 @@ def sheep_detail_data():
     """Live analytics for the sheep card, computed from sheep_* tables. Assembles a
     well-named nested dict; DetailModal renders KPI rows / feeds / hero metrics generically."""
     from db import query as _q
-    events = _fmt_rows(_q("SELECT event_type, event_date, count, cause, amount_ugx, counterparty, note "
-                          "FROM sheep_events ORDER BY event_date DESC, id DESC"))
-    expenses = _fmt_rows(_q("SELECT category, amount_ugx, spent_on, paid_by, note "
-                            "FROM sheep_expenses ORDER BY spent_on DESC, id DESC"))
+    # Scoped to sheep (the tables also hold goats since ADR-029), excluding soft-deleted rows.
+    # The unscoped read is used ONLY when those columns do not exist at all (pre-migration, so no
+    # goats or soft-deleted rows can exist); any other error surfaces instead of mixing goats in.
+    ev_sql = ("SELECT id, event_type, event_date, count, cause, amount_ugx, counterparty, note "
+              "FROM sheep_events%s ORDER BY event_date DESC, id DESC")
+    ex_sql = ("SELECT id, category, amount_ugx, spent_on, paid_by, note "
+              "FROM sheep_expenses%s ORDER BY spent_on DESC, id DESC")
+    scope = " WHERE project_id='sheep' AND deleted_at IS NULL"
+    try:
+        events = _fmt_rows(_q(ev_sql % scope))
+        expenses = _fmt_rows(_q(ex_sql % scope))
+    except Exception as e:
+        if "UndefinedColumn" not in type(e).__name__ and "does not exist" not in str(e):
+            raise
+        events = _fmt_rows(_q(ev_sql % ""))
+        expenses = _fmt_rows(_q(ex_sql % ""))
     flock = compute_flock(events)
     fin = compute_financials(events, expenses)
 
@@ -272,8 +321,12 @@ def sheep_detail_data():
         "expense_breakdown": fin["expense_by_category"],
         "chart": compute_monthly(events),   # flock trend + births/deaths for the live card charts
         "alerts": compute_alerts(events),   # mortality + drought/silage contingency flags
-        "recent_events": events[:12],
-        "recent_expenses": expenses[:12],
+        # id + `date` are what the entry list needs (it read e.id / e.date, which never existed,
+        # so its dates showed "undefined" and delete could not work).
+        "recent_events": [{**{k: v for k, v in e.items() if k != "event_date"}, "date": e["event_date"]}
+                          for e in events[:12]],
+        "recent_expenses": [{**{k: v for k, v in x.items() if k != "spent_on"}, "date": x["spent_on"]}
+                            for x in expenses[:12]],
         "next_steps": [
             {"step": "Replough paddocks", "target": "Sep 2026"},
             {"step": "Broadcast pasture seeds", "target": "Sep 2026"},
@@ -301,6 +354,7 @@ class SheepEventIn(_BM):
     cause: _Optional[str] = None          # Optional so the frontend's explicit JSON null is accepted
     amount_ugx: _Optional[int] = None
     counterparty: _Optional[str] = None
+    owner: _Optional[str] = None           # whose animal (goats are individually owned, ADR-029)
     note: _Optional[str] = None
 
 
@@ -309,6 +363,7 @@ class SheepExpenseIn(_BM):
     amount_ugx: int
     spent_on: str
     paid_by: _Optional[str] = None
+    owner: _Optional[str] = None
     note: _Optional[str] = None
 
 
@@ -348,43 +403,6 @@ def validate_expense(category, amount_ugx):
     return True, None
 
 
-def current_alive():
-    """Dorper-line alive count from the event log (for the death/sale sanity check)."""
-    from db import query as _q
-    rows = _q("SELECT event_type, count FROM sheep_events")
-    return compute_flock([dict(r) for r in rows])["alive"]
-
-
-def delete_event(event_id, actor):
-    from db import execute as _exec
-    r = _exec("DELETE FROM sheep_events WHERE id=%s RETURNING id", (int(event_id),))
-    return r[0] if r else None
-
-
-def delete_expense(expense_id, actor):
-    from db import execute as _exec
-    r = _exec("DELETE FROM sheep_expenses WHERE id=%s RETURNING id", (int(expense_id),))
-    return r[0] if r else None
-
-
-def insert_event(event_type, event_date, count, cause, amount_ugx, counterparty, note, created_by):
-    from db import execute as _exec
-    r = _exec(
-        "INSERT INTO sheep_events (event_type, event_date, count, cause, amount_ugx, counterparty, note, created_by) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (event_type, event_date, int(count), cause, amount_ugx, counterparty, note, created_by))
-    return r[0] if r else None   # plain cursor → tuple; use r[0], never r["id"]
-
-
-def insert_expense(category, amount_ugx, spent_on, paid_by, note, created_by):
-    from db import execute as _exec
-    r = _exec(
-        "INSERT INTO sheep_expenses (category, amount_ugx, spent_on, paid_by, note, created_by) "
-        "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-        (category, int(amount_ugx), spent_on, paid_by, note, created_by))
-    return r[0] if r else None
-
-
 # ── monthly time-series for the live card charts (pure, unit-tested) ──────────
 def compute_monthly(events):
     """events with event_type/event_date/count → per-event-month buckets with cumulative
@@ -419,41 +437,9 @@ def compute_monthly(events):
     return {"months": months, "flock": flock, "births": births, "deaths": deaths}
 
 
-# ── alerts (pure, unit-tested) — mortality + drought/silage contingency ───────
-import datetime as _dt_alert
-
-# Dry-season window for this region (per KIM 015 drought→silage contingency): Jun–Sep.
-_DRY_MONTHS = (6, 7, 8, 9)
-_MORTALITY_WINDOW_DAYS = 90
-_MORTALITY_ALERT_COUNT = 2
-
-
+# ── alerts — delegated to the shared livestock engine (ADR-029) ───────────────
 def compute_alerts(events, today=None):
-    """Pure. Returns a list of {level, kind, text}. `today` is a date (defaults to today)."""
-    if today is None:
-        today = _dt_alert.date.today()
-    alerts = []
-    # mortality: unusual recent deaths → investigate & vaccinate
-    cutoff = today - _dt_alert.timedelta(days=_MORTALITY_WINDOW_DAYS)
-    recent_deaths, causes = 0, set()
-    for e in events:
-        if e.get("event_type") != "death":
-            continue
-        d = e.get("event_date")
-        try:
-            ed = _dt_alert.date.fromisoformat(str(d)[:10])
-            cnt = int(e.get("count") or 0)
-        except (ValueError, TypeError):
-            continue
-        if ed >= cutoff:
-            recent_deaths += cnt
-            causes.add((e.get("cause") or "unknown"))
-    if recent_deaths >= _MORTALITY_ALERT_COUNT:
-        cause_txt = "cause unknown — investigate & vaccinate" if causes == {"unknown"} else ("causes: " + ", ".join(sorted(causes)))
-        alerts.append({"level": "warn", "kind": "mortality",
-                       "text": "%d sheep deaths in the last %d days (%s)." % (recent_deaths, _MORTALITY_WINDOW_DAYS, cause_txt)})
-    # drought → silage contingency (seasonal flag)
-    if today.month in _DRY_MONTHS:
-        alerts.append({"level": "info", "kind": "drought",
-                       "text": "Dry-season window (Jun–Sep) — prepare silage and consider moving animals to the home farm (KIM 015 contingency)."})
-    return alerts
+    """Sheep alerts come from the shared livestock engine (ADR-029): threshold, noun and the
+    dry-season note live in livestock.LIVESTOCK['sheep']."""
+    import livestock as _ls
+    return _ls.compute_alerts(events, _ls.config("sheep"), today)

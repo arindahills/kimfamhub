@@ -8,7 +8,7 @@ import { MiniChart, type Series } from '@/components/projects/MiniChart'
 import { cn, ugx } from '@/lib/utils'
 
 /** Projects with a /detail analysis endpoint. */
-export const ANALYSABLE = new Set(['chicken', 'trees', 'sheep', 'washing_bay', 'irrigation', 'dairy', 'bees'])
+export const ANALYSABLE = new Set(['chicken', 'trees', 'sheep', 'goats', 'washing_bay', 'irrigation', 'dairy', 'bees'])
 
 type Num = (number | null)[]
 interface ChartData {
@@ -59,9 +59,12 @@ function KpiRows({ obj }: { obj: Record<string, unknown> }) {
   )
 }
 
+// Internal fields the API carries for the entry forms, not for people (row ids, ownership flag).
+const HIDDEN_KEYS = new Set(['id', 'owned_by'])
+
 /* ── Log streams: each row → a clean feed card (no tables) ───────────────── */
 function FeedCard({ item }: { item: Record<string, unknown> }) {
-  const entries = Object.entries(item).filter(([, v]) => isScalar(v))
+  const entries = Object.entries(item).filter(([k, v]) => isScalar(v) && !HIDDEN_KEYS.has(k))
   const find = (re: RegExp) => entries.find(([k, v]) => re.test(k) && !isLongText(v))?.[0]
   const dateK = find(/date|when|time|month|year/i)
   const qtyK = find(/\b(qty|quantity|count|units?|number|head)\b/i)
@@ -237,7 +240,7 @@ export function DetailModal({
             )}
 
             {Object.entries(data).map(([key, value]) => {
-              if (key === 'chart_data' || key === 'projection' || value == null) return null
+              if (key === 'chart_data' || key === 'projection' || HIDDEN_KEYS.has(key) || value == null) return null
               if (key === 'risks' && Array.isArray(value) && value.length) {
                 return <RisksSection key={key} risks={value as { risk: string; probability: string; impact: string; note?: string }[]} />
               }

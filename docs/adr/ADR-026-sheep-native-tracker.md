@@ -70,3 +70,8 @@ A native tracker in `sheep.py`, three Postgres tables, data entered in-app (NOT 
   and get live flock/mortality/expense data — no separate embedding needed (live > stale index).
 - The seed writes real financial history at first request; it is documented and idempotent,
   but is data, not schema — revisit if a project ever needs a clean unseeded start.
+
+## Amendment 2026-09-28
+The "delete to correct a mistake" path described above never worked from the UI: the entry list
+read `id`/`date` fields the API did not return. Fixed, made soft (who and when are kept), and
+generalised to every livestock project in ADR-029.

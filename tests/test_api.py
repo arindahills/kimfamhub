@@ -539,3 +539,86 @@ class TestActionHistory:
         monkeypatch.setattr(_db, "query", lambda sql, params=None: [])
         from fastapi.testclient import TestClient as _TC
         assert _TC(app).get("/api/actions/history", params={"ref": "KIM/99/99-9"}).status_code == 404
+
+
+class TestLivestockEngine:
+    """ADR-029: goats on the sheep engine. Goats are individually owned, so counts, checks and
+    money are per owner; the club never shows goat money as its own."""
+
+    EV = [
+        {"event_type": "opening", "count": 5, "owner": "Alex"},
+        {"event_type": "opening", "count": 2, "owner": "Viola"},
+        {"event_type": "birth", "count": 1, "owner": "Viola"},
+        {"event_type": "sale", "count": 1, "owner": "Alex", "amount_ugx": 250000},
+    ]
+
+    def test_by_owner_counts_and_money(self):
+        import livestock as ls
+        b = ls.compute_by_owner(self.EV)
+        assert b["Alex"]["alive"] == 4 and b["Alex"]["sales_ugx"] == 250000
+        assert b["Viola"]["alive"] == 3 and b["Viola"]["births"] == 1
+
+    def test_second_opening_for_same_owner_is_rejected(self):
+        import livestock as ls
+        ok, err = ls.validate_write("goats", "opening", 6, None, "Alex", self.EV)
+        assert not ok and "already has an opening count" in err
+
+    def test_opening_needs_an_owner(self):
+        import livestock as ls
+        ok, err = ls.validate_write("goats", "opening", 3, None, None, self.EV)
+        assert not ok and "owner" in err
+
+    def test_death_cannot_exceed_that_owners_count(self):
+        import livestock as ls
+        ok, err = ls.validate_write("goats", "death", 3, None, "Viola", self.EV)   # herd has 7, Viola has 3
+        assert ok
+        ok, err = ls.validate_write("goats", "death", 4, None, "Viola", self.EV)
+        assert not ok and "Viola has only 3" in err
+
+    def test_owner_must_be_a_goat_owner(self):
+        import livestock as ls
+        ok, err = ls.validate_write("goats", "birth", 1, None, "Solomon", self.EV)
+        assert not ok and "owner" in err
+
+    def test_goats_mortality_alert_uses_goat_threshold_and_noun(self):
+        import livestock as ls, datetime as dt
+        today = dt.date(2026, 10, 15)                      # outside the dry season
+        deaths = [{"event_type": "death", "event_date": "2026-10-01", "count": 3, "cause": "unknown"}]
+        assert ls.compute_alerts(deaths, ls.config("goats"), today) == []        # 3 < 4 for ~55 head
+        a = ls.compute_alerts(deaths + [dict(deaths[0], count=1)], ls.config("goats"), today)
+        assert a and "goat deaths" in a[0]["text"]
+
+    def test_who_can_record(self):
+        import livestock as ls
+        merab, solomon = {"sub": "Merab", "role": "member"}, {"sub": "Solomon", "role": "member"}
+        alex, admin = {"sub": "Alex", "role": "member"}, {"sub": "Israel", "role": "admin"}
+        assert ls.can_write("goats", merab) and not ls.can_write("sheep", merab)
+        assert ls.can_write("goats", solomon) and ls.can_write("sheep", solomon)
+        assert not ls.can_write("goats", alex)
+        assert ls.can_write("goats", admin) and ls.can_write("sheep", admin)
+        assert not ls.can_write("cows", admin)
+
+    def test_delete_is_soft_and_scoped_to_the_project(self, monkeypatch):
+        import livestock as ls, db as _db
+        seen = []
+        monkeypatch.setattr(_db, "execute", lambda sql, params=None: seen.append((sql, params)) or (9,))
+        assert ls.soft_delete("goats", "event", 9, "Merab") == 9
+        sql, params = seen[0]
+        assert sql.startswith("UPDATE sheep_events SET deleted_at=now()") and "project_id=%s" in sql
+        assert params == ("Merab", 9, "goats")
+
+    def test_goats_write_route_gate_and_insert(self, monkeypatch):
+        import livestock as ls
+        monkeypatch.setattr(ls, "ready", lambda: True)
+        monkeypatch.setattr(ls, "events", lambda pid: [])
+        got = {}
+        monkeypatch.setattr(ls, "insert_event", lambda pid, b, who: got.update(pid=pid, owner=b.owner, who=who) or 1)
+        body = {"event_type": "opening", "event_date": "2026-09-28", "count": 4, "owner": "Alex"}
+        assert TestKlaFamRecordFor._client_as("Alex").post("/api/projects/goats/livestock/event", json=body).status_code == 403
+        r = TestKlaFamRecordFor._client_as("Merab").post("/api/projects/goats/livestock/event", json=body)
+        assert r.status_code == 200, r.text
+        assert got == {"pid": "goats", "owner": "Alex", "who": "Merab"}
+        assert TestKlaFamRecordFor._client_as("Merab").post("/api/projects/sheep/event",
+            json={"event_type": "birth", "event_date": "2026-09-28", "count": 1}).status_code == 403
+        assert TestKlaFamRecordFor._client_as("Israel", role="admin").post("/api/projects/cows/livestock/event",
+            json=body).status_code == 404

@@ -485,9 +485,9 @@ def _fetch_project_json(project_id: str, path: str = "detail") -> dict:
         log.warning(f"_fetch_project_json {project_id}/{path}: {e}")
         return {}
 
-_PROJECT_IDS = ["trees", "sheep", "washing_bay", "irrigation", "dairy", "bees", "chicken"]
+_PROJECT_IDS = ["trees", "sheep", "goats", "washing_bay", "irrigation", "dairy", "bees", "chicken"]
 _PROJECT_NAMES = {
-    "trees": "Tree Planting", "sheep": "Sheep", "washing_bay": "Washing Bay",
+    "trees": "Tree Planting", "sheep": "Sheep", "goats": "Goats", "washing_bay": "Washing Bay",
     "irrigation": "Irrigation/Bananas", "dairy": "Dairy", "bees": "Beekeeping", "chicken": "Chicken",
 }
 
@@ -517,6 +517,13 @@ def tool_project_analysis(project_id: str) -> str:
         alerts = data.get("alerts", [])
         if alerts:
             lines.append("  alerts: " + "; ".join(a.get("text", "") for a in alerts if isinstance(a, dict)))
+        by_owner = data.get("by_owner")
+        if isinstance(by_owner, dict) and by_owner:
+            lines.append("  by owner (now/born/died/sold/sales UGX): " + "; ".join(
+                "%s %s/%s/%s/%s/%s" % (o, r.get("alive"), r.get("births"), r.get("deaths"), r.get("sold"), r.get("sales_ugx"))
+                for o, r in by_owner.items() if isinstance(r, dict)))
+        if data.get("money_note"):
+            lines.append("  money: " + data["money_note"])
         # Carry the caveats so the AI never states Dorper-only counts or the illustrative
         # valuation as whole-flock fact to the family.
         fl = data.get("flock", {})
@@ -559,10 +566,16 @@ def tool_portfolio_overview() -> str:
             continue
         name = _PROJECT_NAMES.get(pid, pid)
         fm = data.get("financial_metrics", {})
-        if not fm and isinstance(data.get("summary"), dict):   # live-tracker shape (sheep)
+        if not fm and isinstance(data.get("summary"), dict):   # live livestock-tracker shape (sheep, goats)
             s = data["summary"]
-            parts = [f"flock(Dorper)={s.get('dorper_line_alive')}", f"deaths={s.get('total_deaths')}",
-                     f"expenses={s.get('expenses_to_date')}", f"net_est={s.get('net_position')}"]
+            alive = s.get("alive", s.get("dorper_line_alive"))
+            label = "flock(Dorper line only)" if pid == "sheep" else "on_record"
+            parts = [f"{label}={alive}", f"deaths={s.get('total_deaths')}",
+                     f"expenses={s.get('expenses_to_date')}"]
+            if data.get("owned_by") == "owners":
+                parts.append("owned by individual members (no club P&L)")
+            elif s.get("net_position") is not None:
+                parts.append(f"net_est={s.get('net_position')}")
         else:
             parts = [f"{k}={v}" for k, v in list(fm.items())[:4]]
         lines.append(f"  {name}: {', '.join(parts) if parts else '-'}")
@@ -699,7 +712,7 @@ DATA TOOLS available (pick any that help answer; live PostgreSQL data):
 - "expenditure"   → recorded club expenses (what money was spent on)
 - "my_payments"        → the asking member's own payment submission history
 - "project_analysis"   → LIVE financial metrics for a specific project: payback, ROI, revenue, capex.
-                          Also set "project_id" to: trees, sheep, washing_bay, irrigation, dairy, bees, chicken
+                          Also set "project_id" to: trees, sheep, goats, washing_bay, irrigation, dairy, bees, chicken
 - "portfolio_overview" → LIVE snapshot of ALL projects key metrics side by side for comparison
 - "project_audit"      → how numbers were calculated: assumptions, formulas, data gaps. Also set "project_id"
 - "equity_models"      → the EQUITY VOTE: per-family stake under Models A/B/C (the KIM 008/2026 vote). Use for
@@ -721,6 +734,7 @@ Guidance:
 - "what did we spend on X" / "expenses" → tools=["expenditure"]
 - "my payment history" / "what have I paid" → tools=["my_payments"]
 - "what is [project] payback/ROI/revenue/profit" → tools=["project_analysis"], project_id="<pid>"
+- "how are the goats doing" / "how many goats (does X have)" / "goat deaths / births / sales" / "whose goats" / "goats vet / feed" → tools=["project_analysis"], project_id="goats"
 - "how is the sheep project doing" / "how many sheep died / sheep deaths / mortality" / "sheep flock / how many sheep" / "sheep vaccines / vet / feed / expenses" / "money sent to buy lambs" → tools=["project_analysis"], project_id="sheep"
 - "how was [metric] calculated" / "show assumptions" / "is [project] profitable" → tools=["project_audit"], project_id="<pid>"
 - "rank projects" / "best investment" / "compare projects" / "portfolio" → tools=["portfolio_overview"]

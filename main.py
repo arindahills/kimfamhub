@@ -6951,93 +6951,130 @@ async def sheep_detail(request: Request):
     return _sheep.sheep_detail_data()
 
 
-# ── Sheep tracker writes — Solomon/admin only (Epic #16, ADR-026) ─────────────
+# ── Livestock tracker (sheep, goats, …) — ADR-026, generalised in ADR-029 ─────
 from sheep import SheepEventIn as _SheepEventIn, SheepExpenseIn as _SheepExpenseIn  # noqa: E402
 
 
-def _sheep_writer(request):
-    """Auth dependency: only Solomon or an admin may record sheep data. Returns the author name.
-    401 for no/expired token (clearer on the shared farm device), 403 for wrong member."""
+def _livestock_writer(request, project_id):
+    """401 no/expired token (clearer on the shared farm device); 404 unknown project; 403 when
+    the member is not one of that project's recorders. Returns the author name."""
     from fastapi import HTTPException as _HE
+    import livestock as _ls
+    if not _ls.config(project_id):
+        raise _HE(status_code=404, detail="Not a livestock project")
     payload = _auth_verify(_get_tok(request))
     if not payload:
         raise _HE(status_code=401, detail="Auth required")
-    if payload.get("sub") != "Solomon" and payload.get("role") != "admin":
-        raise _HE(status_code=403, detail="Only Solomon or an admin can record sheep data")
+    if not _ls.can_write(project_id, payload):
+        raise _HE(status_code=403, detail="You are not one of the recorders for %s" % _ls.config(project_id)["plural"])
     return payload.get("display") or payload.get("sub")
 
 
-@app.post("/api/projects/sheep/event")
-def sheep_add_event(body: _SheepEventIn, request: Request):
-    """Record a birth / death(+cause) / sale / purchase / opening adjustment."""
+def _livestock_ready():
     from fastapi import HTTPException as _HE
-    import sheep as _sheep
-    author = _sheep_writer(request)
-    if not _sheep.ready():
-        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+    import livestock as _ls
+    if not _ls.ready():
+        raise _HE(status_code=503, detail="The livestock tracker is initialising — please retry shortly")
+
+
+def _livestock_add_event(project_id, body, request):
+    from fastapi import HTTPException as _HE
+    import livestock as _ls
     import datetime as _dtm
+    author = _livestock_writer(request, project_id)
+    _livestock_ready()
     try:
         _dtm.date.fromisoformat(body.event_date)
     except (ValueError, TypeError):
         raise _HE(status_code=422, detail="event_date must be YYYY-MM-DD")
-    ok, err = _sheep.validate_event(body.event_type, body.count, body.amount_ugx)
+    ok, err = _ls.validate_write(project_id, body.event_type, body.count, body.amount_ugx,
+                                 body.owner, _ls.events(project_id))
     if not ok:
         raise _HE(status_code=422, detail=err)
-    if body.event_type in ("death", "sale") and body.count > _sheep.current_alive():
-        raise _HE(status_code=422, detail="%d exceeds the current live flock — check the entry" % body.count)
-    _id = _sheep.insert_event(body.event_type, body.event_date, body.count, body.cause,
-                              body.amount_ugx, body.counterparty, body.note, author)
-    return {"ok": True, "id": _id}
+    return {"ok": True, "id": _ls.insert_event(project_id, body, author)}
 
 
-@app.post("/api/projects/sheep/expense")
-def sheep_add_expense(body: _SheepExpenseIn, request: Request):
-    """Record a categorized expense (vaccines = vet, ear-tag, pasture, feed/silage, …)."""
+def _livestock_add_expense(project_id, body, request):
     from fastapi import HTTPException as _HE
+    import livestock as _ls
     import sheep as _sheep
-    author = _sheep_writer(request)
-    if not _sheep.ready():
-        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
     import datetime as _dtm
+    author = _livestock_writer(request, project_id)
+    _livestock_ready()
     try:
         _dtm.date.fromisoformat(body.spent_on)
     except (ValueError, TypeError):
         raise _HE(status_code=422, detail="spent_on must be YYYY-MM-DD")
-    ok, err = _sheep.validate_expense(body.category, body.amount_ugx)
+    cats = _ls.config(project_id)["expense_categories"]
+    if body.category not in cats:
+        raise _HE(status_code=422, detail="category must be one of %s" % (cats,))
+    ok, err = _sheep.validate_expense("other", body.amount_ugx)   # amount bounds only
     if not ok:
         raise _HE(status_code=422, detail=err)
-    _id = _sheep.insert_expense(body.category, body.amount_ugx, body.spent_on,
-                                body.paid_by, body.note, author)
-    return {"ok": True, "id": _id}
+    cfg = _ls.config(project_id)
+    if cfg["owned_by"] == "owners" and body.owner and body.owner not in cfg["owners"]:
+        raise _HE(status_code=422, detail="owner must be one of the family members who own %s" % cfg["plural"])
+    return {"ok": True, "id": _ls.insert_expense(project_id, body, author)}
 
 
-# JUSTIFICATION-A3: net-new correction-path DELETE endpoints (reviewer-required reversibility); not a wrap.
+def _livestock_delete(project_id, kind, row_id, request):
+    from fastapi import HTTPException as _HE
+    import livestock as _ls
+    author = _livestock_writer(request, project_id)
+    _livestock_ready()
+    removed = _ls.soft_delete(project_id, kind, row_id, author)
+    if not removed:
+        raise _HE(status_code=404, detail="%s not found" % kind.capitalize())
+    return {"ok": True, "deleted": removed}
+
+
+@app.post("/api/projects/{project_id}/livestock/event")
+def livestock_add_event(project_id: str, body: _SheepEventIn, request: Request):
+    return _livestock_add_event(project_id, body, request)
+
+
+@app.post("/api/projects/{project_id}/livestock/expense")
+def livestock_add_expense(project_id: str, body: _SheepExpenseIn, request: Request):
+    return _livestock_add_expense(project_id, body, request)
+
+
+@app.delete("/api/projects/{project_id}/livestock/{kind}/{row_id}")
+def livestock_delete(project_id: str, kind: str, row_id: int, request: Request):
+    from fastapi import HTTPException as _HE
+    if kind not in ("event", "expense"):
+        raise _HE(status_code=404, detail="Unknown entry kind")
+    return _livestock_delete(project_id, kind, row_id, request)
+
+
+@app.get("/api/projects/goats/detail")
+async def goats_detail(request: Request):
+    from fastapi import HTTPException as _HE
+    if not (_auth_verify(_get_tok(request)) or _internal_key_ok(request)):
+        raise _HE(status_code=401, detail="Auth required")
+    import livestock as _ls
+    _livestock_ready()
+    return _ls.detail_data("goats")
+
+
+# The original sheep URLs (Epic #16) stay as aliases of the generic handlers.
+@app.post("/api/projects/sheep/event")
+def sheep_add_event(body: _SheepEventIn, request: Request):
+    return _livestock_add_event("sheep", body, request)
+
+
+@app.post("/api/projects/sheep/expense")
+def sheep_add_expense(body: _SheepExpenseIn, request: Request):
+    return _livestock_add_expense("sheep", body, request)
+
+
 @app.delete("/api/projects/sheep/event/{event_id}")
 def sheep_delete_event(event_id: int, request: Request):
-    """Correction path for a wrong/duplicate event entry (Solomon/admin only)."""
-    from fastapi import HTTPException as _HE
-    import sheep as _sheep
-    _sheep_writer(request)
-    if not _sheep.ready():
-        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
-    removed = _sheep.delete_event(event_id, None)
-    if not removed:
-        raise _HE(status_code=404, detail="Event not found")
-    return {"ok": True, "deleted": removed}
+    return _livestock_delete("sheep", "event", event_id, request)
 
 
 @app.delete("/api/projects/sheep/expense/{expense_id}")
 def sheep_delete_expense(expense_id: int, request: Request):
-    """Correction path for a wrong/duplicate expense entry (Solomon/admin only)."""
-    from fastapi import HTTPException as _HE
-    import sheep as _sheep
-    _sheep_writer(request)
-    if not _sheep.ready():
-        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
-    removed = _sheep.delete_expense(expense_id, None)
-    if not removed:
-        raise _HE(status_code=404, detail="Expense not found")
-    return {"ok": True, "deleted": removed}
+    return _livestock_delete("sheep", "expense", expense_id, request)
 
 
 @app.get("/api/projects/washing_bay/detail")
