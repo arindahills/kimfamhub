@@ -1616,7 +1616,7 @@ def _generate_minutes_narrative(meeting_id: int, key_topics: str,
             # would propagate the exception); an empty chunk just becomes "(part
             # unavailable)" and is logged so silent thinning is visible.
             try:
-                return _idx, (_ask_claude(_dp, model="claude-sonnet-4-6", timeout=180) or "")[:_per_cap]
+                return _idx, (_ask_claude(_dp, model="sonnet", timeout=180) or "")[:_per_cap]
             except Exception as _me:
                 import logging as _lg_m
                 _lg_m.getLogger("main").error(f"MAP chunk {_idx} failed: {_me}")
@@ -1763,7 +1763,7 @@ final "General / Governance" group. Keep each decision one crisp line."""
     # thin v1 fallback (the "different format" bug) + "Could not load the full minutes
     # to edit". nginx proxy_read_timeout is 1800s and confirm/edit stream via SSE, so a
     # long call stays alive. (Follow-up: clean/shrink the digest to cut this time.)
-    raw = _ask_claude(prompt, model="claude-sonnet-4-6", timeout=900)
+    raw = _ask_claude(prompt, model="sonnet", timeout=900)
     def _parse(x):
         if not x: return None
         try: return _json_n2.loads(x)
@@ -2127,7 +2127,7 @@ Keep "decisions" in the SAME per-group shape shown in CURRENT MINUTES above."""
         try:
             env = dict(_os.environ); env["HOME"] = "/root"
             proc = await _aio.create_subprocess_exec(
-                "claude", "-p", prompt, "--model", "claude-sonnet-4-6",
+                "claude", "-p", prompt, "--model", "sonnet",
                 stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env,
             )
             # 600s: re-emitting a full multi-section narrative over a noisy transcript is
