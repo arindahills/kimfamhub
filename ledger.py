@@ -240,6 +240,108 @@ def parity(snap):
     return ok, lines
 
 
+# ── read models: the shapes the Hub's chicken endpoints already serve (ADR-032 decision 9) ───────
+# (card label as the sheet spelled it, statement key, description shown on the card)
+STATEMENT_LABELS = (
+    ("sales", "sales", "All cash from selling eggs/chickens"),
+    ("Spoilt Goods (Cash Loss)", "spoilt", "Value lost to spoilage"),
+    ("Available Stock (Cost)", "available_stock_cost", "Inventory at cost value"),
+    ("Expected Sales", "expected_sales", "Potential sales if all inventory sold"),
+    ("Operating Expenses (OPEX)", "opex", "Running costs"),
+    ("Capital Expenses (CapEx)", "capex", "Coop and equipment"),
+    ("Depreciation (per year)", "depreciation", "Coop and equipment/10 years"),
+    ("Gross Position", "gross", "sales -spoilt goods - opex"),
+    ("Net Position (with CapEx)", "net_with_capex", "Gross position - Capex"),
+    ("Net Position (with Depreciation)", "net_with_depreciation", "Gross position - Depreciation (per year)"),
+)
+
+_BIRD_ITEM = re.compile(r"^(chicken|chickens|hen|hens|cock|cocks|pullet|pullets|chick|chicks|bird|birds)$", re.I)
+
+
+def expense_category(item):
+    """Breakdown category for an expense item. Fixed in code (the old keyword order counted
+    "Transport for chicken" and "Medicine for chicken" as birds): anything that names what it is
+    for (transport, medicine, feed, labour) goes there first; only an item that IS a bird purchase
+    is 'Birds / Stock'."""
+    it = (item or "").strip().lower()
+    if "transport" in it:
+        return "Transport"
+    if any(k in it for k in ("medicine", "s-dime", "interflox", "dudu", "lime", "vaccine", "drug")):
+        return "Medicine & Vet"
+    if any(k in it for k in ("mash", "maize", "feed", "kyacu", "grower", "layer", "concentrate",
+                             "sunflower", "sun flower", "milling", "broken")):
+        return "Feed & Nutrition"
+    if any(k in it for k in ("labour", "salary", "manager", "casual", "workshop")):
+        return "Labour"
+    if _BIRD_ITEM.match(it):
+        return "Birds / Stock"
+    return "Equipment & Supplies"
+
+
+def projects_card(rows):
+    """`/api/projects` shape: {label: {value: '8,976,400', desc}} computed from ledger rows."""
+    st = statement(rows)
+    return {lab: {"value": "{:,}".format(st[key]), "desc": desc} for lab, key, desc in STATEMENT_LABELS}
+
+
+def _d(d):
+    return d.strftime("%d %b %Y")
+
+
+def chicken_data(rows):
+    """The dict `_fetch_chicken_data` builds from the sheet, built from ledger rows instead, so the
+    detail endpoint, Ask KimFam and the audit keep working unchanged when reads are switched. Dates
+    are unambiguous ('17 Jun 2024'), which also fixes the old m/d/Y-only egg month parsing."""
+    st = statement(rows)
+    qty = qty_available(rows)
+    names = {p["product_id"]: p["name"] for p in rows["products"]}
+    products = {}
+    for p in rows["products"]:
+        pid = p["product_id"]
+        products[pid] = {
+            "name": p["name"], "available": float(qty.get(pid, 0)),
+            "sold": float(sum(s["qty"] for s in rows["sales"] if s["product_id"] == pid)),
+            "purchased": float(sum(s["qty"] for s in rows["stock"] if s["product_id"] == pid)),
+            "revenue": float(sum(s["total"] for s in rows["sales"] if s["product_id"] == pid)),
+            "deaths": float(sum(s["qty"] for s in rows["losses"] if s["product_id"] == pid)),
+            "deaths_val": float(sum(s["total"] for s in rows["losses"] if s["product_id"] == pid)),
+        }
+    sales_by_product = {"a1": [], "a2": [], "a3": []}
+    monthly_eggs = {}
+    for s in sorted(rows["sales"], key=lambda r: r["sale_date"]):
+        if s["product_id"] in sales_by_product:
+            sales_by_product[s["product_id"]].append(
+                {"date": _d(s["sale_date"]), "qty": float(s["qty"]), "amount": float(s["total"]), "buyer": s.get("buyer") or ""})
+        if s["product_id"] == "a1":
+            ym = s["sale_date"].strftime("%b %Y")
+            monthly_eggs[ym] = monthly_eggs.get(ym, 0) + float(s["qty"])
+    deaths_detail = [
+        {"product": names.get(s["product_id"], ""), "date": _d(s["loss_date"]), "qty": float(s["qty"]), "reason": s.get("reason") or ""}
+        for s in sorted(rows["losses"], key=lambda r: r["loss_date"])
+        if s["product_id"] in ("a2", "a3") and (s.get("kind") or "").lower() == "damaged"]
+    batches = [
+        {"product": names.get(s["product_id"], ""), "date": _d(s["event_date"]), "qty": float(s["qty"]),
+         "source": s.get("supplier") or "", "pid": s["product_id"]}
+        for s in sorted(rows["stock"], key=lambda r: r["event_date"])
+        if s["kind"] == "purchase" and s["product_id"] != "a1"]
+    opex_breakdown, monthly_spend, timeline = {}, {}, []
+    for e in sorted(rows["expenses"], key=lambda r: r["expense_date"]):
+        if not e["total"]:
+            continue
+        timeline.append({"date": _d(e["expense_date"]), "item": e["item"], "cost": int(e["total"]), "type": e["kind"].capitalize()})
+        ym = e["expense_date"].strftime("%b %Y")
+        monthly_spend[ym] = int(monthly_spend.get(ym, 0) + e["total"])
+        if e["kind"] == "opex":
+            cat = expense_category(e["item"])
+            opex_breakdown[cat] = int(opex_breakdown.get(cat, 0) + e["total"])
+    return {
+        "products": products, "sales_by_product": sales_by_product, "monthly_egg_sales": monthly_eggs,
+        "deaths_detail": deaths_detail, "batches": batches,
+        "financials_raw": {lab.lower(): float(st[key]) for lab, key, _d_ in STATEMENT_LABELS},
+        "opex_breakdown": opex_breakdown, "monthly_spend": monthly_spend, "expense_timeline": timeline,
+    }
+
+
 # ── database layer (ADR-032) ──────────────────────────────────────────────────────────────────
 _LOCK_KEY = 778813
 _READY = False

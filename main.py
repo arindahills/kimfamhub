@@ -3206,6 +3206,10 @@ def get_next_meeting():
 
 @app.get("/api/projects")
 def get_projects():
+    if _ledger_reads("chicken"):
+        import ledger as _ledger
+        if _ledger.ready():
+            return {"chicken": _ledger.projects_card(_ledger.load("chicken"))}
     rows = gc().open_by_key(SOLOMON_ID).worksheet("Financial Statement").get_all_values()
     data = {}
     for row in rows[1:]:
@@ -6515,11 +6519,26 @@ def _gc():
     ])
     return gspread.authorize(creds)
 
+def _ledger_reads(project_id="chicken"):
+    """ADR-032: LEDGER_READS=chicken (comma list in the environment) switches a project's reads from
+    Solomon's AppSheet to the Hub's own ledger. Off by default; flipped on cut-over day after parity."""
+    return project_id in [x.strip() for x in os.environ.get("LEDGER_READS", "").split(",") if x.strip()]
+
+
 def _fetch_chicken_data():
     import time
     now = time.time()
     if _CHICKEN_CACHE.get("ts") and now - _CHICKEN_CACHE["ts"] < _CHICKEN_CACHE_TTL:
         return _CHICKEN_CACHE["data"]
+
+    if _ledger_reads("chicken"):
+        import ledger as _ledger
+        if not _ledger.ready():
+            raise RuntimeError("ledger tables unavailable")
+        data = _ledger.chicken_data(_ledger.load("chicken"))
+        _CHICKEN_CACHE["data"] = data
+        _CHICKEN_CACHE["ts"] = now
+        return data
 
     gc = _gc()
     sh = gc.open_by_key(_CHICKEN_SHEET_ID)
@@ -6720,7 +6739,7 @@ async def chicken_detail(request: Request):
 
     # Batch 3 is WhatsApp-only until hens_purchased exceeds 180 (Batch 1+2)
     hens_purchased = int(hens.get("purchased", 0))
-    batch3_unlogged = hens_purchased <= 180
+    batch3_unlogged = hens_purchased <= 180 and not extra_batches and not _ledger_reads("chicken")
     whatsapp_only = {
         "pending": batch3_unlogged,
         "batch3_ordered": 100 if batch3_unlogged else 0,
@@ -6777,7 +6796,8 @@ async def chicken_detail(request: Request):
             "gross_position":      gross_pos,
             "net_with_capex":      net_capex,
             "net_with_depreciation": net_dep,
-            "source":              "Solomon's AppSheet Financial Statement tab (live)",
+            "source":              ("KimFam Hub project ledger" if _ledger_reads("chicken")
+                                     else "Solomon's AppSheet Financial Statement tab (live)"),
         },
         "projections": {
             "phase":             "Phase 1 (100 birds, Jul 2024 - Jan 2026)",

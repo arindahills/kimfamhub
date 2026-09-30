@@ -849,3 +849,38 @@ class TestLedgerParity:
         p = ledger.parse_snapshot(self._snap())
         refs = [r["source_ref"] for k in ("products", "stock", "sales", "losses", "expenses") for r in p[k]]
         assert len(refs) == len(set(refs)) and all(r.startswith("appsheet:" + p["hash"] + ":") for r in refs)
+
+    # ── read models (ADR-032 decision 9) ─────────────────────────────────────────────────────
+    def test_expense_category_names_what_it_is_for(self):
+        import ledger
+        c = ledger.expense_category
+        assert c("Transport for chicken") == "Transport"
+        assert c("Medicine for chicken") == "Medicine & Vet"
+        assert c("Layer mash") == "Feed & Nutrition"
+        assert c("Chicken") == "Birds / Stock" and c("hens") == "Birds / Stock"
+        assert c("Chicken mesh") == "Equipment & Supplies"      # a thing for chickens, not chickens
+
+    def test_projects_card_matches_the_sheet_format(self):
+        import ledger
+        card = ledger.projects_card(ledger.parse_snapshot(self._snap()))
+        assert card["sales"]["value"] == "72,000"
+        assert card["Net Position (with CapEx)"]["value"] == "-168,000"
+        assert list(card) == [lab for lab, _k, _d in ledger.STATEMENT_LABELS]   # the card keys the UI reads
+
+    def test_chicken_data_has_the_shape_consumers_read(self):
+        import ledger
+        d = ledger.chicken_data(ledger.parse_snapshot(self._snap()))
+        assert set(d) == {"products", "sales_by_product", "monthly_egg_sales", "deaths_detail", "batches",
+                          "financials_raw", "opex_breakdown", "monthly_spend", "expense_timeline"}
+        assert d["products"]["p2"]["available"] == 7 and d["products"]["p2"]["deaths_val"] == 10000
+        assert d["financials_raw"]["operating expenses (opex)"] == 30000
+        assert d["opex_breakdown"] == {"Feed & Nutrition": 30000}
+        assert [b["pid"] for b in d["batches"]] == ["p2"]          # the egg production row is not a batch
+        assert d["deaths_detail"] == [] or all(x["product"] for x in d["deaths_detail"])
+
+    def test_ledger_reads_flag_is_off_by_default(self, monkeypatch):
+        import main as _m
+        monkeypatch.delenv("LEDGER_READS", raising=False)
+        assert _m._ledger_reads("chicken") is False
+        monkeypatch.setenv("LEDGER_READS", "dairy, chicken")
+        assert _m._ledger_reads("chicken") is True and _m._ledger_reads("goats") is False
