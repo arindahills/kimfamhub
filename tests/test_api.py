@@ -754,3 +754,98 @@ class TestKlaFamWindow:
                                             {"is_active": False, "status": "pending"}]}
         monkeypatch.setattr(_m, "_klafam_cycle_detail", lambda cid: paid if cid == 72 else {"id": cid, "contributions": []})
         assert _m.klafam_overview(None)["previous_cycle"] is None
+
+
+class TestLedgerParity:
+    """ADR-032: the ledger computes the AppSheet's Financial Statement from its rows. Synthetic data
+    (the repo is public): every figure below is worked out by hand."""
+
+    @staticmethod
+    def _snap(**over):
+        snap = {
+            "product descriptions": [
+                ["product id", "product description", "UOM", "U/COST PRICE", "U/SELL  PRICE", "QTY AVAILABLE OVERALL", "AVAILABLE STOCK", "EXPECTED SALES"],
+                ["p1", "eggs", "pc", 0, 400, 100, 40000, 40000],        # eggs: valued at SELL
+                ["p2", "hens", "pc", 10000, 30000, 7, 70000, 210000],   # 10 stocked - 2 sold - 1 lost
+            ],
+            "stock details starting may 2024": [
+                ["purchase date", "product id", "U/COST PRICE", "QTY stocked", "Total purchase cost", "purchased from"],
+                [45000.5, "p1", 0, 130, 0, ""],
+                [45001, "p2", 10000, 10, 100000, "Farm A"],
+            ],
+            "sales": [
+                ["Date", "product id", "Quantity sold", "unit selling price", "total  amount sold", "Name of buyer", "type of sale"],
+                [45010, "p1", 30, 400, 12000, "x", "Cash"],
+                [45011, "p2", 2, 30000, 60000, "y", "Cash"],
+            ],
+            "used or spoilt items not sold": [
+                ["Date", "product id", "usage type", "reason for usage", "Quantity used or spoilt", "total  amount used or spoilt"],
+                [45012, "p2", "Damaged", "died", 1, 10000],
+            ],
+            "company expenses": [
+                ["Date", "Expense Item", "Beneficiary", "Quantity", "Unit Price", "Total Cost", "others (Explain)", "Expense Type"],
+                [45002, "Feed", "s", 1, 30000, "30,000", "", "Opex"],
+                [45003, "Coop", "s", 1, 200000, 200000, "", "Capex"],
+            ],
+            "Financial Statement": [
+                ["product Category", "Metric", "value"],
+                ["c", "sales", 72000], ["c", "Spoilt Goods (Cash Loss)", 10000],
+                ["c", "Available Stock (Cost)", 110000], ["c", "Expected Sales", 250000],
+                ["c", "Operating Expenses (OPEX)", 30000], ["c", "Capital Expenses (CapEx)", 200000],
+                ["c", "Depreciation (per year)", 20000], ["c", "Gross Position", 32000],
+                ["c", "Net Position (with CapEx)", -168000], ["c", "Net Position (with Depreciation)", 12000],
+            ],
+        }
+        snap.update(over)
+        return snap
+
+    def test_parity_on_synthetic_sheet(self):
+        import ledger
+        ok, lines = ledger.parity(self._snap())
+        assert ok, "\n".join(lines)
+
+    def test_a_wrong_sheet_figure_is_a_difference(self):
+        import ledger
+        bad = self._snap()
+        bad["Financial Statement"][1][2] = 72001
+        ok, lines = ledger.parity(bad)
+        assert not ok and any("DIFF" in l for l in lines)
+
+    def test_eggs_are_valued_at_sell_price_others_at_cost(self):
+        import ledger
+        st = ledger.statement(ledger.parse_snapshot(self._snap()))
+        assert st["per_product"]["p1"]["available_stock"] == 100 * 400
+        assert st["per_product"]["p2"]["available_stock"] == 7 * 10000
+        assert st["per_product"]["p2"]["expected_sales"] == 7 * 30000
+
+    def test_egg_production_is_not_a_purchase(self):
+        import ledger
+        kinds = {r["product_id"]: r["kind"] for r in ledger.parse_snapshot(self._snap())["stock"]}
+        assert kinds == {"p1": "production", "p2": "purchase"}
+
+    def test_dates_come_from_serials_not_strings(self):
+        import ledger, datetime
+        assert ledger.serial_date(45460) == datetime.date(2024, 6, 17)
+        assert ledger.serial_date(45460.99) == datetime.date(2024, 6, 17)
+        assert ledger.serial_date("08/06/2026") is None
+        bad = self._snap()
+        bad["sales"][1][0] = "08/06/2026"     # a formatted string must stop the import, never guess
+        with pytest.raises(ValueError):
+            ledger.parse_snapshot(bad)
+
+    def test_numbers_in_mixed_formats(self):
+        import ledger
+        assert [ledger.to_int(v) for v in ("1,376,800", "  -   ", "", None, 12.6, "12")] == [1376800, 0, 0, 0, 13, 12]
+
+    def test_unknown_expense_type_stops_the_import(self):
+        import ledger
+        bad = self._snap()
+        bad["company expenses"][1][7] = "Loan"
+        with pytest.raises(ValueError):
+            ledger.parse_snapshot(bad)
+
+    def test_source_refs_are_unique_and_carry_the_snapshot_hash(self):
+        import ledger
+        p = ledger.parse_snapshot(self._snap())
+        refs = [r["source_ref"] for k in ("products", "stock", "sales", "losses", "expenses") for r in p[k]]
+        assert len(refs) == len(set(refs)) and all(r.startswith("appsheet:" + p["hash"] + ":") for r in refs)
