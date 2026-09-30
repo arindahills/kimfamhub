@@ -22,7 +22,9 @@ interface Cycle {
   contributions: Contribution[]
 }
 interface Overview {
-  current_cycle: Cycle | null; next_cycle: { bene_name: string; bene_slug: string } | null
+  current_cycle: Cycle | null
+  previous_cycle?: Cycle | null   // still open for late payments until the 14th of the current month
+  next_cycle: { bene_name: string; bene_slug: string } | null
   member_stats: Member[]; recent_cycles: any[]
 }
 
@@ -163,7 +165,7 @@ export default function KlaFamPage() {
   const [data, setData]           = useState<Overview | null>(null)
   const [mySlug, setMySlug]       = useState<string | null>(null)
   const [loading, setLoading]     = useState(true)
-  const [showPay, setShowPay]     = useState(false)
+  const [payCycle, setPayCycle]   = useState<Cycle | null>(null)
   const [ackLoading, setAckLoading] = useState(false)
   const [markSlug, setMarkSlug]   = useState<string | null>(null)   // row awaiting confirm
   const [markLoading, setMarkLoading] = useState(false)
@@ -231,50 +233,38 @@ export default function KlaFamPage() {
   )
 
   const { current_cycle: cur, next_cycle: next, member_stats: stats, recent_cycles: recent } = data
-  const myContrib = cur?.contributions.find(c => c.slug === mySlug)
-  const isBeneficiary = cur?.beneficiary_slug === mySlug
-  // The beneficiary physically receives the money, so they (or an admin) can log a member's
-  // contribution on their behalf — always attributed, never silently posted as the member.
-  const canRecordForOthers = isBeneficiary || user?.role === 'admin'
+  const prevC = data.previous_cycle ?? null
 
-  // Sort stats: active members first, then historical
-  const activeStats = stats.filter(m => m.is_active)
-  const histStats   = stats.filter(m => !m.is_active)
-
-  return (
-    <div style={{ padding: '24px 20px', maxWidth: 900, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
-
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#f8fafc', margin: 0 }}>KlaFam Tanda</h1>
-        <p style={{ color: '#64748b', fontSize: 14, margin: '4px 0 0' }}>
-          Rotating savings group. UGX 300,000/month per member.
-        </p>
-      </div>
-
-      {/* Current cycle */}
-      {cur && (
-        <Card>
+  // One card per open cycle: the current one, and the previous one while it is still open for
+  // late payments (ADR-031). Late payers pay the previous cycle's beneficiary, so Mark received
+  // and Record my contribution must act on THAT cycle, not on "current".
+  const cycleCard = (cyc: Cycle, label: string, note?: string) => {
+    const myC = cyc.contributions.find(c => c.slug === mySlug)
+    const iAmBeneficiary = cyc.beneficiary_slug === mySlug
+    const canRecord = iAmBeneficiary || user?.role === 'admin'
+    return (
+      <Card key={cyc.id}>
           <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
             <div>
-              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>Current cycle</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: '#f8fafc' }}>{cur.month_label}</div>
-              {cur.due_date && (
+              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#f8fafc' }}>{cyc.month_label}</div>
+              {note && <div style={{ fontSize: 12, color: '#facc15', marginBottom: 2 }}>{note}</div>}
+              {cyc.due_date && (
                 <div style={{ fontSize: 12, color: '#64748b' }}>
-                  Due {new Date(cur.due_date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}
+                  Due {new Date(cyc.due_date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}
                 </div>
               )}
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>Beneficiary</div>
               <div style={{ fontSize: 17, fontWeight: 700, color: '#60a5fa' }}>
-                {cur.beneficiary_name || 'TBC'}
+                {cyc.beneficiary_name || 'TBC'}
               </div>
-              {cur.acknowledged_at ? (
+              {cyc.acknowledged_at ? (
                 <div style={{ fontSize: 12, color: '#4ade80' }}>Acknowledged</div>
-              ) : isBeneficiary ? (
+              ) : iAmBeneficiary ? (
                 <button
-                  onClick={() => acknowledge(cur.id)}
+                  onClick={() => acknowledge(cyc.id)}
                   disabled={ackLoading}
                   style={{
                     marginTop: 6, fontSize: 12, fontWeight: 600,
@@ -288,7 +278,7 @@ export default function KlaFamPage() {
 
           {/* Contributions grid */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {cur.contributions.map(c => (
+            {cyc.contributions.map(c => (
               <div key={c.id} style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 background: '#0f172a', borderRadius: 8, padding: '10px 14px',
@@ -319,12 +309,12 @@ export default function KlaFamPage() {
                     </span>
                   )}
                   {/* I received this member's money in person — log it for them (two-step) */}
-                  {canRecordForOthers && c.slug !== mySlug && (c.status === 'pending' || c.status === 'missed') && (
-                    markSlug === c.slug ? (
+                  {canRecord && c.slug !== mySlug && (c.status === 'pending' || c.status === 'missed') && (
+                    markSlug === cyc.id + ':' + c.slug ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
                         <span style={{ fontSize: 11, color: '#94a3b8' }}>Received {fmt(DEFAULT_CONTRIBUTION)}?</span>
                         <button
-                          onClick={() => recordFor(cur.id, c.slug, DEFAULT_CONTRIBUTION)}
+                          onClick={() => recordFor(cyc.id, c.slug, DEFAULT_CONTRIBUTION)}
                           disabled={markLoading}
                           style={{
                             fontSize: 11, fontWeight: 700, background: '#1a3326', color: '#4ade80',
@@ -341,7 +331,7 @@ export default function KlaFamPage() {
                       </span>
                     ) : (
                       <button
-                        onClick={() => setMarkSlug(c.slug)}
+                        onClick={() => setMarkSlug(cyc.id + ':' + c.slug)}
                         style={{
                           fontSize: 11, fontWeight: 600, background: 'transparent', color: '#60a5fa',
                           border: '1px solid #334155', borderRadius: 8, padding: '3px 10px',
@@ -361,28 +351,49 @@ export default function KlaFamPage() {
             borderTop: '1px solid #334155', paddingTop: 14,
           }}>
             <span style={{ color: '#94a3b8', fontSize: 14 }}>Total collected</span>
-            <span style={{ color: '#f8fafc', fontWeight: 700, fontSize: 15 }}>{fmt(cur.total_collected)}</span>
+            <span style={{ color: '#f8fafc', fontWeight: 700, fontSize: 15 }}>{fmt(cyc.total_collected)}</span>
           </div>
 
           {/* My action button */}
-          {myContrib && myContrib.status !== 'paid' && !isBeneficiary && (
-            <button onClick={() => setShowPay(true)} style={{
+          {myC && myC.status !== 'paid' && !iAmBeneficiary && (
+            <button onClick={() => setPayCycle(cyc)} style={{
               marginTop: 16, width: '100%', background: '#2563eb', color: '#fff',
               border: 'none', borderRadius: 8, padding: '12px', fontSize: 15,
               fontWeight: 600, cursor: 'pointer',
             }}>
-              {myContrib.status === 'offset' ? 'Edit contribution' : 'Record my contribution'}
+              {myC.status === 'offset' ? 'Edit contribution' : 'Record my contribution'}
             </button>
           )}
-          {myContrib?.status === 'paid' && (
+          {myC?.status === 'paid' && (
             <div style={{
               marginTop: 14, textAlign: 'center', fontSize: 13, color: '#4ade80',
             }}>
-              Your contribution for {cur.month_label} is recorded.
+              Your contribution for {cyc.month_label} is recorded.
             </div>
           )}
         </Card>
-      )}
+    )
+  }
+
+  // Sort stats: active members first, then historical
+  const activeStats = stats.filter(m => m.is_active)
+  const histStats   = stats.filter(m => !m.is_active)
+
+  return (
+    <div style={{ padding: '24px 20px', maxWidth: 900, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* Header */}
+      <div>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#f8fafc', margin: 0 }}>KlaFam Tanda</h1>
+        <p style={{ color: '#64748b', fontSize: 14, margin: '4px 0 0' }}>
+          Rotating savings group. UGX 300,000/month per member.
+        </p>
+      </div>
+
+      {/* Current cycle, and the previous one while it is still open for late payments */}
+      {cur && cycleCard(cur, 'Current cycle')}
+      {prevC && cycleCard(prevC, 'Previous cycle', 'Still open for late payments until the 14th of ' +
+        new Date(cur!.year, cur!.month - 1, 1).toLocaleDateString('en-GB', { month: 'long' }))}
 
       {/* Next cycle preview */}
       {next && (
@@ -487,11 +498,11 @@ export default function KlaFamPage() {
         </div>
       </Card>
 
-      {showPay && cur && (
+      {payCycle && (
         <PayModal
-          cycle={cur}
-          onClose={() => setShowPay(false)}
-          onDone={() => { setShowPay(false); load() }}
+          cycle={payCycle}
+          onClose={() => setPayCycle(null)}
+          onDone={() => { setPayCycle(null); load() }}
         />
       )}
     </div>

@@ -682,3 +682,65 @@ class TestLivestockWhatsApp:
         r = c.delete("/api/projects/goats/livestock/event/1", params={"reported_by": "Israel"},
                      headers={"X-Internal-Key": "k"})
         assert r.status_code == 409 and "Alex" in r.json()["detail"] and "deleted" not in got
+
+
+class TestKlaFamWindow:
+    """ADR-031: two rolling cycles. The previous cycle stays open for late payers until the 14th
+    of the current cycle's month. Swept over whole years (the 2026-09-03 regression slipped
+    through because only the reporting day was tried)."""
+
+    def test_the_real_case_30_sep_2026(self):
+        from klafam_window import cycle_window
+        from datetime import date
+        assert cycle_window(date(2026, 9, 30)) == ((2026, 10), (2026, 9))   # Oct current, Sep still open
+
+    def test_boundaries(self):
+        from klafam_window import cycle_window
+        from datetime import date
+        assert cycle_window(date(2026, 9, 27)) == ((2026, 9), None)
+        assert cycle_window(date(2026, 9, 28)) == ((2026, 10), (2026, 9))
+        assert cycle_window(date(2026, 10, 13)) == ((2026, 10), (2026, 9))
+        assert cycle_window(date(2026, 10, 14)) == ((2026, 10), None)        # closes on the 14th
+        assert cycle_window(date(2026, 12, 30)) == ((2027, 1), (2026, 12))   # year rollover
+        assert cycle_window(date(2027, 1, 14)) == ((2027, 1), None)
+
+    def test_every_day_of_two_years_is_consistent(self):
+        from klafam_window import cycle_window
+        from datetime import date, timedelta
+        d = date(2026, 1, 1)
+        while d <= date(2027, 12, 31):
+            (cy, cm), prev = cycle_window(d)
+            due = date(cy - 1, 12, 28) if cm == 1 else date(cy, cm - 1, 28)
+            assert d >= due - timedelta(days=31) and d < date(cy + (cm // 12), cm % 12 + 1, 28), d  # within its cycle
+            assert 1 <= cm <= 12
+            if prev is not None:
+                py, pm = prev
+                assert (py * 12 + pm) == (cy * 12 + cm) - 1, d                # exactly the month before
+                assert d < date(cy, cm, 14), d                                # never after the 14th
+            else:
+                assert d >= date(cy, cm, 14), d                               # closed => on/after the 14th
+            d += timedelta(days=1)
+
+    def test_overview_returns_previous_only_while_open(self, monkeypatch):
+        import db as _db, main as _m
+        from datetime import date as _date
+        class D(_date):
+            @classmethod
+            def today(cls): return cls._today
+        rows = {(2026, 9): 72, (2026, 10): 73}
+        def fake_query(sql, params=None):
+            s = " ".join(sql.split())
+            if "information_schema" in s: return [{"exists": 1}]
+            if "FROM klafam_cycles WHERE year=%s AND month=%s" in s and s.startswith("SELECT id"):
+                return [{"id": rows[tuple(params)]}] if tuple(params) in rows else []
+            return []
+        monkeypatch.setattr(_db, "query", fake_query)
+        monkeypatch.setattr(_m, "_klafam_cycle_detail", lambda cid: {"id": cid})
+        monkeypatch.setattr(_m, "_klafam_member_stats", lambda: [])
+        import datetime as _dt
+        for today, want_prev in ((_date(2026, 9, 30), 72), (_date(2026, 10, 14), None)):
+            D._today = today
+            monkeypatch.setattr(_dt, "date", D)
+            out = _m.klafam_overview(None)
+            assert out["current_cycle"] == {"id": 73}
+            assert out["previous_cycle"] == ({"id": want_prev} if want_prev else None)

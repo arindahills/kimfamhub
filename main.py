@@ -9203,14 +9203,10 @@ def klafam_overview(request: Request):
     # BEFORE the 28th we are still collecting for THIS month's payout; from the 28th onward
     # collection for next month's payout opens, so roll forward then. (Rolling forward
     # unconditionally — the earlier off-by-one fix — pointed at a not-yet-created cycle
-    # mid-month, e.g. Oct on 3 Sep, and blanked the current-month card.)
-    if today.day >= 28:
-        if today.month == 12:
-            cy, cm = today.year + 1, 1
-        else:
-            cy, cm = today.year, today.month + 1
-    else:
-        cy, cm = today.year, today.month
+    # mid-month, e.g. Oct on 3 Sep, and blanked the current-month card.) The cycle before the
+    # current one stays open for late payers until the 14th of the current month (ADR-031).
+    from klafam_window import cycle_window
+    (cy, cm), prev_ym = cycle_window(today)
     current = dbq(
         "SELECT id FROM klafam_cycles WHERE year=%s AND month=%s",
         (cy, cm)
@@ -9220,6 +9216,11 @@ def klafam_overview(request: Request):
     if not current:
         current = dbq("SELECT id FROM klafam_cycles ORDER BY year DESC, month DESC LIMIT 1")
     current_detail = _klafam_cycle_detail(current[0]["id"]) if current else None
+    previous_detail = None
+    if prev_ym and current:
+        prev = dbq("SELECT id FROM klafam_cycles WHERE year=%s AND month=%s", prev_ym)
+        if prev and prev[0]["id"] != current[0]["id"]:
+            previous_detail = _klafam_cycle_detail(prev[0]["id"])
 
     # Next cycle = the month after the current collection cycle (who receives next).
     if cm == 12:
@@ -9254,6 +9255,8 @@ def klafam_overview(request: Request):
 
     return {
         "current_cycle": current_detail,
+        # Still open for late payments until the 14th of the current month; None once closed.
+        "previous_cycle": previous_detail,
         "next_cycle":    next_info,
         "member_stats":  _klafam_member_stats(),
         "recent_cycles": [
