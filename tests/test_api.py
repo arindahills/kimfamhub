@@ -738,9 +738,19 @@ class TestKlaFamWindow:
         monkeypatch.setattr(_m, "_klafam_cycle_detail", lambda cid: {"id": cid})
         monkeypatch.setattr(_m, "_klafam_member_stats", lambda: [])
         import datetime as _dt
+        open_prev = {"id": 72, "contributions": [{"is_active": True, "status": "pending"}]}
         for today, want_prev in ((_date(2026, 9, 30), 72), (_date(2026, 10, 14), None)):
             D._today = today
             monkeypatch.setattr(_dt, "date", D)
+            monkeypatch.setattr(_m, "_klafam_cycle_detail", lambda cid: open_prev if cid == 72 else {"id": cid, "contributions": []})
             out = _m.klafam_overview(None)
-            assert out["current_cycle"] == {"id": 73}
-            assert out["previous_cycle"] == ({"id": want_prev} if want_prev else None)
+            assert out["current_cycle"]["id"] == 73
+            assert (out["previous_cycle"] or {}).get("id") == want_prev
+        # fully paid (inactive historical members ignored): closes at once, even before the 14th
+        D._today = _date(2026, 9, 30)
+        monkeypatch.setattr(_dt, "date", D)
+        paid = {"id": 72, "contributions": [{"is_active": True, "status": "paid"},
+                                            {"is_active": True, "status": "offset"},
+                                            {"is_active": False, "status": "pending"}]}
+        monkeypatch.setattr(_m, "_klafam_cycle_detail", lambda cid: paid if cid == 72 else {"id": cid, "contributions": []})
+        assert _m.klafam_overview(None)["previous_cycle"] is None

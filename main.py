@@ -9221,6 +9221,11 @@ def klafam_overview(request: Request):
         prev = dbq("SELECT id FROM klafam_cycles WHERE year=%s AND month=%s", prev_ym)
         if prev and prev[0]["id"] != current[0]["id"]:
             previous_detail = _klafam_cycle_detail(prev[0]["id"])
+            # Open only while someone still owes it: a fully paid cycle has nothing left to
+            # collect, so it closes at once instead of waiting for the 14th (ADR-031).
+            if previous_detail and not any(c["is_active"] and c["status"] in ("pending", "missed")
+                                           for c in previous_detail["contributions"]):
+                previous_detail = None
 
     # Next cycle = the month after the current collection cycle (who receives next).
     if cm == 12:

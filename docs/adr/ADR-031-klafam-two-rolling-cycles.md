@@ -13,6 +13,8 @@ and October showed a payment Max's cycle had not received from Alex. The ledger 
 - **Two rolling cycles.** A cycle is current from the 28th of the previous month (unchanged). The
   cycle before it stays open for late payments until the 14th of the current cycle's month, then
   closes and is no longer shown. On 30 Sep: October current, September still open until 14 Oct.
+  **A previous cycle in which every active member has paid closes immediately**: nothing is left to
+  collect, so it is not shown (added 2026-10-01 after the page kept a fully paid September open).
   `klafam_window.cycle_window(today)` is the single rule; `GET /api/klafam/overview` returns
   `previous_cycle` while it is open. The KlaFam page shows it as a second card whose "Mark
   received" and "Record my contribution" act on that cycle.
