@@ -9,6 +9,8 @@ The snapshot is {tab title: rows as read with value_render_option=UNFORMATTED_VA
 sheet's serial numbers (never the formatted strings: the sheet mixes m/d/Y and d/m/Y).
 
     python3 ledger.py parity <snapshot.json>      # prints computed vs sheet, exits 1 on any difference
+    python3 ledger.py snapshot <sheet_id> <out>   # read the AppSheet workbook (run in the app dir)
+    python3 ledger.py import <project> <snap>     # one-time import; refuses unless parity holds, and a second snapshot
 
 Formulas (ADR-032 decision 3), the AppSheet's own:
     sales            = sum of sales totals
@@ -440,6 +442,11 @@ def import_snapshot(project_id, snap, created_by="appsheet import"):
     with _db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
+            # Import once. A different snapshot would re-insert every row under new source_refs.
+            cur.execute("SELECT count(*) FROM ledger_expenses WHERE project_id=%s AND source='appsheet_import' "
+                        "AND source_ref NOT LIKE %s", (project_id, "appsheet:%s:%%" % parsed["hash"]))
+            if cur.fetchone()[0]:
+                raise ValueError("%s was already imported from a different AppSheet snapshot; importing again would duplicate every row" % project_id)
             for table, (key, cols) in specs.items():
                 n = 0
                 for row in parsed[key]:
@@ -750,7 +757,26 @@ def reconciliation(project_id):
     return build_reconciliation(rows, treasury, links, notes)
 
 
+def fetch_snapshot(sheet_id, service_account_path):
+    """Read the AppSheet workbook's tabs with UNFORMATTED values (serial dates, plain numbers)."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_file(service_account_path, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+    sh = gspread.authorize(creds).open_by_key(sheet_id)
+    return {t: sh.worksheet(t).get_all_values(value_render_option="UNFORMATTED_VALUE") for t in TABS}
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "snapshot":          # snapshot <sheet_id> <out.json>   (run in the app dir)
+        _snap = fetch_snapshot(sys.argv[2], "service-account.json")
+        with open(sys.argv[3], "w") as f:
+            json.dump(_snap, f)
+        print("snapshot", snapshot_hash(_snap), {k: len(v) for k, v in _snap.items()})
+        sys.exit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == "import":            # import <project> <snapshot.json>  (needs DATABASE_URL)
+        with open(sys.argv[3]) as f:
+            print(import_snapshot(sys.argv[2], json.load(f)))
+        sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "parity":
         with open(sys.argv[2]) as f:
             _ok, _lines = parity(json.load(f))
