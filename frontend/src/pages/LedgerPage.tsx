@@ -12,6 +12,7 @@ const ugx = (n: number | null | undefined) => (n == null ? '-' : Number(n).toLoc
 const today = () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10)
 const card = 'rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-4'
 const input = 'w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm text-[var(--foreground)] outline-none'
+const who = (n?: string | null) => (n === 'Israel' ? 'Dad (Israel)' : n === 'Merab' ? 'Mum (Merab)' : n ?? '')
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong. Try again.')
 const btn = 'h-11 rounded-[10px] bg-[#166534] px-5 text-sm font-semibold text-white disabled:opacity-40'
 
@@ -151,7 +152,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
         <L t="Who paid?">
           <select className={input} value={f.paid_by || ''} onChange={e => set('paid_by', e.target.value)}>
             <option value="">Choose…</option>
-            {s.options.paid_by.map(p => <option key={p} value={p}>{p}</option>)}
+            {s.options.paid_by.map(p => <option key={p} value={p}>{who(p)}</option>)}
           </select>
         </L>
         <L t="Bought from (optional)"><input className={input} value={f.supplier || ''} onChange={e => set('supplier', e.target.value)} /></L>
@@ -230,7 +231,7 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
             <div className="min-w-0 flex-1">
               <div className="font-medium capitalize">{label(r)} {r.qty ? <span className="text-[var(--muted-2)]">× {r.qty}</span> : null}</div>
               <div className="text-xs text-[var(--muted-2)]">
-                {dateOf(r)} · {r.created_by}{r.source === 'appsheet_import' ? ' (from AppSheet)' : ''}{r.paid_by ? ' · paid by ' + r.paid_by : ''}
+                {dateOf(r)} · {r.created_by}{r.source === 'appsheet_import' ? ' (from AppSheet)' : ''}{r.paid_by ? ' · paid by ' + who(r.paid_by) : ''}
                 {r.receipt_url && <> · <a className="underline" href={r.receipt_url} target="_blank" rel="noreferrer">receipt</a></>}
               </div>
             </div>
@@ -285,7 +286,7 @@ function ReconTab({ s }: { s: Summary }) {
       <div className={card}>
         <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Who paid for the farm's spending</div>
         {r.paid_by.map((b: Recon['paid_by'][number]) => (
-          <div key={b.who} className="flex justify-between py-1 text-sm"><span>{b.who} <span className="text-xs text-[var(--muted-2)]">({b.count} lines)</span></span><span className="tabular-nums">{ugx(b.total)}</span></div>
+          <div key={b.who} className="flex justify-between py-1 text-sm"><span>{who(b.who)} <span className="text-xs text-[var(--muted-2)]">({b.count} {b.count === 1 ? 'line' : 'lines'})</span></span><span className="tabular-nums">{ugx(b.total)}</span></div>
         ))}
       </div>
 
@@ -335,7 +336,7 @@ function ReconTab({ s }: { s: Summary }) {
             <div className="mt-2 max-h-64 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] p-2 text-xs">
               {(ex.data?.rows ?? []).filter((x: Row) => x.source !== 'appsheet_import').map((x: Row) => (
                 <label key={x.id} className="flex items-center gap-2"><input type="checkbox" checked={!!pick[x.id]} onChange={e => setPick(o => ({ ...o, [x.id]: e.target.checked }))} />
-                  {x.expense_date} · {x.item} · {ugx(x.total)} · {x.paid_by}</label>
+                  {x.expense_date} · {x.item} · {ugx(x.total)} · {who(x.paid_by)}</label>
               ))}
               {(ex.data?.rows ?? []).filter((x: Row) => x.source !== 'appsheet_import').length === 0 && <div className="text-[var(--muted-2)]">No expense lines recorded in the Hub yet.</div>}
               <div className="flex gap-2 pt-1"><button className={btn + ' !h-9 !px-4'} onClick={() => link(linking)}>Link selected</button>
@@ -364,7 +365,7 @@ export default function LedgerPage() {
         <h1 className="text-lg font-bold">🐔 Chicken ledger</h1>
         <p className="text-xs text-[var(--muted-2)]">Every shilling in and out of the farm, who recorded it and who paid. This replaces the AppSheet.</p>
       </div>
-      <div className="flex gap-2 overflow-x-auto">
+      <div className="flex flex-wrap gap-2">
         {tabs.map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className="shrink-0 rounded-full border px-4 py-2 text-xs font-semibold"
             style={{ borderColor: tab === k ? '#22c55e' : 'var(--border)', color: tab === k ? '#4ade80' : 'var(--muted-2)' }}>{l}</button>
