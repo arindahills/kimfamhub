@@ -15,7 +15,7 @@ SHEET_ID=${SHEET_ID:-1CqF-NzkMJ8iJw0tC8xkLE9DI94cjFr2vvlAfx4QfXhI}
 DIR=/root/ledger_snapshots; mkdir -p "$DIR"; chmod 700 "$DIR"
 SNAP="$DIR/appsheet_cutover_$(date +%F_%H%M).json"
 cd "$APP"; set -a; . ./.env; set +a
-PY="$APP/venv/bin/python"
+PY="$APP/venv/bin/python"; [ -x "$PY" ] || PY=/var/www/kimfamhub/venv/bin/python   # staging runs on the prod venv
 
 echo "1/5 snapshot"; "$PY" ledger.py snapshot "$SHEET_ID" "$SNAP"; chmod 600 "$SNAP"
 echo "2/5 parity";   "$PY" ledger.py parity "$SNAP" | tail -12

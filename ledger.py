@@ -762,8 +762,18 @@ def fetch_snapshot(sheet_id, service_account_path):
     import gspread
     from google.oauth2.service_account import Credentials
     creds = Credentials.from_service_account_file(service_account_path, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
-    sh = gspread.authorize(creds).open_by_key(sheet_id)
-    return {t: sh.worksheet(t).get_all_values(value_render_option="UNFORMATTED_VALUE") for t in TABS}
+    import time
+
+    def once():
+        sh = gspread.authorize(creds).open_by_key(sheet_id)
+        return {t: sh.worksheet(t).get_all_values(value_render_option="UNFORMATTED_VALUE") for t in TABS}
+    for attempt in range(5):                     # Google answers 503 now and then
+        try:
+            return once()
+        except gspread.exceptions.APIError:
+            if attempt == 4:
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 if __name__ == "__main__":

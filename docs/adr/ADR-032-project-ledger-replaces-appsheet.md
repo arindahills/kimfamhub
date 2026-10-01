@@ -1,6 +1,6 @@
 # ADR-032: A native project ledger replaces Solomon's AppSheet
 
-## Status: Proposed (2026-10-01, amended after independent review the same day)
+## Status: Accepted (2026-10-01). Built and rehearsed on staging; prod cut-over on Hillary's date. Amended after independent review the same day.
 
 ## Context
 The chicken project is recorded in Solomon's AppSheet (a Google Sheet with an app on top), read
@@ -89,3 +89,18 @@ sales are cash; loan, savings and supplier tabs are empty template leftovers).
 - Watch: egg production is entered as weekly stock rows at cost 0 (keep as a `production` kind);
   Solomon never attached a photo in 28 months, so receipts will lag; Dad and Solomon do nothing until
   cut-over day, so a short walkthrough must precede it.
+
+## Implementation notes (1 Oct 2026)
+- Receipts are stored privately on disk outside the web root and served by an authenticated route
+  (`/api/ledger/receipt/{kind}/{id}`), the same pattern as expenditure receipts, not in R2. Not public.
+- A bird purchase carries a link between its expense and its flock movement (`source_ref` and
+  `source_ref:stock`); deleting the expense removes both.
+- The import is refused unless parity holds, and refused a second time from a different snapshot
+  (the row references carry the snapshot hash, so a second import would duplicate every row).
+- The ledger endpoints answer "goes live on cut-over day" until the import has run, so prod shows no
+  empty ledger beforehand. Cut-over: `scripts/ledger_cutover.sh` (snapshot, parity, import, flip,
+  verify); rollback: `scripts/ledger_rollback.sh` (reads back on the sheet, ledger rows kept).
+- Payer options are the farm cash, the club, any member, or "Unknown (check)"; WhatsApp requires the
+  payer to be stated (agent ADR-020).
+- Verified on staging: 34 API checks, 10 WhatsApp scenarios with real Claude, a mobile browser walk
+  through every tab, the cut-over script rehearsed end to end, rollback and the second-import guard.
