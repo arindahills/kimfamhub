@@ -7032,13 +7032,13 @@ async def ledger_add(project_id: str, kind: str, request: Request):
 
 
 @app.delete("/api/ledger/{project_id}/{kind}/{row_id}")
-def ledger_delete(project_id: str, kind: str, row_id: int, request: Request):
+def ledger_delete(project_id: str, kind: str, row_id: int, request: Request, reported_by: str = None):
     import ledger as _ledger
     from fastapi import HTTPException as _HE
     from db import query as _q
     if kind not in _LEDGER_TABLE:
         raise _HE(status_code=404, detail="Unknown entry type")
-    who, payload, _w = _ledger_actor(request, project_id, write=True)
+    who, payload, _w = _ledger_actor(request, project_id, write=True, reported_by=reported_by)
     _ledger_ready(project_id)
     row = _q("SELECT created_by, source FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % _LEDGER_TABLE[kind], (row_id, project_id))
     if not row:
