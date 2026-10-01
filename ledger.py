@@ -611,6 +611,8 @@ def record(project_id, table, row, who, source="app", source_ref=None):
     from db import db as _db
     if not ready():
         raise RuntimeError("ledger tables unavailable")
+    if table == "ledger_expenses" and row.get("stock") and not source_ref:
+        source_ref = "app:" + __import__("uuid").uuid4().hex   # links the expense to its stock effect, so they are removed together
     with _db() as conn:
         with conn.cursor() as cur:
             rid, created = insert_row(cur, table, project_id, who, source, source_ref, row)
@@ -625,9 +627,14 @@ def soft_delete(project_id, table, row_id, who):
         raise ValueError("unknown table")
     with _db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE %s SET deleted_at=now(), deleted_by=%%s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % table,
-                        (who, row_id, project_id))
-            return cur.rowcount == 1
+            cur.execute("UPDATE %s SET deleted_at=now(), deleted_by=%%s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL "
+                        "RETURNING source_ref" % table, (who, row_id, project_id))
+            got = cur.fetchone()
+            if got and table == "ledger_expenses" and got[0]:
+                # a bird purchase is one entry with two effects: the flock movement goes with it
+                cur.execute("UPDATE ledger_stock SET deleted_at=now(), deleted_by=%s WHERE project_id=%s AND source_ref=%s AND deleted_at IS NULL",
+                            (who, project_id, got[0] + ":stock"))
+            return bool(got)
 
 
 # ── reconciliation (ADR-032 decisions 4-6) ──────────────────────────────────────────────────
