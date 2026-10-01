@@ -380,6 +380,15 @@ _DDL = [
         kind TEXT NOT NULL CHECK (kind IN ('opex','capex')), note TEXT,
         paid_by TEXT, receipt_url TEXT)""" % _COMMON,
 ]
+_DDL += [
+    """CREATE TABLE IF NOT EXISTS ledger_notes (
+        id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, item_key TEXT NOT NULL, body TEXT NOT NULL,
+        explained BOOLEAN NOT NULL DEFAULT FALSE, author TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+    """CREATE TABLE IF NOT EXISTS ledger_reimbursements (
+        id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, expenditure_id INTEGER NOT NULL,
+        table_name TEXT NOT NULL, row_id INTEGER NOT NULL, amount BIGINT NOT NULL,
+        created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ)""",
+]
 _TABLES = ("ledger_products", "ledger_stock", "ledger_sales", "ledger_losses", "ledger_expenses")
 
 
@@ -457,6 +466,281 @@ def load(project_id):
         "losses": _q("SELECT * FROM ledger_losses WHERE project_id=%s" + live, (project_id,)),
         "expenses": _q("SELECT * FROM ledger_expenses WHERE project_id=%s" + live, (project_id,)),
     }
+
+
+# ── native entry (ADR-032 decisions 2, 5) ───────────────────────────────────────────────────
+LEDGER_PROJECTS = ("chicken",)
+PAID_BY_FARM = "Farm cash (Solomon)"
+PAID_BY_CLUB = "Club"
+PAID_BY_UNKNOWN = "Unknown (check)"
+FIRST_DATE = _dt.date(2024, 1, 1)
+LOSS_KINDS = ("Damaged", "Used")
+
+
+def paid_by_options(member_names):
+    return [PAID_BY_FARM, PAID_BY_CLUB] + list(member_names) + [PAID_BY_UNKNOWN]
+
+
+def _need_date(v, today):
+    try:
+        d = _dt.date.fromisoformat(str(v)[:10])
+    except ValueError:
+        raise ValueError("Date must be a real date (YYYY-MM-DD).")
+    if d > today:
+        raise ValueError("Date cannot be in the future.")
+    if d < FIRST_DATE:
+        raise ValueError("Date is before the project began.")
+    return d
+
+
+def _need_pos(v, what):
+    n = to_int(v)
+    if n <= 0:
+        raise ValueError("%s must be more than zero." % what)
+    return n
+
+
+def _paid_by(v, allowed):
+    v = (str(v or "")).strip()
+    if not v:
+        raise ValueError("Say who paid (the farm cash, Dad, the club, or a member).")
+    if v not in allowed:
+        raise ValueError("Unknown payer %r." % v)
+    return v
+
+
+def validate_expense(d, today, allowed_payers, products):
+    """-> clean expense dict (+ optional bird stock effect). A purchase of birds (product_id given)
+    is ONE entry with two effects: an expense line and a stock movement (ADR-032 decision 2)."""
+    item = str(d.get("item") or "").strip()
+    if not item:
+        raise ValueError("Say what was bought.")
+    kind = str(d.get("kind") or "opex").lower()
+    if kind not in ("opex", "capex"):
+        raise ValueError("Type must be opex or capex.")
+    qty = to_int(d.get("qty")) or 1
+    unit = to_int(d.get("unit_price"))
+    total = to_int(d.get("total")) or qty * unit
+    if total <= 0:
+        raise ValueError("Amount must be more than zero.")
+    out = {"expense_date": _need_date(d.get("date"), today), "item": item, "supplier": str(d.get("supplier") or "").strip(),
+           "qty": qty, "unit_price": unit or total // qty, "total": total, "kind": kind,
+           "note": str(d.get("note") or "").strip(), "paid_by": _paid_by(d.get("paid_by"), allowed_payers), "stock": None}
+    pid = str(d.get("product_id") or "").strip()
+    if pid:
+        if pid not in products:
+            raise ValueError("Unknown product %r." % pid)
+        n = _need_pos(d.get("stock_qty") or qty, "Number of birds")
+        out["stock"] = {"product_id": pid, "event_date": out["expense_date"], "qty": n, "unit_cost": total // n,
+                        "total_cost": total, "kind": "purchase", "supplier": out["supplier"], "paid_by": out["paid_by"]}
+    return out
+
+
+def validate_sale(d, today, products):
+    pid = str(d.get("product_id") or "").strip()
+    if pid not in products:
+        raise ValueError("Pick what was sold.")
+    qty = _need_pos(d.get("qty"), "Quantity")
+    price = to_int(d.get("unit_price")) or products[pid]["sell_price"]
+    total = to_int(d.get("total")) or qty * price
+    if total <= 0:
+        raise ValueError("Amount must be more than zero.")
+    return {"product_id": pid, "sale_date": _need_date(d.get("date"), today), "qty": qty, "unit_price": price,
+            "total": total, "buyer": str(d.get("buyer") or "").strip(), "payment": str(d.get("payment") or "Cash").strip() or "Cash"}
+
+
+def validate_loss(d, today, products):
+    pid = str(d.get("product_id") or "").strip()
+    if pid not in products:
+        raise ValueError("Pick what was lost.")
+    kind = str(d.get("kind") or "").strip().capitalize()
+    if kind not in LOSS_KINDS:
+        raise ValueError("Say whether it was Damaged (died, broken) or Used (eaten).")
+    reason = str(d.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("Say what happened.")
+    qty = _need_pos(d.get("qty"), "Quantity")
+    total = to_int(d.get("total")) if d.get("total") not in (None, "") else qty * products[pid]["cost_price"]
+    return {"product_id": pid, "loss_date": _need_date(d.get("date"), today), "qty": qty, "total": total, "kind": kind, "reason": reason}
+
+
+def validate_stock(d, today, products, allowed_payers):
+    """Egg production (weekly) or a purchase of stock without an expense line."""
+    pid = str(d.get("product_id") or "").strip()
+    if pid not in products:
+        raise ValueError("Pick the product.")
+    kind = str(d.get("kind") or "production").lower()
+    if kind not in ("production", "purchase"):
+        raise ValueError("Stock entry must be production or purchase.")
+    qty = _need_pos(d.get("qty"), "Quantity")
+    out = {"product_id": pid, "event_date": _need_date(d.get("date"), today), "qty": qty, "kind": kind,
+           "unit_cost": 0, "total_cost": 0, "supplier": str(d.get("supplier") or "").strip(), "paid_by": None}
+    if kind == "purchase":
+        out["total_cost"] = _need_pos(d.get("total"), "Amount")
+        out["unit_cost"] = out["total_cost"] // qty
+        out["paid_by"] = _paid_by(d.get("paid_by"), allowed_payers)
+    return out
+
+
+_INSERT = {
+    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by"),
+    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment"),
+    "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason"),
+    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by"),
+}
+
+
+def insert_row(cur, table, project_id, who, source, source_ref, row):
+    """One insert inside the caller's transaction. Replay-safe on (project_id, source_ref):
+    returns (id, created). Source_ref None is always a new row."""
+    cols = _INSERT[table]
+    cur.execute(
+        "INSERT INTO %s (project_id, created_by, source, source_ref, %s) VALUES (%%s,%%s,%%s,%%s,%s) "
+        "ON CONFLICT (project_id, source_ref) WHERE source_ref IS NOT NULL DO NOTHING RETURNING id"
+        % (table, ", ".join(cols), ", ".join(["%s"] * len(cols))),
+        [project_id, who, source, source_ref] + [row.get(c) for c in cols])
+    got = cur.fetchone()
+    if got:
+        return got[0], True
+    cur.execute("SELECT id FROM %s WHERE project_id=%%s AND source_ref=%%s" % table, (project_id, source_ref))
+    return cur.fetchone()[0], False
+
+
+def record(project_id, table, row, who, source="app", source_ref=None):
+    """Insert one validated entry (and its stock effect for a bird purchase). -> {id, created}."""
+    from db import db as _db
+    if not ready():
+        raise RuntimeError("ledger tables unavailable")
+    with _db() as conn:
+        with conn.cursor() as cur:
+            rid, created = insert_row(cur, table, project_id, who, source, source_ref, row)
+            if created and table == "ledger_expenses" and row.get("stock"):
+                insert_row(cur, "ledger_stock", project_id, who, source, (source_ref + ":stock") if source_ref else None, row["stock"])
+    return {"id": rid, "created": created}
+
+
+def soft_delete(project_id, table, row_id, who):
+    from db import db as _db
+    if table not in _INSERT:
+        raise ValueError("unknown table")
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE %s SET deleted_at=now(), deleted_by=%%s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % table,
+                        (who, row_id, project_id))
+            return cur.rowcount == 1
+
+
+# ── reconciliation (ADR-032 decisions 4-6) ──────────────────────────────────────────────────
+def bird_open_items(rows):
+    """Bird purchases that appear in only one place, or on different dates. A bird purchase is
+    one expense line AND one stock movement; matching is by amount, nearest date first.
+    -> [{key, title, amount, detail}]."""
+    exps = [e for e in rows["expenses"] if expense_category(e["item"]) == "Birds / Stock"]
+    stk = [s for s in rows["stock"] if s["kind"] == "purchase"]
+    pairs = sorted(((abs((e["expense_date"] - s["event_date"]).days), i, j) for i, e in enumerate(exps) for j, s in enumerate(stk)
+                    if e["total"] == s["total_cost"]))
+    used_e, used_s, items = set(), set(), []
+    for diff, i, j in pairs:
+        if i in used_e or j in used_s:
+            continue
+        used_e.add(i); used_s.add(j)
+        if diff > 3:
+            e, s = exps[i], stk[j]
+            items.append({"key": "birds:date:%s" % e.get("id", i), "title": "Bird purchase dates differ by %d days" % diff,
+                          "amount": e["total"], "detail": "Expense dated %s, stock entry dated %s (same amount)." % (_d(e["expense_date"]), _d(s["event_date"]))})
+    for i, e in enumerate(exps):
+        if i not in used_e:
+            items.append({"key": "birds:expense_only:%s" % e.get("id", i), "title": "Birds bought but not in the flock",
+                          "amount": e["total"], "detail": "%s: %s, %d at %s each. In expenses, no matching stock entry." % (_d(e["expense_date"]), e["item"], e["qty"], "{:,}".format(e["unit_price"]))})
+    for j, s in enumerate(stk):
+        if j not in used_s:
+            items.append({"key": "birds:stock_only:%s" % s.get("id", j), "title": "Birds in the flock with no expense",
+                          "amount": s["total_cost"], "detail": "%s: %d birds at %s each. In stock, no matching expense." % (_d(s["event_date"]), s["qty"], "{:,}".format(s["unit_cost"]))})
+    return items
+
+
+def classify_treasury(r):
+    """Club treasury row for the project -> capital | pay | refund | other."""
+    d = (r.get("description") or "").lower()
+    if d.startswith("refund") or "reimburs" in d:
+        return "refund"
+    if r.get("category") == "staff" or " pay" in d:
+        return "pay"
+    if r.get("category") == "project_investment" and (r.get("recorded_by") == "system_import" or "capital" in d or "investment" in d):
+        return "capital"
+    return "other"
+
+
+def build_reconciliation(rows, treasury, links, notes):
+    """Pure. rows = ledger rows, treasury = club expenditure rows for the project, links =
+    reimbursement links [{expenditure_id, amount}], notes = [{item_key, body, explained, author, created_at}].
+    Two accounts, never merged: the farm cash box (the ledger) and the club treasury."""
+    st = statement(rows)
+    kinds = {t["id"]: classify_treasury(t) for t in treasury}
+    capital = sum(t["amount_ugx"] for t in treasury if kinds[t["id"]] == "capital")
+    cash_in = capital + st["sales"]
+    cash_out = st["opex"] + st["capex"]
+    by_key = {}
+    for n in sorted(notes, key=lambda n: n["created_at"]):
+        by_key.setdefault(n["item_key"], []).append(n)
+    linked = {}
+    for l in links:
+        linked[l["expenditure_id"]] = linked.get(l["expenditure_id"], 0) + l["amount"]
+
+    def item(key, title, amount, detail, explained=False):
+        ns = by_key.get(key, [])
+        done = explained or bool(ns and ns[-1]["explained"])
+        return {"key": key, "title": title, "amount": amount, "detail": detail, "explained": done,
+                "notes": [{"body": n["body"], "author": n["author"], "at": n["created_at"], "explained": n["explained"]} for n in ns]}
+
+    items = []
+    for t in treasury:
+        k = kinds[t["id"]]
+        if k in ("refund", "other"):
+            cov = linked.get(t["id"], 0)
+            items.append(item("treasury:%d" % t["id"],
+                              "%s paid by the club" % ("Refund" if k == "refund" else "Payment"), t["amount_ugx"],
+                              "%s, %s (recorded by %s). Backed by %s of expense lines." % (_d(t["txn_date"]), t["description"], t.get("recorded_by") or "?", "{:,}".format(cov)),
+                              explained=cov >= t["amount_ugx"]))
+    for b in bird_open_items(rows):
+        items.append(item(b["key"], b["title"], b["amount"], b["detail"]))
+    pre = [e for e in rows["expenses"] if not e.get("paid_by")]
+    if pre:
+        items.append(item("preledger:unattributed", "Who paid is not recorded for the AppSheet period",
+                          sum(e["total"] for e in pre),
+                          "%d expense lines from the AppSheet carry no payer and no receipt. Treated as one opening item." % len(pre)))
+    nr = [e for e in rows["expenses"] if e.get("source") != "appsheet_import" and not e.get("receipt_url")]
+    if nr:
+        items.append(item("receipts:missing", "Expenses without a receipt", sum(e["total"] for e in nr),
+                          "%d expense lines recorded in the Hub have no receipt photo yet." % len(nr)))
+    gap = cash_out - cash_in
+    items.append(item("gap", "Farm spent more than it was given and earned" if gap > 0 else "Farm holds more than it spent",
+                      abs(gap), "Capital %s + sales %s in, opex %s + capex %s out." % tuple("{:,}".format(x) for x in (capital, st["sales"], st["opex"], st["capex"]))))
+    pay = {}
+    for e in rows["expenses"]:
+        w = e.get("paid_by") or "Pre-ledger, unattributed"
+        b = pay.setdefault(w, {"who": w, "count": 0, "total": 0})
+        b["count"] += 1; b["total"] += e["total"]
+    return {
+        "statement": {k: v for k, v in st.items() if k != "per_product"},
+        "farm_box": {"in": {"capital": capital, "sales": st["sales"], "total": cash_in},
+                     "out": {"opex": st["opex"], "capex": st["capex"], "total": cash_out}, "gap": gap},
+        "treasury": [{"id": t["id"], "date": _d(t["txn_date"]), "description": t["description"], "amount": t["amount_ugx"],
+                      "kind": kinds[t["id"]], "recorded_by": t.get("recorded_by")} for t in treasury],
+        "paid_by": sorted(pay.values(), key=lambda b: -b["total"]),
+        "open_items": items,
+        "open_count": sum(1 for i in items if not i["explained"]),
+    }
+
+
+def reconciliation(project_id):
+    from db import query as _q
+    rows = load(project_id)
+    treasury = _q("SELECT id, txn_date, description, amount_ugx, category, recorded_by FROM expenditure_records "
+                  "WHERE project=%s ORDER BY txn_date, id", (project_id,))
+    links = _q("SELECT expenditure_id, amount FROM ledger_reimbursements WHERE project_id=%s AND deleted_at IS NULL", (project_id,))
+    notes = _q("SELECT item_key, body, explained, author, created_at FROM ledger_notes WHERE project_id=%s", (project_id,))
+    return build_reconciliation(rows, treasury, links, notes)
 
 
 if __name__ == "__main__":

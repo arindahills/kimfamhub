@@ -6853,6 +6853,258 @@ async def chicken_detail(request: Request):
         "monthly_spend":    data.get("monthly_spend", {}),
     }
 
+# ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
+_LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
+_LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)
+
+
+def _ledger_actor(request, project_id, write=False, admin=False, reported_by=None):
+    """-> (who, payload, via_whatsapp). Login for everyone to read; recorders (Solomon + admins) to
+    write; admins for notes and reimbursements. The WhatsApp agent uses the internal key plus the
+    member it resolved (reported_by), subject to the same rules (ADR-030 pattern)."""
+    from fastapi import HTTPException as _HE
+    import ledger as _ledger, auth as _auth
+    if project_id not in _ledger.LEDGER_PROJECTS:
+        raise _HE(status_code=404, detail="No ledger for this project")
+    payload = _auth_verify(_get_tok(request))
+    via_wa = False
+    if not payload and reported_by and _internal_key_ok(request):
+        m = next((x for x in _auth.MEMBERS if x["name"] == reported_by), None)
+        if not m:
+            raise _HE(status_code=403, detail="Unknown reporter")
+        payload = {"sub": m["name"], "display": m["display"], "role": m["role"]}
+        via_wa = True
+    if not payload and not write and not admin and _internal_key_ok(request):
+        payload = {"sub": "internal", "display": "internal", "role": "admin"}
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    is_admin = payload.get("role") == "admin"
+    if admin and not is_admin:
+        raise _HE(status_code=403, detail="Admins only")
+    if write and not (is_admin or payload.get("sub") in _LEDGER_WRITERS):
+        raise _HE(status_code=403, detail="You are not one of the recorders for this project")
+    who = payload.get("display") or payload.get("sub")
+    return (who + " via WhatsApp" if via_wa else who), payload, via_wa
+
+
+def _ledger_ready(project_id="chicken"):
+    """503 while the tables are initialising; 503 with a plain message until the AppSheet import has
+    run (prod before cut-over day), so nobody sees an empty ledger and takes it for the real one."""
+    from fastapi import HTTPException as _HE
+    import ledger as _ledger
+    from db import query as _q
+    if not _ledger.ready():
+        raise _HE(status_code=503, detail="The ledger is initialising, please retry shortly")
+    if not _q("SELECT 1 FROM ledger_products WHERE project_id=%s LIMIT 1", (project_id,)):
+        raise _HE(status_code=503, detail="The chicken ledger goes live on cut-over day. Until then Solomon's AppSheet is still the record.")
+
+
+def _ledger_json(v):
+    import datetime as _d
+    if isinstance(v, (_d.date, _d.datetime)):
+        return v.isoformat()
+    return v
+
+
+def _ledger_rows_json(rows):
+    return [{k: _ledger_json(v) for k, v in r.items() if k not in ("raw",)} for r in rows]
+
+
+def _ledger_products_map(project_id):
+    import ledger as _ledger
+    return {p["product_id"]: p for p in _ledger.load(project_id)["products"]}
+
+
+@app.get("/api/ledger/{project_id}")
+def ledger_summary(project_id: str, request: Request):
+    import ledger as _ledger, auth as _auth
+    who, payload, _w = _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    rows = _ledger.load(project_id)
+    st = _ledger.statement(rows)
+    qty = _ledger.qty_available(rows)
+    is_admin = payload.get("role") == "admin"
+    recent = {k: _ledger_rows_json(sorted(rows[k], key=lambda r: (r[dk], r["id"]), reverse=True)[:25])
+              for k, dk in (("expenses", "expense_date"), ("sales", "sale_date"), ("losses", "loss_date"), ("stock", "event_date"))}
+    return {
+        "statement": {k: v for k, v in st.items() if k != "per_product"},
+        "products": [{"product_id": p["product_id"], "name": p["name"], "cost_price": p["cost_price"], "sell_price": p["sell_price"],
+                      "qty_available": qty.get(p["product_id"], 0)} for p in rows["products"]],
+        "recent": recent,
+        "options": {"paid_by": _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS]), "loss_kinds": list(_ledger.LOSS_KINDS)},
+        "can_write": is_admin or payload.get("sub") in _LEDGER_WRITERS, "is_admin": is_admin,
+        "reads_ledger": _ledger_reads(project_id),
+    }
+
+
+@app.get("/api/ledger/{project_id}/entries")
+def ledger_entries(project_id: str, request: Request, kind: str = "expense", limit: int = 300):
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    _ledger_actor(request, project_id)
+    if kind not in _LEDGER_TABLE:
+        raise _HE(status_code=400, detail="kind must be one of %s" % ", ".join(_LEDGER_TABLE))
+    _ledger_ready(project_id)
+    from db import query as _q
+    dk = {"expense": "expense_date", "sale": "sale_date", "loss": "loss_date", "stock": "event_date"}[kind]
+    return {"rows": _ledger_rows_json(_q("SELECT * FROM %s WHERE project_id=%%s AND deleted_at IS NULL ORDER BY %s DESC, id DESC LIMIT %%s"
+                                         % (_LEDGER_TABLE[kind], dk), (project_id, max(1, min(limit, 1000)))))}
+
+
+@app.post("/api/ledger/{project_id}/notes")
+async def ledger_note(project_id: str, request: Request):
+    from fastapi import HTTPException as _HE
+    from db import execute as _x
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id, admin=True)
+    _ledger_ready(project_id)
+    key, text = str(body.get("item_key") or "").strip(), str(body.get("body") or "").strip()
+    if not key or len(text) < 3:
+        raise _HE(status_code=422, detail="Say which item and write the explanation")
+    _x("INSERT INTO ledger_notes (project_id, item_key, body, explained, author) VALUES (%s,%s,%s,%s,%s)",
+       (project_id, key, text[:2000], bool(body.get("explained")), who))
+    return {"ok": True}
+
+
+@app.post("/api/ledger/{project_id}/reimbursements")
+async def ledger_reimburse(project_id: str, request: Request):
+    """Link a club payment to the ledger rows it settles. Hillary attributes; nothing auto-links."""
+    from fastapi import HTTPException as _HE
+    from db import query as _q, db as _db
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id, admin=True)
+    _ledger_ready(project_id)
+    eid = int(body.get("expenditure_id") or 0)
+    pay = _q("SELECT amount_ugx FROM expenditure_records WHERE id=%s AND project=%s", (eid, project_id))
+    items = body.get("rows") or []
+    if not pay or not items:
+        raise _HE(status_code=422, detail="Pick the club payment and the lines it covers")
+    total = 0
+    with _db() as conn:
+        with conn.cursor() as cur:
+            for it in items:
+                t = _LEDGER_TABLE.get(it.get("kind"))
+                amt = int(it.get("amount") or 0)
+                if not t or amt <= 0:
+                    raise _HE(status_code=422, detail="Each line needs a kind and an amount")
+                cur.execute("SELECT 1 FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % t, (int(it["row_id"]), project_id))
+                if not cur.fetchone():
+                    raise _HE(status_code=404, detail="Line not found")
+                cur.execute("INSERT INTO ledger_reimbursements (project_id, expenditure_id, table_name, row_id, amount, created_by) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (project_id, eid, t, int(it["row_id"]), amt, who))
+                total += amt
+    return {"ok": True, "linked": total, "payment": pay[0]["amount_ugx"]}
+
+
+@app.post("/api/ledger/{project_id}/{kind}")
+async def ledger_add(project_id: str, kind: str, request: Request):
+    import ledger as _ledger, auth as _auth
+    import datetime as _d
+    from fastapi import HTTPException as _HE
+    if kind not in _LEDGER_TABLE:
+        raise _HE(status_code=404, detail="Unknown entry type")
+    body = await request.json()
+    who, _p, via_wa = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    _ledger_ready(project_id)
+    today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
+    products = _ledger_products_map(project_id)
+    payers = _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS])
+    try:
+        if kind == "expense":
+            row = _ledger.validate_expense(body, today, payers, products)
+        elif kind == "sale":
+            row = _ledger.validate_sale(body, today, products)
+        elif kind == "loss":
+            row = _ledger.validate_loss(body, today, products)
+        else:
+            row = _ledger.validate_stock(body, today, products, payers)
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
+    ref = (str(body.get("source_ref")) if body.get("source_ref") else None)
+    res = _ledger.record(project_id, _LEDGER_TABLE[kind], row, who, "whatsapp" if via_wa else "app", ref)
+    warn = None
+    if kind in ("sale", "loss"):
+        avail = _ledger.qty_available(_ledger.load(project_id)).get(row["product_id"], 0)
+        if avail < 0:
+            warn = "That leaves %d %s in stock: check the quantity, or record the stock that was added." % (avail, products[row["product_id"]]["name"])
+    _CHICKEN_CACHE.clear()
+    return {"ok": True, "id": res["id"], "duplicate": not res["created"], "warning": warn}
+
+
+@app.delete("/api/ledger/{project_id}/{kind}/{row_id}")
+def ledger_delete(project_id: str, kind: str, row_id: int, request: Request):
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    from db import query as _q
+    if kind not in _LEDGER_TABLE:
+        raise _HE(status_code=404, detail="Unknown entry type")
+    who, payload, _w = _ledger_actor(request, project_id, write=True)
+    _ledger_ready(project_id)
+    row = _q("SELECT created_by, source FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % _LEDGER_TABLE[kind], (row_id, project_id))
+    if not row:
+        raise _HE(status_code=404, detail="Entry not found")
+    if payload.get("role") != "admin" and (row[0]["source"] == "appsheet_import" or row[0]["created_by"] != who):
+        raise _HE(status_code=403, detail="You can only remove your own entries")
+    _ledger.soft_delete(project_id, _LEDGER_TABLE[kind], row_id, who)
+    _CHICKEN_CACHE.clear()
+    return {"ok": True}
+
+
+def _ledger_receipt_dir():
+    from pathlib import Path as _P
+    base = "/var/www/kimfamhub-staging" if os.environ.get("KIMFAM_ENV") == "staging" else "/var/www/kimfamhub"
+    d = _P(base + "-private/ledger-receipts")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.post("/api/ledger/{project_id}/{kind}/{row_id}/receipt")
+async def ledger_receipt_upload(project_id: str, kind: str, row_id: int, request: Request):
+    import re as _re
+    from fastapi import HTTPException as _HE
+    from db import query as _q, execute as _x
+    if kind not in ("expense", "sale", "stock"):
+        raise _HE(status_code=404, detail="Receipts apply to expenses, sales and stock purchases")
+    _ledger_actor(request, project_id, write=True)
+    _ledger_ready(project_id)
+    table = _LEDGER_TABLE[kind]
+    if not _q("SELECT 1 FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % table, (row_id, project_id)):
+        raise _HE(status_code=404, detail="Entry not found")
+    file = (await request.form()).get("file")
+    if not file:
+        raise _HE(status_code=400, detail="No file uploaded")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise _HE(status_code=413, detail="File is over 15 MB")
+    name = _re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "receipt")
+    dest = _ledger_receipt_dir() / ("%s_%d_%s" % (kind, row_id, name))
+    dest.write_bytes(data)
+    url = "/api/ledger/receipt/%s/%d" % (kind, row_id)
+    _x("UPDATE %s SET receipt_url=%%s WHERE id=%%s" % table, (url, row_id))
+    return {"ok": True, "receipt_url": url}
+
+
+@app.get("/api/ledger/receipt/{kind}/{row_id}")
+def ledger_receipt_get(kind: str, row_id: int, request: Request):
+    from fastapi import HTTPException as _HE
+    from fastapi.responses import FileResponse as _FR
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Auth required")
+    hits = sorted(_ledger_receipt_dir().glob("%s_%d_*" % (kind, row_id))) if kind in ("expense", "sale", "stock") else []
+    if not hits:
+        raise _HE(status_code=404, detail="No receipt")
+    return _FR(str(hits[-1]))
+
+
+@app.get("/api/ledger/{project_id}/reconciliation")
+def ledger_reconciliation(project_id: str, request: Request):
+    import ledger as _ledger
+    _ledger_actor(request, project_id)          # any logged-in member: Hillary's rule, never public
+    _ledger_ready(project_id)
+    r = _ledger.reconciliation(project_id)
+    return json.loads(json.dumps(r, default=_ledger_json))
+
+
 @app.get("/api/projects/trees/detail")
 async def trees_detail(request: Request):
     from fastapi import HTTPException as _HE

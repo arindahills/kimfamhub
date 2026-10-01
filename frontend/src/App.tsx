@@ -16,6 +16,7 @@ import MeetingsPage from './pages/MeetingsPage'
 import UpdatesPage from './pages/UpdatesPage'
 import MembersPage from './pages/MembersPage'
 import ProjectsPage from './pages/ProjectsPage'
+import LedgerPage from './pages/LedgerPage'
 import EquityPage from './pages/EquityPage'
 import LoansPage from './pages/LoansPage'
 import DocsPage from './pages/DocsPage'
@@ -55,6 +56,7 @@ function AuthGate() {
         <Route path="/finances" element={<FinancesPage />} />
         <Route path="/members"  element={<MembersPage />} />
         <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/ledger"   element={<LedgerPage />} />
         <Route path="/proposals" element={<ProposalsPage />} />
         <Route path="/equity"   element={<EquityPage />} />
         <Route path="/loans"    element={<LoansPage />} />

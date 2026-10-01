@@ -884,3 +884,88 @@ class TestLedgerParity:
         assert _m._ledger_reads("chicken") is False
         monkeypatch.setenv("LEDGER_READS", "dairy, chicken")
         assert _m._ledger_reads("chicken") is True and _m._ledger_reads("goats") is False
+
+    # ── native entry + reconciliation (ADR-032) ───────────────────────────────────────────────
+    TODAY = __import__("datetime").date(2026, 10, 1)
+    PAYERS = ["Farm cash (Solomon)", "Club", "Israel", "Unknown (check)"]
+    PRODS = {"p1": {"sell_price": 400, "cost_price": 0}, "p2": {"sell_price": 30000, "cost_price": 10000}}
+
+    def test_expense_needs_a_payer_and_a_sane_date(self):
+        import ledger
+        ok = {"date": "2026-09-30", "item": "Layer mash", "qty": 2, "unit_price": 80000, "paid_by": "Club"}
+        row = ledger.validate_expense(ok, self.TODAY, self.PAYERS, self.PRODS)
+        assert row["total"] == 160000 and row["kind"] == "opex" and row["stock"] is None
+        for bad, why in (({**ok, "paid_by": ""}, "who paid"), ({**ok, "paid_by": "Nobody"}, "payer"),
+                         ({**ok, "date": "2026-10-02"}, "future"), ({**ok, "date": "2020-01-01"}, "before"),
+                         ({**ok, "date": "30/09/2026"}, "date"), ({**ok, "item": " "}, "bought"),
+                         ({**ok, "unit_price": 0}, "Amount"), ({**ok, "kind": "loan"}, "opex")):
+            with pytest.raises(ValueError, match="(?i)" + why):
+                ledger.validate_expense(bad, self.TODAY, self.PAYERS, self.PRODS)
+
+    def test_bird_purchase_is_one_entry_with_two_effects(self):
+        import ledger
+        row = ledger.validate_expense({"date": "2026-09-30", "item": "Chicken", "total": 1300000, "paid_by": "Israel",
+                                       "product_id": "p2", "stock_qty": 100}, self.TODAY, self.PAYERS, self.PRODS)
+        assert row["stock"]["qty"] == 100 and row["stock"]["total_cost"] == 1300000 and row["stock"]["unit_cost"] == 13000
+        assert row["stock"]["paid_by"] == "Israel" and row["stock"]["kind"] == "purchase"
+        with pytest.raises(ValueError):
+            ledger.validate_expense({"date": "2026-09-30", "item": "Chicken", "total": 5, "paid_by": "Club", "product_id": "zz"},
+                                    self.TODAY, self.PAYERS, self.PRODS)
+
+    def test_sale_loss_stock_validation(self):
+        import ledger
+        s = ledger.validate_sale({"date": "2026-09-30", "product_id": "p1", "qty": 30}, self.TODAY, self.PRODS)
+        assert s["unit_price"] == 400 and s["total"] == 12000 and s["payment"] == "Cash"   # price defaults from the product
+        with pytest.raises(ValueError):
+            ledger.validate_sale({"date": "2026-09-30", "product_id": "p1", "qty": 0}, self.TODAY, self.PRODS)
+        l = ledger.validate_loss({"date": "2026-09-30", "product_id": "p2", "qty": 2, "kind": "damaged", "reason": "predator"}, self.TODAY, self.PRODS)
+        assert l["kind"] == "Damaged" and l["total"] == 20000                                # qty x cost by default
+        with pytest.raises(ValueError):
+            ledger.validate_loss({"date": "2026-09-30", "product_id": "p2", "qty": 2, "kind": "Lost", "reason": "x"}, self.TODAY, self.PRODS)
+        with pytest.raises(ValueError):
+            ledger.validate_loss({"date": "2026-09-30", "product_id": "p2", "qty": 2, "kind": "Damaged", "reason": ""}, self.TODAY, self.PRODS)
+        eggs = ledger.validate_stock({"date": "2026-09-30", "product_id": "p1", "qty": 300}, self.TODAY, self.PRODS, self.PAYERS)
+        assert eggs["kind"] == "production" and eggs["total_cost"] == 0 and eggs["paid_by"] is None
+        with pytest.raises(ValueError, match="(?i)who paid"):
+            ledger.validate_stock({"date": "2026-09-30", "product_id": "p2", "qty": 5, "kind": "purchase", "total": 50000},
+                                  self.TODAY, self.PRODS, self.PAYERS)
+
+    def _recon_rows(self):
+        import datetime
+        d = datetime.date
+        return {"products": [], "sales": [{"total": 1000, "qty": 1, "product_id": "p1", "sale_date": d(2026, 1, 1)}],
+                "losses": [],
+                "stock": [{"id": 1, "kind": "purchase", "total_cost": 100, "qty": 1, "unit_cost": 100, "event_date": d(2026, 1, 1), "product_id": "p2"},
+                          {"id": 2, "kind": "purchase", "total_cost": 200, "qty": 2, "unit_cost": 100, "event_date": d(2026, 2, 1), "product_id": "p2"},
+                          {"id": 3, "kind": "purchase", "total_cost": 900, "qty": 9, "unit_cost": 100, "event_date": d(2026, 3, 1), "product_id": "p2"}],
+                "expenses": [{"id": 1, "item": "Chicken", "total": 100, "kind": "opex", "qty": 1, "unit_price": 100, "expense_date": d(2026, 1, 3), "paid_by": None, "source": "appsheet_import"},
+                             {"id": 2, "item": "Chicken", "total": 200, "kind": "opex", "qty": 2, "unit_price": 100, "expense_date": d(2026, 2, 1), "paid_by": None, "source": "appsheet_import"},
+                             {"id": 3, "item": "Chicken", "total": 500, "kind": "opex", "qty": 5, "unit_price": 100, "expense_date": d(2026, 4, 1), "paid_by": "Club", "source": "app", "receipt_url": None},
+                             {"id": 4, "item": "Equipment", "total": 400, "kind": "capex", "qty": 1, "unit_price": 400, "expense_date": d(2026, 4, 2), "paid_by": "Club", "source": "app", "receipt_url": "/r"}]}
+
+    def test_bird_open_items_match_by_amount_then_date(self):
+        import ledger
+        items = ledger.bird_open_items(self._recon_rows())
+        kinds = sorted(i["key"].split(":")[1] for i in items)
+        assert kinds == ["expense_only", "stock_only"]       # 100 matched 2 days apart and 200 exact: both fine
+        by = {i["key"].split(":")[1]: i for i in items}
+        assert by["expense_only"]["amount"] == 500 and by["stock_only"]["amount"] == 900
+
+    def test_reconciliation_keeps_two_accounts_and_explains_items(self):
+        import ledger, datetime
+        d = datetime.date
+        tre = [{"id": 1, "txn_date": d(2026, 1, 1), "description": "Free range chicken capital", "amount_ugx": 5000, "category": "project_investment", "recorded_by": "system_import"},
+               {"id": 2, "txn_date": d(2026, 1, 2), "description": "Solomon June pay", "amount_ugx": 200, "category": "staff", "recorded_by": "Hellen"},
+               {"id": 3, "txn_date": d(2026, 1, 3), "description": "Refund to Dad for feeds", "amount_ugx": 700, "category": "project_investment", "recorded_by": "Hellen"}]
+        r = ledger.build_reconciliation(self._recon_rows(), tre, [], [])
+        fb = r["farm_box"]
+        assert fb["in"] == {"capital": 5000, "sales": 1000, "total": 6000}    # pay and refund are NOT farm money in
+        assert fb["out"]["total"] == 100 + 200 + 500 + 400 and fb["gap"] == fb["out"]["total"] - 6000
+        keys = {i["key"] for i in r["open_items"]}
+        assert {"treasury:3", "preledger:unattributed", "receipts:missing", "gap"} <= keys and "treasury:2" not in keys
+        # a linked refund and an explaining note both close an item
+        r2 = ledger.build_reconciliation(self._recon_rows(), tre, [{"expenditure_id": 3, "amount": 700}],
+                                         [{"item_key": "gap", "body": "covered by Dad", "explained": True, "author": "Hillary", "created_at": d(2026, 2, 1)}])
+        done = {i["key"] for i in r2["open_items"] if i["explained"]}
+        assert {"treasury:3", "gap"} <= done and r2["open_count"] < r["open_count"]
+        assert [n["author"] for i in r2["open_items"] if i["key"] == "gap" for n in i["notes"]] == ["Hillary"]

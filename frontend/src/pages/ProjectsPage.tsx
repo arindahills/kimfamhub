@@ -364,6 +364,7 @@ function ProjectCard({ p, live, focused }: { p: Project; live?: LiveChicken; foc
             <button className={fullActionBtn} onClick={() => setShowDetails(s => !s)}>
               <ChevronDown size={15} className={cn('transition-transform', showDetails && 'rotate-180')} /> {showDetails ? 'Hide Details' : 'Show Details'}
             </button>
+            {p.id === 'chicken' && <a href="/ledger" className={fullActionBtn}><ClipboardList size={15} className="text-[#4ade80]" /> Open chicken ledger (record, entries, reconciliation)</a>}
             {p.id === 'washing_bay' && <WashingBayIncome />}
             {p.id === 'washing_bay' && <WashingBayCapital />}
             {isLivestock(p.id) && <LivestockTracker id={p.id} />}
