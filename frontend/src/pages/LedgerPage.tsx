@@ -52,7 +52,9 @@ interface Scorecard {
   findings: { severity: string; text: string }[]
   source: { title: string; url: string; version: number; imported_at: string }
 }
+interface Batch { id: number | null; date: string; product: string; qty: number; cost: number; held: string; held_days: number; age_at_purchase_weeks: number | null; age_now_weeks: number | null; supplier: string }
 interface Summary {
+  batches: Batch[]
   statement: Record<string, number>; products: Product[]; recent: Record<string, Row[]>
   options: { paid_by: string[]; loss_kinds: string[] }; can_write: boolean; is_admin: boolean; reads_ledger: boolean
 }
@@ -184,6 +186,26 @@ function SummaryTab({ s }: { s: Summary }) {
           ))}
         </div>
       </div>
+      {s.batches.length > 0 && (
+        <div className={card}>
+          <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Flock by batch</div>
+          <p className="mb-2 text-xs text-[var(--muted-2)]">Every bird purchase and how long it has been held. Add the age when bought on a purchase to see true age.</p>
+          <div className="divide-y divide-[var(--border)]">
+            {s.batches.map((b, i) => (
+              <div key={b.id ?? i} className="flex items-start justify-between gap-3 py-2.5 text-sm">
+                <div className="min-w-0">
+                  <div className="font-medium">{b.qty} {b.product.toLowerCase()}</div>
+                  <div className="text-xs text-[var(--muted-2)]">bought {b.date}{b.supplier ? ' · ' + b.supplier : ''}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-semibold">{b.held}</div>
+                  <div className="text-xs text-[var(--muted-2)]">{b.age_now_weeks != null ? 'about ' + b.age_now_weeks + ' weeks old' : 'age when bought not recorded'}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className={card}>
         <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">In stock now</div>
         {s.products.map(p => (
@@ -269,6 +291,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
         {birds && <div className="grid grid-cols-2 gap-2">
           <L t="Which birds">{product}</L>
           <L t="How many birds"><input className={input} inputMode="numeric" value={f.stock_qty || ''} onChange={e => set('stock_qty', e.target.value.replace(/[^0-9]/g, ''))} /></L>
+          <L t="Age when bought, in weeks (optional)"><input className={input} inputMode="numeric" value={f.age_weeks || ''} onChange={e => set('age_weeks', e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 16" /></L>
         </div>}
         <L t="Note (optional)"><input className={input} value={f.note || ''} onChange={e => set('note', e.target.value)} /></L>
       </>}

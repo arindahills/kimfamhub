@@ -1149,3 +1149,40 @@ class TestLedgerDrill:
         import ledger
         with pytest.raises(ValueError):
             ledger.drill(self._rows(), "profit")
+
+
+class TestFlockBatches:
+    """Ticket #98: how long each bird purchase has been held, and its age when the age at purchase is known."""
+
+    def test_held_for_words(self):
+        import ledger, datetime
+        d = datetime.date
+        assert ledger.held_for(d(2024, 6, 17), d(2026, 10, 2)) == "2 years 3 months"
+        assert ledger.held_for(d(2026, 6, 8), d(2026, 10, 2)) == "3 months 24 days"
+        assert ledger.held_for(d(2026, 9, 20), d(2026, 10, 2)) == "12 days"
+        assert ledger.held_for(d(2025, 1, 31), d(2025, 3, 1)) == "1 month 1 day"          # month ends do not break it
+        assert ledger.held_for(d(2026, 10, 2), d(2026, 10, 2)) == "0 days"
+        assert ledger.held_for(d(2026, 10, 3), d(2026, 10, 2)) == "not yet"
+
+    def test_batches_exclude_eggs_and_production_and_sort_newest_first(self):
+        import ledger, datetime
+        d = datetime.date
+        rows = {"products": [{"product_id": "e", "name": "eggs"}, {"product_id": "h", "name": "hens"}],
+                "stock": [{"id": 1, "product_id": "h", "event_date": d(2025, 1, 1), "qty": 10, "kind": "purchase", "total_cost": 100000, "supplier": "A", "age_weeks": 16},
+                          {"id": 2, "product_id": "h", "event_date": d(2026, 1, 1), "qty": 5, "kind": "purchase", "total_cost": 60000, "supplier": "", "age_weeks": None},
+                          {"id": 3, "product_id": "e", "event_date": d(2026, 2, 1), "qty": 900, "kind": "production", "total_cost": 0}]}
+        b = ledger.flock_batches(rows, d(2026, 3, 1))
+        assert [x["id"] for x in b] == [2, 1]                                              # newest first, eggs and production excluded
+        assert b[1]["age_at_purchase_weeks"] == 16 and b[1]["age_now_weeks"] == 16 + 424 // 7   # true age = age bought + weeks held
+        assert b[0]["age_now_weeks"] is None                                                # unknown stays unknown, never guessed
+
+    def test_age_at_purchase_is_optional_and_bounded(self):
+        import ledger, datetime
+        today = datetime.date(2026, 10, 1)
+        prods = {"p2": {"sell_price": 1, "cost_price": 1}}
+        base = {"date": "2026-09-30", "item": "Chicken", "total": 130000, "paid_by": "Club", "product_id": "p2", "stock_qty": 10}
+        payers = ["Club"]
+        assert ledger.validate_expense(base, today, payers, prods)["stock"]["age_weeks"] is None
+        assert ledger.validate_expense(dict(base, age_weeks="16"), today, payers, prods)["stock"]["age_weeks"] == 16
+        with pytest.raises(ValueError, match="(?i)age"):
+            ledger.validate_expense(dict(base, age_weeks="999"), today, payers, prods)

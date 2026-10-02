@@ -6918,6 +6918,7 @@ def _ledger_products_map(project_id):
 @app.get("/api/ledger/{project_id}")
 def ledger_summary(project_id: str, request: Request):
     import ledger as _ledger, auth as _auth
+    import datetime as _dtm
     who, payload, _w = _ledger_actor(request, project_id)
     _ledger_ready(project_id)
     rows = _ledger.load(project_id)
@@ -6931,6 +6932,7 @@ def ledger_summary(project_id: str, request: Request):
         "products": [{"product_id": p["product_id"], "name": p["name"], "cost_price": p["cost_price"], "sell_price": p["sell_price"],
                       "qty_available": qty.get(p["product_id"], 0)} for p in rows["products"]],
         "recent": recent,
+        "batches": json.loads(json.dumps(_ledger.flock_batches(rows, (_dtm.datetime.utcnow() + _dtm.timedelta(hours=3)).date()), default=_ledger_json)),
         "options": {"paid_by": _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS]), "loss_kinds": list(_ledger.LOSS_KINDS)},
         "can_write": is_admin or payload.get("sub") in _LEDGER_WRITERS, "is_admin": is_admin,
         "reads_ledger": _ledger_reads(project_id),

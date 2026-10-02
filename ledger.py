@@ -452,6 +452,52 @@ def _shares(items, total):
     return items
 
 
+# ── flock by batch: how long each purchase has been held, and its age (ticket #98) ───────────────
+def _add_months(d, n):
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    first = _dt.date(y, m + 1, 1)
+    last = (_dt.date(y + (m + 1) // 12, (m + 1) % 12 + 1, 1) - _dt.timedelta(days=1)).day
+    return first.replace(day=min(d.day, last))
+
+
+def held_for(start, today):
+    """Whole months and days between two dates, in words: '3 months 24 days', '2 years 1 month', '12 days'."""
+    if today < start:
+        return "not yet"
+    months = (today.year - start.year) * 12 + (today.month - start.month)
+    if _add_months(start, months) > today:
+        months -= 1
+    days = (today - _add_months(start, months)).days
+    y, m = divmod(months, 12)
+    parts = []
+    if y:
+        parts.append("%d year%s" % (y, "" if y == 1 else "s"))
+    if m:
+        parts.append("%d month%s" % (m, "" if m == 1 else "s"))
+    if days or not parts:
+        parts.append("%d day%s" % (days, "" if days == 1 else "s"))
+    return " ".join(parts[:2]) if y else " ".join(parts)
+
+
+def flock_batches(rows, today):
+    """One entry per bird purchase (eggs excluded), newest first: when it arrived, how many, how long it
+    has been held, and its age (age when bought + time held) where the age at purchase is known.
+    Survivors per batch are NOT computed: sales and losses are not tagged to a batch yet."""
+    names = {p["product_id"]: p["name"].capitalize() for p in rows["products"]}
+    out = []
+    for s in rows["stock"]:
+        if s["kind"] != "purchase" or (names.get(s["product_id"]) or "").lower() == "eggs":
+            continue
+        days = max((today - s["event_date"]).days, 0)
+        age0 = s.get("age_weeks")
+        out.append({"id": s.get("id"), "date": s["event_date"].isoformat(), "product": names.get(s["product_id"], s["product_id"]),
+                    "qty": s["qty"], "cost": s["total_cost"], "held_days": days, "held": held_for(s["event_date"], today),
+                    "age_at_purchase_weeks": age0, "age_now_weeks": (age0 + days // 7) if age0 is not None else None,
+                    "supplier": s.get("supplier") or ""})
+    out.sort(key=lambda b: b["date"], reverse=True)
+    return out
+
+
 # ── database layer (ADR-032) ──────────────────────────────────────────────────────────────────
 _LOCK_KEY = 778813
 _READY = False
@@ -476,7 +522,7 @@ _DDL = [
         product_id TEXT NOT NULL, event_date DATE NOT NULL, qty BIGINT NOT NULL,
         unit_cost BIGINT NOT NULL DEFAULT 0, total_cost BIGINT NOT NULL DEFAULT 0,
         kind TEXT NOT NULL DEFAULT 'purchase', supplier TEXT,
-        paid_by TEXT, receipt_url TEXT)""" % _COMMON,
+        paid_by TEXT, receipt_url TEXT, age_weeks INTEGER)""" % _COMMON,
     """CREATE TABLE IF NOT EXISTS ledger_sales (%s,
         product_id TEXT NOT NULL, sale_date DATE NOT NULL, qty BIGINT NOT NULL,
         unit_price BIGINT NOT NULL DEFAULT 0, total BIGINT NOT NULL DEFAULT 0,
@@ -515,6 +561,7 @@ def ready():
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
                 for ddl in _DDL:
                     cur.execute(ddl)
+                cur.execute("ALTER TABLE ledger_stock ADD COLUMN IF NOT EXISTS age_weeks INTEGER")    # ticket 98, additive
                 for t in _TABLES:
                     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS %s_source_ref_uq ON %s(project_id, source_ref) "
                                 "WHERE source_ref IS NOT NULL" % (t, t))
@@ -646,8 +693,13 @@ def validate_expense(d, today, allowed_payers, products):
         if pid not in products:
             raise ValueError("Unknown product %r." % pid)
         n = _need_pos(d.get("stock_qty") or qty, "Number of birds")
+        age_raw = d.get("age_weeks")
+        age = to_int(age_raw)
+        if age_raw not in (None, "") and not 0 <= age <= 150:
+            raise ValueError("Age when bought must be between 0 and 150 weeks.")
         out["stock"] = {"product_id": pid, "event_date": out["expense_date"], "qty": n, "unit_cost": total // n,
-                        "total_cost": total, "kind": "purchase", "supplier": out["supplier"], "paid_by": out["paid_by"]}
+                        "total_cost": total, "kind": "purchase", "supplier": out["supplier"], "paid_by": out["paid_by"],
+                        "age_weeks": age if age_raw not in (None, "") else None}
     return out
 
 
@@ -701,7 +753,7 @@ _INSERT = {
     "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by"),
     "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment"),
     "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason"),
-    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by"),
+    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks"),
 }
 
 
