@@ -276,20 +276,7 @@ def meetings_analytics(request: Request):
 # Project taxonomy, grounded in the Investment & Reward Guidelines (Ch.3 Asset Allocation):
 # venture id -> display name, and venture -> asset class (the portfolio level). Single source
 # of truth for action tagging + board grouping.
-PROJECT_NAMES = {
-    # Real Estate (30-50%)
-    "kakoba": "Kakoba Land", "apartments": "Apartments",
-    # Farming & Agriculture (20-40%)
-    "chicken": "Free Range Chicken", "dairy": "Dairy / Cows", "goats": "Goats",
-    "sheep": "Sheep (Dorper)", "rabbits": "Rabbits", "bees": "Apiary",
-    "trees": "Tree Planting", "mango": "Mangoes & Oranges", "irrigation": "Irrigation & Bananas",
-    # Business Ventures (10-30%)
-    "washing_bay": "Washing Bay", "hotels": "Hotels / Cottages / Lodges", "restaurants": "Restaurants",
-    # Unit Trusts (5-15%)
-    "unit_trusts": "Unit Trusts", "fortune_credit": "Fortune Credit",
-    # Government Securities (5-15%) / Cash (0-10%)
-    "govt_securities": "Government Securities", "cash": "Cash & Equivalents",
-}
+from project_names import PROJECT_NAMES   # shared with decision_trace.py (no circular import)
 PROJECT_ASSET_CLASS = {
     "kakoba": "Real Estate", "apartments": "Real Estate",
     "chicken": "Farming & Agriculture", "dairy": "Farming & Agriculture", "goats": "Farming & Agriculture",
@@ -6852,6 +6839,106 @@ async def chicken_detail(request: Request):
         "opex_breakdown":   data.get("opex_breakdown", {}),
         "monthly_spend":    data.get("monthly_spend", {}),
     }
+
+# ── Decision register, admin side (ADR-034). Registered before the ledger routes and the SPA catch-all. ──
+def _decision_admin(request, internal_ok=False):
+    """-> who. Admins only: a logged-in admin JWT. The internal key (maintainer scripts) is accepted only
+    when the caller passes internal_ok=True, which is for the read-only list route and nothing else."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload and internal_ok and _internal_key_ok(request):
+        return "internal"
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    if payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admins only")
+    return payload.get("display") or payload.get("sub")
+
+
+def _decision_ready():
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    if not _dt.ready():
+        raise _HE(status_code=503, detail="The decision register is initialising, please retry shortly")
+
+
+class _DecisionLinkIn(_BaseModel):
+    decision_id: int
+    target_type: str
+    target_ref: str
+    relation: str = "explains"
+    note: str = ""
+
+
+@app.get("/api/decision-register/{project_id}")
+def decision_register_list(project_id: str, request: Request, state: str = "", meeting_id: int = 0):
+    """Admin view of the register with every link (suggested, confirmed, rejected). Private meetings are
+    excluded. The only decision route that also accepts the internal key (read-only)."""
+    _decision_admin(request, internal_ok=True)
+    _decision_ready()
+    import decision_trace as _dt
+    from db import query as _q
+    where, args = ["d.project_id=%s", "d.deleted_at IS NULL", _dt.private_clause("d.meeting_id")], [project_id]
+    if meeting_id:
+        where.append("d.meeting_id=%s"); args.append(meeting_id)
+    decisions = _q("SELECT d.* FROM decisions d WHERE " + " AND ".join(where) + " ORDER BY d.meeting_id, d.quote_start NULLS LAST, d.id", args)
+    links = _q("SELECT l.* FROM decision_links l JOIN decisions d ON d.id=l.decision_id WHERE d.project_id=%s AND d.deleted_at IS NULL AND "
+               + _dt.private_clause("d.meeting_id") + " ORDER BY l.id", (project_id,))
+    if state in ("suggested", "confirmed", "rejected"):
+        links = [l for l in links if l["state"] == state]
+    by = {}
+    for l in links:
+        by.setdefault(l["decision_id"], []).append({k: _ledger_json(v) for k, v in l.items()})
+    return {"decisions": [dict({k: _ledger_json(v) for k, v in d.items()}, links=by.get(d["id"], [])) for d in decisions]}
+
+
+@app.post("/api/decision-register/links")
+def decision_link_add(body: _DecisionLinkIn, request: Request):
+    """Admin adds a link by hand; it is stored confirmed."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    who = _decision_admin(request)
+    _decision_ready()
+    try:
+        row = _dt.add_link(body.decision_id, body.target_type, body.target_ref, body.relation, who, body.note)
+    except ValueError:
+        raise _HE(status_code=400, detail="Unknown target_type or relation, or empty target_ref")
+    if not row:
+        raise _HE(status_code=404, detail="No such decision")
+    return {"link": {k: _ledger_json(v) for k, v in row.items()}}
+
+
+@app.post("/api/decision-register/links/{link_id}/{action}")
+def decision_link_review(link_id: int, action: str, request: Request):
+    """Admin confirms or rejects a suggested link. A rejected link is never suggested again."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    if action not in ("confirm", "reject"):
+        raise _HE(status_code=404, detail="Not found")
+    who = _decision_admin(request)
+    _decision_ready()
+    row = _dt.set_link_state(link_id, "confirmed" if action == "confirm" else "rejected", who)
+    if not row:
+        raise _HE(status_code=404, detail="No such link")
+    return {"link": {k: _ledger_json(v) for k, v in row.items()}}
+
+
+class _DecisionPrivateIn(_BaseModel):
+    private: bool
+
+
+@app.post("/api/decision-register/meetings/{meeting_id}/private")
+def decision_meeting_private(meeting_id: int, body: _DecisionPrivateIn, request: Request):
+    """Admin (JWT) flags or unflags a meeting as private. Flagging purges its decisions from the register."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    who = _decision_admin(request)
+    _decision_ready()
+    out = _dt.set_private(meeting_id, body.private, who)
+    if out is None:
+        raise _HE(status_code=404, detail="No such meeting")
+    return out
+
 
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
