@@ -9,7 +9,7 @@ The model is always an injected parameter, model_fn(prompt) -> str, so every tes
 Hard rules enforced in code (spec):
   1. A quote must exist verbatim (whitespace-normalised) in the stored transcript, else the decision is dropped.
   2. A speaker is named only when the transcript labels the turn containing the quote with a known member.
-  3. A private meeting is never read, extracted or quoted.
+  3. A private meeting (column OR override table) is never read, extracted, linked or shown; flagging purges it.
   4. AI proposes, people confirm: suggest_links only ever writes state 'suggested'.
 """
 import datetime as _dt
@@ -68,12 +68,38 @@ def chunk_transcript(text):
     return out
 
 
+_SENTENCE = re.compile(r"\S.*?(?:[.!?]+(?=\s)|$)", re.S)
+CARRY_CHARS = 300
+
+
+def _units(text, turns, max_chars):
+    """Whole turns, except that an oversized UNLABELLED turn is split at sentence boundaries."""
+    units = []
+    for t in turns:
+        if t["speaker"] is None and t["end"] - t["start"] > max_chars:
+            cur = None
+            for m in _SENTENCE.finditer(text, t["start"], t["end"]):
+                if cur and m.end() - cur["start"] > max_chars:
+                    units.append(cur)
+                    cur = None
+                if cur is None:
+                    cur = {"start": m.start(), "end": m.end(), "speaker": None}
+                else:
+                    cur["end"] = m.end()
+            if cur:
+                units.append(cur)
+        else:
+            units.append(t)
+    return units
+
+
 def pack_chunks(text, turns=None, max_chars=CHUNK_CHARS):
-    """Group whole turns into prompt-sized chunks -> [{'start','end','text'}]. A turn longer than the
-    limit becomes its own chunk (never cut mid-quote)."""
+    """Group units into prompt-sized chunks -> [{'start','end','text','carry'}]. A labelled turn longer than
+    the limit becomes its own chunk; an oversized unlabelled turn is split at sentence boundaries.
+    `carry` is the previous chunk's last sentence (context for the prompt only, never quotable)."""
     turns = chunk_transcript(text) if turns is None else turns
     chunks, cur = [], None
-    for t in turns:
+    for t in _units(text, turns, max_chars):
         if cur and t["end"] - cur["start"] > max_chars:
             chunks.append(cur)
             cur = None
@@ -83,8 +109,14 @@ def pack_chunks(text, turns=None, max_chars=CHUNK_CHARS):
             cur["end"] = t["end"]
     if cur:
         chunks.append(cur)
+    prev = None
     for c in chunks:
         c["text"] = text[c["start"]:c["end"]]
+        c["carry"] = ""
+        if prev is not None:
+            last = [m.group(0) for m in _SENTENCE.finditer(prev["text"])]
+            c["carry"] = " ".join(last[-1].split())[-CARRY_CHARS:] if last else ""
+        prev = c
     return chunks
 
 
@@ -95,6 +127,9 @@ def build_prompt(chunk, meeting_meta, projects):
     body = chunk["text"] if isinstance(chunk, dict) else str(chunk)
     plist = "\n".join("- %s" % (("%s (%s)" % (p["id"], p.get("name", ""))) if isinstance(p, dict) else p) for p in projects)
     meta = meeting_meta or {}
+    carry = chunk.get("carry") if isinstance(chunk, dict) else ""
+    carry_line = ("Previous section ended with (context only, never quote from this line): %s\n\n"
+                  % " ".join(carry.split())) if carry else ""
     return (
         "You extract DECISIONS from a family investment club meeting transcript.\n"
         "Meeting: %s, date %s.\n\n"
@@ -111,8 +146,8 @@ def build_prompt(chunk, meeting_meta, projects):
         "Return ONLY JSON, no prose, in exactly this shape:\n"
         "{\"decisions\":[{\"project_id\":\"\",\"statement\":\"\",\"rationale\":\"\",\"quote\":\"\","
         "\"speaker\":null,\"amount_ugx\":null,\"effective_date\":null,\"status\":\"agreed\"}]}\n\n"
-        "TRANSCRIPT:\n%s\n"
-    ) % (meta.get("ref", "?"), meta.get("date", "?"), plist or "- (none)", body)
+        "%sTRANSCRIPT:\n%s\n"
+    ) % (meta.get("ref", "?"), meta.get("date", "?"), plist or "- (none)", carry_line, body)
 
 
 # ── re-checking the model's answer ─────────────────────────────────────────────────────────────
@@ -143,8 +178,13 @@ def _parse_date(v):
     return _dt.date.fromisoformat(str(v).strip())      # ValueError on anything but YYYY-MM-DD
 
 
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+                         "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"'})
+
+
 def _normalised(text):
-    """(collapsed text, index map): whitespace runs become one space; map[i] = offset in the original."""
+    """(collapsed text, index map): whitespace runs become one space and typographic quotes become straight
+    ones (1:1, so offsets hold); map[i] = offset in the original."""
     out, idx, prev_space = [], [], False
     for i, ch in enumerate(text):
         if ch.isspace():
@@ -154,20 +194,35 @@ def _normalised(text):
             idx.append(i)
             prev_space = True
         else:
-            out.append(ch)
+            out.append(ch.translate(_QUOTES))
             idx.append(i)
             prev_space = False
     return "".join(out), idx
 
 
-def find_quote(quote, transcript):
-    """Offset of `quote` in `transcript` ignoring whitespace differences, or -1."""
-    nq = " ".join(str(quote or "").split())
+def find_quote_span(quote, transcript, span=None):
+    """-> (start, end, unique): offsets of `quote` in `transcript` (whitespace and typographic quotes ignored),
+    or (-1, -1, False). With `span=(a, b)` only occurrences starting inside [a, b) count (the chunk the model
+    was shown, so the carry-over text can never match). Without a span all occurrences count. `unique` is
+    False when more than one occurrence remains, in which case no speaker may be attributed."""
+    nq = " ".join(str(quote or "").split()).translate(_QUOTES)
     if len(nq) < MIN_QUOTE:
-        return -1
+        return -1, -1, False
     nt, idx = _normalised(transcript or "")
-    at = nt.find(nq)
-    return idx[at] if at >= 0 else -1
+    hits, at = [], nt.find(nq)
+    while at >= 0:
+        if span is None or span[0] <= idx[at] < span[1]:
+            hits.append(at)
+        at = nt.find(nq, at + 1)
+    if not hits:
+        return -1, -1, False
+    at = hits[0]
+    return idx[at], idx[at + len(nq) - 1] + 1, len(hits) == 1
+
+
+def find_quote(quote, transcript):
+    """Offset of `quote` in `transcript` ignoring whitespace and quote-style differences, or -1."""
+    return find_quote_span(quote, transcript)[0]
 
 
 def _parse_json(raw):
@@ -185,12 +240,13 @@ def _parse_json(raw):
     return None
 
 
-def check(raw, transcript, members=(), projects=(), turns=None):
+def check(raw, transcript, members=(), projects=(), turns=None, span=None):
     """Re-check the model's JSON against the stored transcript. Returns the decisions that survive, each
     {'project_id','statement','rationale','quote','quote_start','speaker','amount_ugx','effective_date',
     'status','confidence','source'}. Dropped: no verbatim quote, unknown project, bad statement, bad amount
     or date. Never raises on garbage. The speaker is taken from the transcript's own label for the turn
-    holding the quote (the model's claim is only kept if it agrees), and only if that label is a known member."""
+    holding the quote (the model's claim is only kept if it agrees), and only if that label is a known member
+    and the quote occurs once (in `span`, the chunk shown to the model, when given)."""
     data = _parse_json(raw)
     items = data.get("decisions") if isinstance(data, dict) else None
     if not isinstance(items, list):
@@ -207,7 +263,7 @@ def check(raw, transcript, members=(), projects=(), turns=None):
             continue
         if d.get("project_id") not in known:
             continue
-        start = find_quote(d.get("quote"), transcript)
+        start, qend, unique = find_quote_span(d.get("quote"), transcript, span)
         if start < 0:
             continue
         try:
@@ -217,7 +273,7 @@ def check(raw, transcript, members=(), projects=(), turns=None):
         status = d.get("status") if d.get("status") in ("agreed", "proposed") else "proposed"
         speaker = None
         turn = next((t for t in turns if t["start"] <= start < t["end"]), None)
-        if turn and turn["speaker"]:
+        if unique and turn and turn["speaker"]:
             label = by_label.get(turn["speaker"].strip().lower())
             claimed = str(d.get("speaker") or "").strip().lower()
             if label and (not claimed or claimed == turn["speaker"].strip().lower()):
@@ -229,16 +285,27 @@ def check(raw, transcript, members=(), projects=(), turns=None):
         out.append({
             "project_id": d["project_id"], "statement": statement,
             "rationale": " ".join(str(d.get("rationale") or "").split())[:MAX_RATIONALE],
-            "quote": " ".join(str(d["quote"]).split()), "quote_start": start, "speaker": speaker,
+            "quote": " ".join(transcript[start:qend].split()), "quote_start": start, "speaker": speaker,
             "amount_ugx": amount, "effective_date": eff, "status": status,
             "confidence": 0.8 if speaker else 0.6, "source": "transcript",
         })
     return out
 
 
-def minutes_decisions(key_decisions, project_id=None):
+def tag_project(text, projects=None):
+    """The one project a bullet is about, by whole-word keyword, or None when it matches none or several."""
+    from project_names import PROJECT_KEYWORDS
+    low = (text or "").lower()
+    hit = {pid for pid, kws in PROJECT_KEYWORDS.items()
+           if (projects is None or pid in projects) and any(re.search(r"\b%s\b" % re.escape(k), low) for k in kws)}
+    return next(iter(hit)) if len(hit) == 1 else None
+
+
+def minutes_decisions(key_decisions, project_id=None, projects=None):
     """Fallback for meetings with no transcript: one decision per key_decisions bullet. No quote, no
-    speaker, low confidence. Accepts a list, a JSON list string or newline-separated text."""
+    speaker, low confidence. Each bullet is tagged to a project by conservative keywords (or `project_id`
+    when given); a bullet that cannot be tagged is NOT stored (every read filters on project).
+    Accepts a list, a JSON list string or newline-separated text."""
     items = key_decisions
     if isinstance(items, str):
         try:
@@ -247,13 +314,17 @@ def minutes_decisions(key_decisions, project_id=None):
             items = items.splitlines()
     if not isinstance(items, list):
         return []
+    known = None if projects is None else {(p["id"] if isinstance(p, dict) else p) for p in projects}
     out, seen = [], set()
     for it in items:
         s = " ".join(str(it.get("text") if isinstance(it, dict) else it).split()).lstrip("-*• ").strip()
         if len(s) < 8 or s in seen:
             continue
+        pid = project_id or tag_project(s, known)
+        if not pid:
+            continue
         seen.add(s)
-        out.append({"project_id": project_id, "statement": s[:MAX_STATEMENT], "rationale": "", "quote": None,
+        out.append({"project_id": pid, "statement": s[:MAX_STATEMENT], "rationale": "", "quote": None,
                     "quote_start": None, "speaker": None, "amount_ugx": None, "effective_date": None,
                     "status": "agreed", "confidence": 0.4, "source": "minutes"})
     return out
@@ -283,14 +354,66 @@ _DDL = [
         state TEXT NOT NULL DEFAULT 'suggested' CHECK (state IN ('suggested','confirmed','rejected')),
         score REAL, note TEXT, created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         UNIQUE (decision_id, target_type, target_ref, relation))""",
-    # meetings are an older table owned by main.py; the private flag is added here, default not private
-    "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE",
-    "CREATE INDEX IF NOT EXISTS actions_meeting_id_idx ON actions(meeting_id)",
+    # authoritative per-meeting private override: a table the app role can always create
+    """CREATE TABLE IF NOT EXISTS decision_private_meetings (
+        meeting_id INTEGER PRIMARY KEY, set_by TEXT, set_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
 ]
+# `meetings` and `actions` are owned by the postgres role, not the app role: nothing below may be part of the
+# DDL transaction above (a failing ALTER would roll back the tables and keep the register at 503).
+_PRIVATE_COL = None     # cached probe: does meetings.is_private exist?
+
+
+def _has_private_col(refresh=False):
+    """True if meetings.is_private exists. Probed once per process and cached; a failed probe counts as
+    'no column' for that call and is not cached."""
+    global _PRIVATE_COL
+    if _PRIVATE_COL is not None and not refresh:
+        return _PRIVATE_COL
+    try:
+        from db import query as _q
+        _PRIVATE_COL = bool(_q("SELECT 1 FROM information_schema.columns "
+                               "WHERE table_name='meetings' AND column_name='is_private'"))
+    except Exception:
+        return False
+    return _PRIVATE_COL
+
+
+def private_clause(col):
+    """SQL condition that is true when meeting id `col` is NOT private (column or override table). A NULL
+    meeting id is not private. Works whether or not meetings.is_private exists."""
+    c = "NOT EXISTS (SELECT 1 FROM decision_private_meetings pm WHERE pm.meeting_id=%s)" % col
+    if _has_private_col():
+        c += " AND NOT EXISTS (SELECT 1 FROM meetings pmm WHERE pmm.id=%s AND pmm.is_private)" % col
+    return "(" + c + ")"
+
+
+def _best_effort_owned_objects():
+    """meetings.is_private and the actions(meeting_id) index live on tables the app role does not own.
+    Same pattern as main._ensure_meeting_cols: check first, attempt the DDL in its own transaction, log
+    and continue on failure. The override table is authoritative either way. Never raises."""
+    import logging
+    log = logging.getLogger("uvicorn.error")
+    from db import db as _db, query as _q
+    if not _has_private_col(refresh=True):
+        try:
+            with _db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE")
+        except Exception as e:
+            log.warning("decision_trace: meetings.is_private not added (owner ALTER needed; override table is used): %s", e)
+        _has_private_col(refresh=True)
+    try:
+        if not _q("SELECT 1 FROM pg_indexes WHERE tablename='actions' AND indexname='actions_meeting_id_idx'"):
+            with _db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("CREATE INDEX IF NOT EXISTS actions_meeting_id_idx ON actions(meeting_id)")
+    except Exception as e:
+        log.warning("decision_trace: actions(meeting_id) index not created: %s", e)
 
 
 def ready():
-    """Create the register tables once per process, under an advisory lock (two workers race here).
+    """Create the register tables (only tables the app role owns) once per process, under an advisory lock
+    (two workers race here), then best-effort the optional objects on tables it does not own.
     Never raises; returns whether the register is usable."""
     global _READY
     if _READY:
@@ -306,6 +429,11 @@ def ready():
     except Exception as _e:
         import logging
         logging.getLogger("uvicorn.error").warning("decision tables unavailable: %s", _e)
+        return False
+    try:
+        _best_effort_owned_objects()
+    except Exception:
+        pass
     return _READY
 
 
@@ -313,16 +441,25 @@ class DbStore:
     """The real store behind extract_meeting / suggest_links. Tests pass a fake with the same methods."""
 
     def load_meeting(self, meeting_id):
+        """The meeting row; a private meeting is returned WITHOUT its transcript or minutes."""
         from db import query as _q
-        rows = _q("SELECT id, ref, date, transcript, key_decisions, is_private FROM meetings WHERE id=%s", (meeting_id,))
-        return rows[0] if rows else None
+        if not _q("SELECT 1 FROM meetings WHERE id=%s", (meeting_id,)):
+            return None
+        if self.is_private(meeting_id):
+            return {"id": meeting_id, "ref": None, "date": None, "transcript": None, "key_decisions": None, "is_private": True}
+        row = _q("SELECT id, ref, date, transcript, key_decisions FROM meetings WHERE id=%s", (meeting_id,))[0]
+        row["is_private"] = False
+        return row
+
+    def is_private(self, meeting_id):
+        from db import query as _q
+        if _q("SELECT 1 FROM decision_private_meetings WHERE meeting_id=%s", (meeting_id,)):
+            return True
+        return bool(_has_private_col() and _q("SELECT 1 FROM meetings WHERE id=%s AND is_private", (meeting_id,)))
 
     def projects(self):
-        from db import query as _q
-        try:
-            return [{"id": r["id"], "name": r.get("name") or r["id"]} for r in _q("SELECT id, name FROM projects")]
-        except Exception:
-            return []
+        from project_names import PROJECT_NAMES
+        return [{"id": k, "name": v} for k, v in PROJECT_NAMES.items()]
 
     def members(self):
         import auth
@@ -354,18 +491,21 @@ class DbStore:
         from db import query as _q
         return _q("SELECT d.id, d.statement, d.amount_ugx, d.meeting_id, d.effective_date, m.date AS meeting_date "
                   "FROM decisions d JOIN meetings m ON m.id=d.meeting_id "
-                  "WHERE d.project_id=%s AND d.deleted_at IS NULL AND d.status IN ('agreed','proposed')", (project_id,))
+                  "WHERE d.project_id=%s AND d.deleted_at IS NULL AND d.status IN ('agreed','proposed') AND "
+                  + private_clause("d.meeting_id"), (project_id,))
 
     def existing_links(self, project_id):
         from db import query as _q
         return {(r["decision_id"], r["target_type"], r["target_ref"], r["relation"]) for r in _q(
             "SELECT l.decision_id, l.target_type, l.target_ref, l.relation FROM decision_links l "
-            "JOIN decisions d ON d.id=l.decision_id WHERE d.project_id=%s", (project_id,))}
+            "JOIN decisions d ON d.id=l.decision_id WHERE d.project_id=%s AND d.deleted_at IS NULL AND "
+            + private_clause("d.meeting_id"), (project_id,))}
 
     def candidates(self, project_id):
         from db import query as _q
         c = []
-        for r in _q("SELECT ref, description, meeting_id FROM actions WHERE project_id=%s", (project_id,)):
+        for r in _q("SELECT ref, description, meeting_id FROM actions a WHERE project_id=%s AND "
+                    + private_clause("a.meeting_id"), (project_id,)):
             c.append({"target_type": "action", "target_ref": r["ref"], "date": None, "amount": None,
                       "text": r["description"] or "", "meeting_id": r["meeting_id"]})
         for table, ttype, dcol, acol, tcol in (
@@ -407,14 +547,21 @@ class DbStore:
 def extract_meeting(meeting_id, model_fn, store=None, projects=None, members=None):
     """Extract and store the decisions of one meeting. Idempotent: rows already stored (same quote offset
     and statement) are skipped, so a re-run adds nothing. A private meeting is skipped before its
-    transcript is read. Returns {'status','found','added'}; status is 'ok', 'private', 'missing' or 'no_text'."""
-    store = store or DbStore()
+    transcript is read. Returns {'status','found','added'}; status is 'ok', 'private', 'missing', 'no_text',
+    'unavailable' (register tables not ready) or 'error' (no projects to tag decisions to; 'message' says so)."""
+    if store is None:
+        if not ready():
+            return {"status": "unavailable", "found": 0, "added": 0}
+        store = DbStore()
     meeting = store.load_meeting(meeting_id)
     if not meeting:
         return {"status": "missing", "found": 0, "added": 0}
     if meeting.get("is_private"):
         return {"status": "private", "found": 0, "added": 0}
     projects = store.projects() if projects is None else projects
+    if not projects:
+        return {"status": "error", "found": 0, "added": 0,
+                "message": "No projects configured: refusing to extract, every decision would be dropped"}
     members = store.members() if members is None else members
     transcript = meeting.get("transcript") or ""
     meta = {"ref": meeting.get("ref"), "date": str(meeting.get("date") or "")}
@@ -422,9 +569,10 @@ def extract_meeting(meeting_id, model_fn, store=None, projects=None, members=Non
     if transcript.strip():
         turns = chunk_transcript(transcript)
         for ch in pack_chunks(transcript, turns):
-            found += check(model_fn(build_prompt(ch, meta, projects)), transcript, members, projects, turns)
+            found += check(model_fn(build_prompt(ch, meta, projects)), transcript, members, projects, turns,
+                           span=(ch["start"], ch["end"]))
     else:
-        found = minutes_decisions(meeting.get("key_decisions"))
+        found = minutes_decisions(meeting.get("key_decisions"), projects=projects)
         if not found:
             return {"status": "no_text", "found": 0, "added": 0}
     have = store.existing_keys(meeting["id"])
@@ -469,6 +617,10 @@ def score_links(decisions, candidates, existing=()):
         dkw = _keywords(d.get("statement"))
         mdate = _as_date(d.get("meeting_date"))
         amount = d.get("amount_ugx")
+        in_window = lambda c: (mdate is not None and _as_date(c.get("date")) is not None  # noqa: E731
+                               and 0 <= (_as_date(c["date"]) - mdate).days <= LINK_WINDOW_DAYS)
+        n_amount = sum(1 for c in candidates if c["target_type"] != "action" and amount and c.get("amount")
+                       and in_window(c) and abs(int(c["amount"]) - int(amount)) <= AMOUNT_TOLERANCE * int(amount))
         for c in candidates:
             shared = len(dkw & _keywords(c.get("text")))
             if c["target_type"] == "action":
@@ -480,18 +632,21 @@ def score_links(decisions, candidates, existing=()):
                 if mdate is None or cdate is None or not (0 <= (cdate - mdate).days <= LINK_WINDOW_DAYS):
                     continue
                 cam = c.get("amount")
-                reasons, score = [], 0.0
+                reasons, score, amt_hit = [], 0.0, False
                 if amount and cam:
                     if int(cam) == int(amount):
-                        score, reasons = 0.9, ["exact amount match"]
+                        score, reasons, amt_hit = 0.9, ["exact amount match"], True
                     elif abs(int(cam) - int(amount)) <= AMOUNT_TOLERANCE * int(amount):
-                        score, reasons = 0.7, ["amount within 5 percent"]
+                        score, reasons, amt_hit = 0.7, ["amount within 5 percent"], True
                 if shared >= 2:
                     score = max(score, 0.4) + (0.05 if score else 0)
                     reasons.append("%d shared keywords" % shared)
                 if not reasons:
                     continue
                 reasons.append("%d days after meeting" % (cdate - mdate).days)
+                if amt_hit and n_amount > 1:       # a round amount matches many rows: none of them is a safe guess
+                    score = min(score, 0.5)
+                    reasons.append("%d rows match this amount" % n_amount)
                 rel, note = "authorised", ", ".join(reasons)
             key = (d["id"], c["target_type"], str(c["target_ref"]), rel)
             if key in existing:
@@ -503,10 +658,38 @@ def score_links(decisions, candidates, existing=()):
 
 
 def suggest_links(project_id, store=None):
-    """Store 'suggested' links for a project's decisions. Never confirms. Returns the number added."""
-    store = store or DbStore()
+    """Store 'suggested' links for a project's decisions. Never confirms.
+    Returns {'status': 'ok'|'unavailable', 'added': n}."""
+    if store is None:
+        if not ready():
+            return {"status": "unavailable", "added": 0}
+        store = DbStore()
     links = score_links(store.decisions(project_id), store.candidates(project_id), store.existing_links(project_id))
-    return store.insert_links(links, "decision_trace suggest") if links else 0
+    return {"status": "ok", "added": store.insert_links(links, "decision_trace suggest") if links else 0}
+
+
+def purge_meeting(meeting_id):
+    """Soft-delete every decision of a meeting (used when it is flagged private). Returns the count."""
+    from db import query as _q, execute as _x
+    n = len(_q("SELECT id FROM decisions WHERE meeting_id=%s AND deleted_at IS NULL", (meeting_id,)))
+    if n:
+        _x("UPDATE decisions SET deleted_at=now() WHERE meeting_id=%s AND deleted_at IS NULL", (meeting_id,))
+    return n
+
+
+def set_private(meeting_id, private, who):
+    """Admin flag via the override table (authoritative). True: record it and purge the meeting's
+    decisions; False: remove the override (purged decisions stay deleted). -> {'private','purged'} or None
+    when the meeting does not exist."""
+    from db import query as _q, execute as _x
+    if not _q("SELECT 1 FROM meetings WHERE id=%s", (meeting_id,)):
+        return None
+    if private:
+        _x("INSERT INTO decision_private_meetings (meeting_id, set_by) VALUES (%s,%s) "
+           "ON CONFLICT (meeting_id) DO UPDATE SET set_by=EXCLUDED.set_by, set_at=now()", (meeting_id, who))
+        return {"private": True, "purged": purge_meeting(meeting_id)}
+    _x("DELETE FROM decision_private_meetings WHERE meeting_id=%s", (meeting_id,))
+    return {"private": False, "purged": 0}
 
 
 def set_link_state(link_id, state, who):
