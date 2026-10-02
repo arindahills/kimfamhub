@@ -279,9 +279,10 @@ function ItemPicker({ value, items, onChange, onPick }: { value: string; items: 
               <span>{i.name}</span><span className="text-[10px] text-[var(--muted-2)]">{i.group_name ?? ''} · {i.default_uom}</span>
             </button>
           ))}
-          {q && !exact && <div className="border-t border-[var(--border)] px-3 py-2 text-xs text-[#fbbf24]">"{value.trim()}" is new: it will be added to the list when you save.</div>}
+          {q && hits.length === 0 && <div className="px-3 py-2 text-xs text-[#fbbf24]">No match: "{value.trim()}" will be added to the list as a new item when you save.</div>}
         </div>
       )}
+      {!open && q && !exact && <div className="mt-1 text-xs text-[#fbbf24]">New item: "{value.trim()}" will be added to the list when you save.</div>}
     </div>
   )
 }
