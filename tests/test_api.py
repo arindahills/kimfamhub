@@ -1963,3 +1963,123 @@ class TestCashCustody:
         keys = {i["key"]: i for i in r["open_items"]}
         assert keys["cash:unassigned"]["amount"] == 80000 and "cash:pending:7" in keys and "cash:negative:Hellen" in keys
         assert r["custody"]["held_outside_club"] > 0 and any(h["holder"] == "Israel" for h in r["custody"]["holders"])
+
+
+class TestCashHardening:
+    """Review findings on cash custody (independent review, 3 Oct): each rule has a test."""
+
+    H = ["Farm cash (Solomon)", "Israel", "Hellen", "Hillary", "Club account"]
+
+    def test_only_people_who_can_hold_farm_cash_are_holders(self):
+        import ledger
+        assert ledger.holders(["Israel", "Alex", "Hellen", "Hillary", "Solomon"]) == ["Farm cash (Solomon)", "Israel", "Hellen", "Hillary", "Club account"]
+        assert ledger.holder_login("Farm cash (Solomon)") == "Solomon" and ledger.holder_login("Club account") is None and ledger.holder_login("Israel") == "Israel"
+
+    def test_an_opening_cannot_create_money(self):
+        import ledger
+        ledger.check_opening_cap(80000, 80000, 0)                                    # exactly what is unassigned: fine
+        with pytest.raises(ValueError, match="(?i)more than the cash"):
+            ledger.check_opening_cap(80001, 80000, 0)
+        with pytest.raises(ValueError):
+            ledger.check_opening_cap(50000, 80000, 40000)                            # pending openings already claim part of it
+        with pytest.raises(ValueError):
+            ledger.check_opening_cap(1, 0, 0)
+        import datetime
+        rows = {"products": [], "stock": [], "losses": [], "expenses": [], "sales": []}
+        over = ledger.cash_position(rows, [{"id": 1, "kind": "opening", "from_holder": None, "to_holder": "Israel", "amount": 500, "status": "acknowledged", "move_date": datetime.date(2026, 10, 1)}], [], self.H)
+        assert over["over_declared"] == 500 and over["unassigned"] == 0                # surfaced, never silently clamped
+        rec = ledger.build_reconciliation(dict(rows, sales=[]), [], [], [], [{"id": 1, "kind": "opening", "from_holder": None, "to_holder": "Israel", "amount": 500, "status": "acknowledged", "move_date": datetime.date(2026, 10, 1), "created_by": "x"}], [], self.H)
+        assert any(i["key"] == "cash:over-declared" for i in rec["open_items"])
+
+    def test_the_giver_submits_or_an_admin_with_a_reason(self):
+        import ledger
+        give = {"kind": "handover", "from_holder": "Israel", "to_holder": "Hellen", "note": None}
+        ledger.check_giver(give, "Israel", False)                                       # Dad submits his own handover
+        with pytest.raises(ValueError, match="(?i)handing the cash over"):
+            ledger.check_giver(give, "Solomon", False)                                  # Solomon cannot move Dad's cash
+        with pytest.raises(ValueError):
+            ledger.check_giver(give, "Hillary", True)                                   # an admin needs a reason
+        with pytest.raises(ValueError):
+            ledger.check_giver(dict(give, note="ok"), "Hillary", True)                  # and not a one-word one
+        ledger.check_giver(dict(give, note="Dad asked me to log it for him"), "Hillary", True)
+        ledger.check_giver({"kind": "handover", "from_holder": "Farm cash (Solomon)", "to_holder": "Israel", "note": None}, "Solomon", False)   # the float is Solomon's
+        ledger.check_giver({"kind": "opening", "from_holder": None, "to_holder": "Israel", "note": None}, "Hillary", True)
+
+    def test_acknowledgement_is_receiver_only_for_a_person(self):
+        import ledger
+        ho = {"kind": "handover", "from_holder": "Israel", "to_holder": "Hellen", "status": "pending", "created_by": "Dad (Israel)"}
+        assert ledger.can_acknowledge(ho, "Hellen", "Hellen", False) is True
+        assert ledger.can_acknowledge(ho, "Hillary", "Hillary", True) is False           # an admin cannot attest to someone else's receipt
+        assert ledger.can_acknowledge(ho, "Dad (Israel)", "Israel", True) is False       # the giver cannot
+        fl = {"kind": "handover", "from_holder": "Farm cash (Solomon)", "to_holder": "Israel", "status": "pending", "created_by": "Solomon"}
+        assert ledger.can_acknowledge(fl, "Solomon", "Solomon", True) is False           # 'Farm cash (Solomon)' is Solomon's: he is the giver
+        assert ledger.can_acknowledge(fl, "Dad (Israel)", "Israel", False) is True
+        bank = {"kind": "banked", "from_holder": "Israel", "to_holder": "Club account", "status": "pending", "created_by": "Dad (Israel)"}
+        assert ledger.can_acknowledge(bank, "Hellen", "Hellen", False) is True and ledger.can_acknowledge(bank, "Hillary", "Hillary", True) is True
+        assert ledger.can_acknowledge(bank, "Alex", "Alex", False) is False
+
+    def test_absurd_amounts_are_refused_not_a_500(self):
+        import ledger
+        with pytest.raises(ValueError, match="(?i)too large"):
+            ledger.validate_move({"kind": "banked", "from_holder": "Israel", "to_holder": "Club account", "amount": "99999999999999999", "date": "2026-09-30"}, __import__("datetime").date(2026, 10, 1), self.H)
+
+    def test_withdraw_and_slip_are_guarded_in_the_code(self):
+        src = open(os.path.join(_APP_ROOT, "main.py")).read()
+        w = src[src.index("def ledger_cash_withdraw("):src.index('@app.post("/api/ledger/{project_id}/notes")')]
+        assert "status='pending'" in w and "deleted_at IS NULL RETURNING id" in w and "status_code=409" in w      # atomic: an acknowledged move cannot be removed
+        r = src[src.index("def ledger_cash_receipt("):src.index("def ledger_cash_withdraw(")]
+        assert "!= \"pending\"" in r and "unlink()" in r                                                        # slip frozen once decided, one file per move
+
+    def test_a_duplicate_pending_submission_is_blocked_by_an_index(self):
+        src = open(os.path.join(_APP_ROOT, "ledger.py")).read()
+        assert "ledger_cash_moves_dup_uq" in src and "WHERE status='pending' AND deleted_at IS NULL" in src
+
+
+class TestCashRoutes:
+    """The four cash write routes need a person: the internal key (a credential, not a person) is refused; a message
+    from WhatsApp can never carry a cash holder or record a credit payment."""
+
+    def _stub(self, monkeypatch):
+        import main as m
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "k")
+        monkeypatch.setattr(m, "_ledger_ready", lambda project_id="chicken": None)
+        return m
+
+    def test_internal_key_cannot_submit_acknowledge_attach_or_withdraw(self, monkeypatch):
+        self._stub(monkeypatch)
+        h = {"X-Internal-Key": "k"}
+        a = "/api/ledger/chicken/cash/move"
+        for method, url, kw in (("post", a, {"json": {"kind": "opening", "to_holder": "Israel", "amount": 5, "date": "2026-09-30"}}),
+                                ("post", a + "/1/decision", {"json": {"approve": True}}),
+                                ("post", a + "/1/receipt", {"files": {"file": ("a.png", b"x", "image/png")}}),
+                                ("delete", a + "/1", {})):
+            r = getattr(client, method)(url, headers=h, **kw)
+            assert r.status_code == 401, (method, url, r.status_code, r.text)
+
+    def test_the_internal_key_can_still_read_cash(self, monkeypatch):
+        import ledger
+        m = self._stub(monkeypatch)
+        monkeypatch.setattr(ledger, "load", lambda pid: {"products": [], "stock": [], "sales": [], "losses": [], "expenses": []})
+        monkeypatch.setattr(ledger, "load_cash", lambda pid: ([], []))
+        r = client.get("/api/ledger/chicken/cash", headers={"X-Internal-Key": "k"})
+        assert r.status_code == 200 and "holders" in r.json()
+
+    def test_a_message_sale_never_carries_a_holder(self, monkeypatch):
+        import ledger, datetime
+        m = self._stub(monkeypatch)
+        seen = {}
+        monkeypatch.setattr(m, "_ledger_products_map", lambda pid: {"p": {"product_id": "p", "name": "eggs", "cost_price": 0, "sell_price": 400}})
+        monkeypatch.setattr(ledger, "masterdata", lambda pid: {"items": [], "suppliers": [], "buyers": [], "units": ["pc"],
+                                                                "shops": [{"id": 1, "name": "Farm", "lat": -0.47, "lng": 30.58, "radius_m": 1000}]})
+        monkeypatch.setattr(ledger, "record", lambda pid, table, row, who, source="app", source_ref=None: seen.update(row=row, source=source) or {"id": 1, "created": True})
+        monkeypatch.setattr(ledger, "load", lambda pid: {"products": [{"product_id": "p", "name": "eggs", "cost_price": 0, "sell_price": 400}], "stock": [], "sales": [], "losses": [], "expenses": []})
+        today = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date().isoformat()
+        r = client.post("/api/ledger/chicken/sale", headers={"X-Internal-Key": "k"},
+                        json={"reported_by": "Solomon", "date": today, "product_id": "p", "qty": 1, "unit_price": 400, "held_by": "Israel", "source_ref": "wa:1:s0"})
+        assert r.status_code == 200, r.text
+        assert seen["source"] == "whatsapp" and seen["row"]["held_by"] is None            # the spoofed holder was dropped
+
+    def test_a_message_cannot_record_a_credit_payment(self, monkeypatch):
+        self._stub(monkeypatch)
+        r = client.post("/api/ledger/chicken/sale/1/payment", headers={"X-Internal-Key": "k"}, json={"reported_by": "Solomon", "amount": 1000, "received_by": "Israel"})
+        assert r.status_code == 422 and "Hub" in r.text

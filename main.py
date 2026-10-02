@@ -6945,7 +6945,7 @@ _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)
 
 
-def _ledger_actor(request, project_id, write=False, admin=False, reported_by=None):
+def _ledger_actor(request, project_id, write=False, admin=False, reported_by=None, human=False):
     """-> (who, payload, via_whatsapp). Login for everyone to read; recorders (Solomon + admins) to
     write; admins for notes and reimbursements. The WhatsApp agent uses the internal key plus the
     member it resolved (reported_by), subject to the same rules (ADR-030 pattern)."""
@@ -6961,10 +6961,10 @@ def _ledger_actor(request, project_id, write=False, admin=False, reported_by=Non
             raise _HE(status_code=403, detail="Unknown reporter")
         payload = {"sub": m["name"], "display": m["display"], "role": m["role"]}
         via_wa = True
-    if not payload and not write and not admin and _internal_key_ok(request):
+    if not payload and not write and not admin and not human and _internal_key_ok(request):
         payload = {"sub": "internal", "display": "internal", "role": "admin"}
     if not payload:
-        raise _HE(status_code=401, detail="Auth required")
+        raise _HE(status_code=401, detail="Auth required" if not human else "A person must be logged in to do this")
     is_admin = payload.get("role") == "admin"
     if admin and not is_admin:
         raise _HE(status_code=403, detail="Admins only")
@@ -7150,7 +7150,9 @@ async def ledger_sale_payment(project_id: str, row_id: int, request: Request):
     import datetime as _d
     from fastapi import HTTPException as _HE
     body = await request.json()
-    who, _p, _w = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    who, _p, _wa = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    if _wa:
+        raise _HE(status_code=422, detail="Money received on a credit sale is recorded in the Hub, where who received it can be said.")
     _ledger_ready(project_id)
     today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
     try:
@@ -7188,11 +7190,11 @@ async def ledger_cash_submit(project_id: str, request: Request):
     import datetime as _d
     from fastapi import HTTPException as _HE
     body = await request.json()
-    who, _p, _w = _ledger_actor(request, project_id)           # any member can submit what they handed over
+    who, _p, _w = _ledger_actor(request, project_id, human=True)           # any member can submit what they handed over
     _ledger_ready(project_id)
     today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
     try:
-        mid = _ledger.submit_move(project_id, body, who, today, _ledger.holders([x["name"] for x in _auth.MEMBERS]))
+        mid = _ledger.submit_move(project_id, body, who, _p.get("sub"), _p.get("role") == "admin", today, _ledger.holders([x["name"] for x in _auth.MEMBERS]))
     except ValueError as e:
         raise _HE(status_code=422, detail=str(e))
     return {"ok": True, "id": mid, "status": "pending"}
@@ -7203,7 +7205,7 @@ async def ledger_cash_decide(project_id: str, move_id: int, request: Request):
     import ledger as _ledger
     from fastapi import HTTPException as _HE
     body = await request.json()
-    who, payload, _w = _ledger_actor(request, project_id)
+    who, payload, _w = _ledger_actor(request, project_id, human=True)
     _ledger_ready(project_id)
     try:
         st = _ledger.decide_move(project_id, move_id, bool(body.get("approve")), body.get("note"), who, payload.get("sub"), payload.get("role") == "admin")
@@ -7222,13 +7224,15 @@ async def ledger_cash_receipt(project_id: str, move_id: int, request: Request):
     import re as _re
     from fastapi import HTTPException as _HE
     from db import query as _q, execute as _x
-    who, payload, _w = _ledger_actor(request, project_id)
+    who, payload, _w = _ledger_actor(request, project_id, human=True)
     _ledger_ready(project_id)
-    row = _q("SELECT created_by FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (move_id, project_id))
+    row = _q("SELECT created_by, status FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (move_id, project_id))
     if not row:
         raise _HE(status_code=404, detail="Not found")
     if row[0]["created_by"] != who and payload.get("role") != "admin":
         raise _HE(status_code=403, detail="Only who submitted it can add the slip")
+    if row[0]["status"] != "pending":
+        raise _HE(status_code=409, detail="The slip cannot change once the move has been decided")
     file = (await request.form()).get("file")
     if not file:
         raise _HE(status_code=400, detail="No file uploaded")
@@ -7236,6 +7240,8 @@ async def ledger_cash_receipt(project_id: str, move_id: int, request: Request):
     if len(data) > 15 * 1024 * 1024:
         raise _HE(status_code=413, detail="File is over 15 MB")
     name = _re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "slip")
+    for old_slip in _ledger_receipt_dir().glob("move_%d_*" % move_id):          # one slip per move: replacing is only possible while pending
+        old_slip.unlink()
     (_ledger_receipt_dir() / ("move_%d_%s" % (move_id, name))).write_bytes(data)
     url = "/api/ledger/receipt/move/%d" % move_id
     _x("UPDATE ledger_cash_moves SET receipt_url=%s WHERE id=%s", (url, move_id))
@@ -7244,19 +7250,20 @@ async def ledger_cash_receipt(project_id: str, move_id: int, request: Request):
 
 @app.delete("/api/ledger/{project_id}/cash/move/{move_id}")
 def ledger_cash_withdraw(project_id: str, move_id: int, request: Request):
-    """Withdraw your own submission while it is still pending."""
+    """Withdraw your own submission while it is still pending (atomically: an acknowledged move can never be removed)."""
     from fastapi import HTTPException as _HE
-    from db import query as _q, execute as _x
-    who, payload, _w = _ledger_actor(request, project_id)
+    from db import query as _q
+    who, payload, _w = _ledger_actor(request, project_id, human=True)
     _ledger_ready(project_id)
     row = _q("SELECT created_by, status FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (move_id, project_id))
     if not row:
         raise _HE(status_code=404, detail="Not found")
-    if row[0]["status"] != "pending":
-        raise _HE(status_code=409, detail="Only a pending move can be withdrawn")
     if row[0]["created_by"] != who and payload.get("role") != "admin":
         raise _HE(status_code=403, detail="Only who submitted it can withdraw it")
-    _x("UPDATE ledger_cash_moves SET deleted_at=now(), deleted_by=%s WHERE id=%s", (who, move_id))
+    done = _q("UPDATE ledger_cash_moves SET deleted_at=now(), deleted_by=%s WHERE id=%s AND project_id=%s AND status='pending' AND deleted_at IS NULL RETURNING id",
+              (who, move_id, project_id))
+    if not done:
+        raise _HE(status_code=409, detail="Only a pending move can be withdrawn")
     return {"ok": True}
 
 
@@ -7316,6 +7323,8 @@ async def ledger_add(project_id: str, kind: str, request: Request):
     who, _p, via_wa = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
     _ledger_ready(project_id)
     today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
+    if via_wa:                                  # who holds the cash is never inferred from a message, and never accepted from one
+        body = dict(body, held_by=None)
     products = _ledger_products_map(project_id)
     payers = _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS])
     try:

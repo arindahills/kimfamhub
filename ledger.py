@@ -761,6 +761,8 @@ def ready():
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_parties_name_uq ON ledger_parties(project_id, kind, lower(name)) WHERE deleted_at IS NULL")
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_items_name_uq ON ledger_items(project_id, lower(name)) WHERE deleted_at IS NULL")
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_units_name_uq ON ledger_units(project_id, lower(name))")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_cash_moves_dup_uq ON ledger_cash_moves(project_id, created_by, kind, coalesce(from_holder, ''), to_holder, amount, move_date) "
+                            "WHERE status='pending' AND deleted_at IS NULL")
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_shops_name_uq ON ledger_shops(project_id, lower(name)) WHERE deleted_at IS NULL")
                 for t in ("ledger_expenses", "ledger_sales", "ledger_losses", "ledger_stock"):                       # where it was recorded
                     for col in ("shop_id INTEGER", "gps_lat DOUBLE PRECISION", "gps_lng DOUBLE PRECISION", "gps_accuracy REAL",
@@ -862,9 +864,17 @@ def paid_by_options(member_names):
     return [PAID_BY_FARM, PAID_BY_CLUB] + held + list(member_names) + [PAID_BY_UNKNOWN]
 
 
-def holders(member_names):
-    """Who can hold farm cash: Solomon's float, any member, or the club account itself."""
-    return [PAID_BY_FARM] + list(member_names) + [CLUB_ACCOUNT]
+def holders(member_names=None):
+    """Who can hold farm cash: Solomon's float, the custodians, or the club account. (Adding a person here is a decision:
+    they can then receive, hold and spend farm cash.)"""
+    return [PAID_BY_FARM] + [m for m in CUSTODIANS if member_names is None or m in member_names] + [CLUB_ACCOUNT]
+
+
+def holder_login(holder):
+    """The login name behind a holder string: Solomon's float is Solomon's; the club account is nobody's."""
+    if holder == PAID_BY_FARM:
+        return "Solomon"
+    return None if holder == CLUB_ACCOUNT else holder
 
 
 def holder_of_expense(paid_by):
@@ -889,10 +899,15 @@ def _need_date(v, today):
     return d
 
 
+MAX_AMOUNT = 10 ** 12
+
+
 def _need_pos(v, what):
     n = to_int(v)
     if n <= 0:
         raise ValueError("%s must be more than zero." % what)
+    if n > MAX_AMOUNT:
+        raise ValueError("%s is too large." % what)
     return n
 
 
@@ -1413,22 +1428,27 @@ def validate_move(d, today, holder_names):
 
 
 def can_acknowledge(move, who, name, is_admin, treasurer_names=("Hellen",)):
-    """Contributions rule, made strict for cash: nobody acknowledges money they are a party to. The submitter never
-    acknowledges (`who` is the display name stored as created_by); neither does the person handing the cash over
-    (from_holder), nor the person who would be holding it from an opening declaration (to_holder): that would be
-    attesting to your own cash. `name` is the login name that holders are called.
+    """Separation of duties for cash. Nobody acknowledges money they are a party to: not the submitter (`who` is the display
+    name stored as created_by), not the giver (from_holder), not the holder in an opening declaration. `name` is the login name.
       * club account: the Treasurer, or an admin who is not a party to it
-      * a person receiving a handover: that person (or an admin who is not a party)
+      * a person receiving a handover: that person only (an admin cannot attest to someone else's receipt)
       * an opening declaration: an admin who is not the submitter or the holder"""
-    if move["status"] != "pending" or move.get("created_by") == who:
+    if move["status"] != "pending" or move.get("created_by") == who or not name:
         return False
-    if name and name == move.get("from_holder"):
+    if name == holder_login(move.get("from_holder")):
         return False
     if move["kind"] == "opening":
-        return is_admin and name != move["to_holder"]
+        return is_admin and name != holder_login(move["to_holder"])
     if move["to_holder"] == CLUB_ACCOUNT:
         return is_admin or name in treasurer_names
-    return is_admin or name == move["to_holder"]
+    return name == holder_login(move["to_holder"])
+
+
+def check_opening_cap(amount, unassigned, pending_openings):
+    """An opening declaration can only assign cash that has no recorded holder, never more (it would create money)."""
+    room = max(unassigned - pending_openings, 0)
+    if amount > room:
+        raise ValueError("That is more than the cash with no recorded holder (%s)." % "{:,}".format(room))
 
 
 def cash_position(rows, moves, payments, holder_names):
@@ -1475,17 +1495,39 @@ def cash_position(rows, moves, payments, holder_names):
             out.append(x)
     held_outside = sum(max(x["balance"], 0) for x in out if x["holder"] != CLUB_ACCOUNT)
     return {"holders": out, "unassigned": max(unassigned - opening_ack, 0), "unassigned_total": unassigned,
+            "over_declared": max(opening_ack - unassigned, 0), "pending_openings": sum(m["amount"] for m in (moves or []) if m["kind"] == "opening" and m["status"] == "pending"),
             "pending": [m for m in (moves or []) if m["status"] == "pending"], "held_outside_club": held_outside}
 
 
-def submit_move(project_id, d, who, today, holder_names):
+def check_giver(row, name, is_admin):
+    """The person whose cash goes down is the one who submits the move; an admin may submit for someone else, with a note."""
+    if row["kind"] != "opening" and holder_login(row["from_holder"]) != name:
+        if not (is_admin and row["note"] and len(row["note"]) >= 5):
+            raise ValueError("Only the person handing the cash over submits it. An admin may submit for someone else with a note saying why.")
+
+
+def submit_move(project_id, d, who, name, is_admin, today, holder_names):
+    """Submit a move. The person handing cash over is the one who submits it (an admin may submit for someone else, with
+    a note saying why). An opening declaration cannot exceed the cash with no recorded holder."""
     from db import db as _db
     row = validate_move(d, today, holder_names)
+    check_giver(row, name, is_admin)
     with _db() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO ledger_cash_moves (project_id, created_by, source, move_date, kind, from_holder, to_holder, amount, note) "
-                        "VALUES (%s,%s,'app',%s,%s,%s,%s,%s,%s) RETURNING id",
-                        (project_id, who, row["move_date"], row["kind"], row["from_holder"], row["to_holder"], row["amount"], row["note"]))
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY + 1,))        # one cash submission at a time
+            if row["kind"] == "opening":
+                rows = load(project_id)
+                moves, payments = load_cash(project_id)
+                pos = cash_position(rows, moves, payments, holder_names)
+                check_opening_cap(row["amount"], pos["unassigned"], pos["pending_openings"])
+            try:
+                cur.execute("INSERT INTO ledger_cash_moves (project_id, created_by, source, move_date, kind, from_holder, to_holder, amount, note) "
+                            "VALUES (%s,%s,'app',%s,%s,%s,%s,%s,%s) RETURNING id",
+                            (project_id, who, row["move_date"], row["kind"], row["from_holder"], row["to_holder"], row["amount"], row["note"]))
+            except Exception as e:                                                    # the unique index on identical pending submissions
+                if "ledger_cash_moves_dup_uq" in str(e):
+                    raise ValueError("You already submitted exactly this and it is still waiting.")
+                raise
             return cur.fetchone()[0]
 
 
@@ -1615,6 +1657,9 @@ def build_reconciliation(rows, treasury, links, notes, moves=None, payments=None
         items.append(item("cash:unassigned", "Cash sales with no recorded holder", cash["unassigned"],
                           "%s of cash sales (the AppSheet period and sales recorded by message) have no recorded holder. Declare who holds it under Cash, "
                           "then the Treasurer acknowledges." % "{:,}".format(cash["unassigned"])))
+    if cash["over_declared"] > 0:
+        items.append(item("cash:over-declared", "More cash declared than was sold", cash["over_declared"],
+                          "Acknowledged opening declarations exceed the cash sales with no recorded holder by %s. Some of it did not come from sales." % "{:,}".format(cash["over_declared"])))
     for m in cash["pending"]:
         items.append(item("cash:pending:%d" % m["id"], "Waiting for acknowledgement", m["amount"],
                           "%s: %s to %s, submitted by %s on %s." % (m["kind"].capitalize(), m.get("from_holder") or "AppSheet-period sales", m["to_holder"], m.get("created_by"), _d(m["move_date"]))))
