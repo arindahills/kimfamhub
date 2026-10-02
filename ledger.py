@@ -613,7 +613,14 @@ def parse_reference(tabs, parsed):
     for u in SEED_UNITS:
         if u not in units:
             units.append(u)
-    return {"items": list(items.values()), "buyers": list(buyers.values()), "suppliers": list(sup.values()), "units": units}
+    shops = []
+    for r in rows_of("shops data"):
+        nm = canon(r.get("shop name"))
+        loc = re.findall(r"-?\d+(?:\.\d+)?", str(r.get("gps location") or ""))
+        if nm:
+            lat, lng = (float(loc[0]), float(loc[1])) if len(loc) >= 2 else (None, None)
+            shops.append({"name": nm, "lat": lat, "lng": lng})
+    return {"items": list(items.values()), "buyers": list(buyers.values()), "suppliers": list(sup.values()), "units": units, "shops": shops}
 
 
 def import_reference(project_id, ref, who="appsheet import"):
@@ -629,6 +636,10 @@ def import_reference(project_id, ref, who="appsheet import"):
             for u in ref["units"]:
                 cur.execute("INSERT INTO ledger_units (project_id, name, created_by) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (project_id, u, who))
                 added["units"] += cur.rowcount
+            for sh in ref.get("shops", []):
+                cur.execute("INSERT INTO ledger_shops (project_id, created_by, source, name, lat, lng) VALUES (%s,%s,'appsheet_import',%s,%s,%s) ON CONFLICT DO NOTHING",
+                            (project_id, who, sh["name"], sh["lat"], sh["lng"]))
+                added["shops"] = added.get("shops", 0) + cur.rowcount
             for it in ref["items"]:
                 cur.execute("INSERT INTO ledger_items (project_id, created_by, source, name, group_name, kind, default_uom, is_birds) "
                             "VALUES (%s,%s,'appsheet_import',%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
@@ -713,6 +724,9 @@ _DDL_MASTER = [
     """CREATE TABLE IF NOT EXISTS ledger_items (%s,
         name TEXT NOT NULL, group_name TEXT, kind TEXT NOT NULL DEFAULT 'opex' CHECK (kind IN ('opex','capex')),
         default_uom TEXT NOT NULL DEFAULT 'pc', is_birds BOOLEAN NOT NULL DEFAULT FALSE)""" % _COMMON,
+    """CREATE TABLE IF NOT EXISTS ledger_shops (%s,
+        name TEXT NOT NULL, lat DOUBLE PRECISION, lng DOUBLE PRECISION, radius_m INTEGER NOT NULL DEFAULT 1000,
+        active BOOLEAN NOT NULL DEFAULT TRUE)""" % _COMMON,
     """CREATE TABLE IF NOT EXISTS ledger_units (
         id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT 'import',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
@@ -738,6 +752,11 @@ def ready():
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_parties_name_uq ON ledger_parties(project_id, kind, lower(name)) WHERE deleted_at IS NULL")
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_items_name_uq ON ledger_items(project_id, lower(name)) WHERE deleted_at IS NULL")
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_units_name_uq ON ledger_units(project_id, lower(name))")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_shops_name_uq ON ledger_shops(project_id, lower(name)) WHERE deleted_at IS NULL")
+                for t in ("ledger_expenses", "ledger_sales", "ledger_losses", "ledger_stock"):                       # where it was recorded
+                    for col in ("shop_id INTEGER", "gps_lat DOUBLE PRECISION", "gps_lng DOUBLE PRECISION", "gps_accuracy REAL",
+                                "gps_note TEXT", "distance_m INTEGER", "gps_away BOOLEAN NOT NULL DEFAULT FALSE"):
+                        cur.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s" % (t, col))
                 for alter in ("ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
                               "ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS item_id INTEGER",
                               "ALTER TABLE ledger_stock ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
@@ -937,10 +956,10 @@ def validate_stock(d, today, products, allowed_payers):
 
 
 _INSERT = {
-    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom", "item_id", "supplier_id"),
-    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment", "buyer_id", "due_date"),
-    "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason"),
-    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks", "supplier_id"),
+    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom", "item_id", "supplier_id", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
+    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment", "buyer_id", "due_date", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
+    "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
+    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks", "supplier_id", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
 }
 
 
@@ -952,7 +971,7 @@ def insert_row(cur, table, project_id, who, source, source_ref, row):
         "INSERT INTO %s (project_id, created_by, source, source_ref, %s) VALUES (%%s,%%s,%%s,%%s,%s) "
         "ON CONFLICT (project_id, source_ref) WHERE source_ref IS NOT NULL DO NOTHING RETURNING id"
         % (table, ", ".join(cols), ", ".join(["%s"] * len(cols))),
-        [project_id, who, source, source_ref] + [row.get(c) for c in cols])
+        [project_id, who, source, source_ref] + [(bool(row.get(c)) if c == "gps_away" else row.get(c)) for c in cols])
     got = cur.fetchone()
     if got:
         return got[0], True
@@ -990,6 +1009,98 @@ def soft_delete(project_id, table, row_id, who):
                 cur.execute("UPDATE ledger_stock SET deleted_at=now(), deleted_by=%s WHERE project_id=%s AND source_ref=%s AND deleted_at IS NULL",
                             (who, project_id, got[0] + ":stock"))
             return bool(got)
+
+
+# ── where it was recorded: GPS that is actually enforced (the AppSheet captured 0,0 for every entry) ──────
+GPS_MAX_ACCURACY_M = 300          # a fix worse than this is refused: the phone has not found the sky yet
+DEFAULT_SHOP_RADIUS_M = 1000
+
+
+def haversine_m(lat1, lng1, lat2, lng2):
+    """Metres between two points on the Earth."""
+    import math
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2
+    return int(round(2 * r * math.asin(math.sqrt(a))))
+
+
+def validate_gps(d, shops, required, is_admin=False):
+    """-> (columns for the entry, warning or None). `d` is the request body.
+    Entries recorded in the app MUST carry a real location: a missing, 0,0 or wildly imprecise fix is refused.
+    An admin may record without one by giving a reason (kept on the entry and listed in the reconciliation).
+    Entries from WhatsApp (required=False) are stored without a location and listed as such."""
+    g = d.get("gps") if isinstance(d.get("gps"), dict) else None
+    cols = {"shop_id": None, "gps_lat": None, "gps_lng": None, "gps_accuracy": None, "gps_note": None, "distance_m": None, "gps_away": False}
+    warning = None
+    if g:
+        try:
+            lat, lng, acc = float(g.get("lat")), float(g.get("lng")), float(g.get("accuracy") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("The location could not be read. Allow location access and try again.")
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise ValueError("The location is not a real place on Earth.")
+        if abs(lat) < 0.0001 and abs(lng) < 0.0001:
+            raise ValueError("The phone reported 0,0 (no location found). Go where there is a signal and try again.")
+        if acc <= 0 or acc > GPS_MAX_ACCURACY_M:
+            raise ValueError("The location is not accurate enough (%s). Wait a few seconds outdoors and try again." % ("%d m" % acc if acc else "unknown accuracy"))
+        cols.update(gps_lat=lat, gps_lng=lng, gps_accuracy=round(acc, 1))
+        live = [sh for sh in shops if sh.get("lat") is not None and sh.get("lng") is not None]
+        want = d.get("shop_id")
+        pick = next((sh for sh in live if str(sh["id"]) == str(want)), None) if want else None
+        if pick is None and live:
+            pick = min(live, key=lambda sh: haversine_m(lat, lng, sh["lat"], sh["lng"]))
+        if pick:
+            dist = haversine_m(lat, lng, pick["lat"], pick["lng"])
+            cols.update(shop_id=pick["id"], distance_m=dist, gps_away=dist > (pick.get("radius_m") or DEFAULT_SHOP_RADIUS_M))
+            if cols["gps_away"]:
+                warning = "Recorded %.1f km from %s. If that is right, fine; otherwise check where you are." % (dist / 1000.0, pick["name"])
+        return cols, warning
+    if required:
+        reason = canon(d.get("gps_override_reason"))
+        if is_admin and len(reason) >= 5:
+            cols["gps_note"] = "No location: " + reason[:200]
+            if shops:
+                cols["shop_id"] = shops[0]["id"]
+            return cols, None
+        raise ValueError("Location is required. Allow location access on your phone and try again.")
+    if shops:
+        cols["shop_id"] = shops[0]["id"]
+    cols["gps_note"] = "No location (recorded by message)"
+    return cols, None
+
+
+def validate_shop(d):
+    name = canon(d.get("name"))
+    if not name:
+        raise ValueError("A shop needs a name.")
+    out = {"name": name, "lat": None, "lng": None, "radius_m": DEFAULT_SHOP_RADIUS_M}
+    if d.get("lat") not in (None, "") or d.get("lng") not in (None, ""):
+        try:
+            out["lat"], out["lng"] = float(d.get("lat")), float(d.get("lng"))
+        except (TypeError, ValueError):
+            raise ValueError("Latitude and longitude must be numbers.")
+        if not (-90 <= out["lat"] <= 90 and -180 <= out["lng"] <= 180) or (abs(out["lat"]) < 0.0001 and abs(out["lng"]) < 0.0001):
+            raise ValueError("That is not a real location.")
+    if d.get("radius_m") not in (None, ""):
+        r = to_int(d.get("radius_m"))
+        if not 50 <= r <= 20000:
+            raise ValueError("The radius must be between 50 m and 20 km.")
+        out["radius_m"] = r
+    return out
+
+
+def add_shop(project_id, d, who):
+    from db import db as _db
+    row = validate_shop(d)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM ledger_shops WHERE project_id=%s AND lower(name)=lower(%s) AND deleted_at IS NULL", (project_id, row["name"]))
+            if cur.fetchone():
+                raise ValueError("%s already exists." % row["name"])
+            cur.execute("INSERT INTO ledger_shops (project_id, created_by, source, name, lat, lng, radius_m) VALUES (%s,%s,'app',%s,%s,%s,%s) RETURNING id",
+                        (project_id, who, row["name"], row["lat"], row["lng"], row["radius_m"]))
+            return cur.fetchone()[0]
 
 
 # ── reference data: items, suppliers, buyers, units (the AppSheet's pick-lists), credit sales ────────────
@@ -1102,6 +1213,7 @@ def masterdata(project_id):
         "suppliers": _q("SELECT id, name, " + ", ".join(PARTY_FIELDS) + ", registered_on FROM ledger_parties WHERE project_id=%s AND kind='supplier'" + live + " ORDER BY lower(name)", (project_id,)),
         "buyers": _q("SELECT id, name, " + ", ".join(PARTY_FIELDS) + ", registered_on FROM ledger_parties WHERE project_id=%s AND kind='buyer'" + live + " ORDER BY lower(name)", (project_id,)),
         "units": [r["name"] for r in _q("SELECT name FROM ledger_units WHERE project_id=%s ORDER BY id", (project_id,))],
+        "shops": _q("SELECT id, name, lat, lng, radius_m, active FROM ledger_shops WHERE project_id=%s" + live + " ORDER BY id", (project_id,)),
     }
 
 
@@ -1308,6 +1420,15 @@ def build_reconciliation(rows, treasury, links, notes):
         items.append(item("preledger:unattributed", "Who paid is not recorded for the AppSheet period",
                           sum(e["total"] for e in pre),
                           "%d expense lines from the AppSheet carry no payer and no receipt. Treated as one opening item." % len(pre)))
+    native = [e for k in ("expenses", "sales", "losses", "stock") for e in rows[k] if e.get("source") != "appsheet_import"]
+    noloc = [e for e in native if e.get("gps_lat") is None]
+    if noloc:
+        items.append(item("gps:missing", "Entries without a location", len(noloc),
+                          "%d entries recorded since the ledger went live carry no GPS location (recorded by message, or an admin override with a reason)." % len(noloc)))
+    away = [e for e in native if e.get("gps_away")]
+    if away:
+        items.append(item("gps:away", "Entries recorded away from the farm", len(away),
+                          "%d entries were recorded more than the shop's radius from its location. Fine when travelling to buy or sell; worth a look otherwise." % len(away)))
     nr = [e for e in rows["expenses"] if e.get("source") != "appsheet_import" and not e.get("receipt_url")]
     if nr:
         items.append(item("receipts:missing", "Expenses without a receipt", sum(e["total"] for e in nr),

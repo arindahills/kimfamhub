@@ -1784,3 +1784,70 @@ class TestMasterData:
         ok = {"date": "2026-09-30", "item": "Eggs crates", "qty": 5, "total": 50000, "paid_by": "Club", "uom": "crate"}
         v = lambda units: ledger.validate_expense(ok, datetime.date(2026, 10, 1), ["Club"], {}, units)["uom"]
         assert v(["pc", "crate"]) == "crate" and v(["pc"]) == "pc"
+
+
+class TestLocationAndShops:
+    """Where an entry was recorded. The AppSheet stored 0,0 for every entry; the Hub refuses that and flags distance."""
+
+    SHOP = {"id": 1, "name": "Farm", "lat": -0.4730, "lng": 30.5896, "radius_m": 1000}
+
+    def test_haversine_is_close_to_known_distances(self):
+        import ledger
+        assert ledger.haversine_m(0, 0, 0, 0) == 0
+        assert abs(ledger.haversine_m(-0.4730, 30.5896, -0.4730, 30.5986) - 1000) < 15        # 0.009 degrees of longitude at the equator is ~1 km
+        assert 110000 < ledger.haversine_m(0, 0, 1, 0) < 112500                               # one degree of latitude is ~111 km
+
+    def test_a_real_nearby_fix_is_accepted_and_tied_to_the_shop(self):
+        import ledger
+        cols, warn = ledger.validate_gps({"gps": {"lat": -0.4731, "lng": 30.5897, "accuracy": 12}}, [self.SHOP], required=True)
+        assert cols["shop_id"] == 1 and cols["gps_accuracy"] == 12.0 and cols["gps_away"] is False and cols["distance_m"] < 50 and warn is None
+
+    def test_far_from_the_farm_is_flagged_not_blocked(self):
+        import ledger
+        cols, warn = ledger.validate_gps({"gps": {"lat": -0.30, "lng": 30.60, "accuracy": 20}}, [self.SHOP], required=True)
+        assert cols["gps_away"] is True and cols["distance_m"] > 15000 and "km from Farm" in warn
+
+    def test_the_appsheet_failure_modes_are_refused(self):
+        import ledger
+        for bad, why in (({"lat": 0, "lng": 0, "accuracy": 5}, "0,0"), ({"lat": -0.47, "lng": 30.58, "accuracy": 5000}, "accurate"),
+                         ({"lat": -0.47, "lng": 30.58, "accuracy": 0}, "accur"), ({"lat": 123, "lng": 30.58, "accuracy": 5}, "real place"),
+                         ({"lat": "x", "lng": 1, "accuracy": 5}, "read")):
+            with pytest.raises(ValueError, match="(?i)" + why):
+                ledger.validate_gps({"gps": bad}, [self.SHOP], required=True)
+
+    def test_location_is_required_in_the_app_but_not_for_messages(self):
+        import ledger
+        with pytest.raises(ValueError, match="(?i)location is required"):
+            ledger.validate_gps({}, [self.SHOP], required=True)
+        cols, _w = ledger.validate_gps({}, [self.SHOP], required=False)                    # WhatsApp: stored without, and said so
+        assert cols["gps_lat"] is None and cols["shop_id"] == 1 and "message" in cols["gps_note"]
+
+    def test_only_an_admin_with_a_reason_may_skip_the_location(self):
+        import ledger
+        with pytest.raises(ValueError):
+            ledger.validate_gps({"gps_override_reason": "no signal at the coop"}, [self.SHOP], required=True, is_admin=False)
+        with pytest.raises(ValueError):
+            ledger.validate_gps({"gps_override_reason": "no"}, [self.SHOP], required=True, is_admin=True)             # too short to be a reason
+        cols, _w = ledger.validate_gps({"gps_override_reason": "back-filling from receipts"}, [self.SHOP], required=True, is_admin=True)
+        assert cols["gps_lat"] is None and cols["gps_note"].startswith("No location: back-filling")
+
+    def test_nearest_shop_is_chosen_when_there_are_several(self):
+        import ledger
+        far = {"id": 2, "name": "Second site", "lat": -0.60, "lng": 30.70, "radius_m": 500}
+        cols, _w = ledger.validate_gps({"gps": {"lat": -0.6001, "lng": 30.7001, "accuracy": 10}}, [self.SHOP, far], required=True)
+        assert cols["shop_id"] == 2 and cols["gps_away"] is False
+        cols2, _w = ledger.validate_gps({"gps": {"lat": -0.4731, "lng": 30.5897, "accuracy": 10}, "shop_id": 2}, [self.SHOP, far], required=True)
+        assert cols2["shop_id"] == 2 and cols2["gps_away"] is True                         # an explicit choice is respected, and the distance shows
+
+    def test_shop_form_and_reconciliation_items(self):
+        import ledger, datetime
+        assert ledger.validate_shop({"name": " Farm  2 ", "lat": "-0.5", "lng": "30.5", "radius_m": "300"}) == {"name": "Farm 2", "lat": -0.5, "lng": 30.5, "radius_m": 300}
+        for bad in ({"name": ""}, {"name": "x", "lat": "0", "lng": "0"}, {"name": "x", "lat": "a", "lng": "1"}, {"name": "x", "radius_m": "5"}):
+            with pytest.raises(ValueError):
+                ledger.validate_shop(bad)
+        rows = {"products": [], "stock": [], "losses": [], "expenses": [], "sales": [
+            {"id": 1, "product_id": "p", "sale_date": datetime.date(2026, 9, 1), "qty": 1, "unit_price": 10, "total": 10, "source": "app", "gps_lat": None},
+            {"id": 2, "product_id": "p", "sale_date": datetime.date(2026, 9, 2), "qty": 1, "unit_price": 10, "total": 10, "source": "app", "gps_lat": -0.4, "gps_away": True},
+            {"id": 3, "product_id": "p", "sale_date": datetime.date(2026, 9, 3), "qty": 1, "unit_price": 10, "total": 10, "source": "appsheet_import", "gps_lat": None}]}
+        keys = {i["key"]: i for i in ledger.build_reconciliation(rows, [], [], [])["open_items"]}
+        assert keys["gps:missing"]["amount"] == 1 and keys["gps:away"]["amount"] == 1        # the imported AppSheet row is not counted

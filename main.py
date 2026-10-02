@@ -7089,12 +7089,16 @@ async def ledger_list_add(project_id: str, kind: str, request: Request):
     """Add to a list (the 'add new' behind every dropdown). Recorders and admins."""
     import ledger as _ledger
     from fastapi import HTTPException as _HE
-    if kind not in ("item", "supplier", "buyer", "unit"):
+    if kind not in ("item", "supplier", "buyer", "unit", "shop"):
         raise _HE(status_code=404, detail="Unknown list")
     body = await request.json()
     who, _p, _w = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    if kind == "shop" and _p.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admins only: a shop is a place the farm records from")
     _ledger_ready(project_id)
     try:
+        if kind == "shop":
+            return {"ok": True, "id": _ledger.add_shop(project_id, body, who)}
         if kind == "unit":
             return {"ok": True, "name": _ledger.add_unit(project_id, body, who)}
         if kind == "item":
@@ -7231,12 +7235,21 @@ async def ledger_add(project_id: str, kind: str, request: Request):
     except ValueError as e:
         raise _HE(status_code=422, detail=str(e))
     ref = (str(body.get("source_ref")) if body.get("source_ref") else None)
+    # where it was recorded: the Hub's forms must carry a real location (the AppSheet stored 0,0 and nobody noticed);
+    # a message from WhatsApp has none and is listed as such
+    try:
+        gcols, gwarn = _ledger.validate_gps(body, _ledger.masterdata(project_id)["shops"], required=not via_wa, is_admin=(_p.get("role") == "admin"))
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
+    row.update(gcols)
+    if row.get("stock"):
+        row["stock"].update(gcols)
     res = _ledger.record(project_id, _LEDGER_TABLE[kind], row, who, "whatsapp" if via_wa else "app", ref)
-    warn = None
+    warn = gwarn
     if kind in ("sale", "loss"):
         avail = _ledger.qty_available(_ledger.load(project_id)).get(row["product_id"], 0)
         if avail < 0:
-            warn = "That leaves %d %s in stock: check the quantity, or record the stock that was added." % (avail, products[row["product_id"]]["name"])
+            warn = ((warn + " ") if warn else "") + "That leaves %d %s in stock: check the quantity, or record the stock that was added." % (avail, products[row["product_id"]]["name"])
     _CHICKEN_CACHE.clear()
     return {"ok": True, "id": res["id"], "duplicate": not res["created"], "warning": warn}
 

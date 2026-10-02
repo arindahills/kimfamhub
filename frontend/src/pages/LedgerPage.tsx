@@ -2,7 +2,7 @@
 // APIs: GET /api/ledger/{pid}, /entries, /reconciliation · POST /api/ledger/{pid}/{expense|sale|loss|stock}
 //       POST .../{kind}/{id}/receipt · DELETE .../{kind}/{id} · POST .../notes, /reimbursements (admin)
 // Everyone logged in can read (incl. the reconciliation); recorders (Solomon + admins) can record.
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../context/AuthContext'
 
@@ -23,6 +23,7 @@ interface Row {
   expense_date?: string; sale_date?: string; loss_date?: string; event_date?: string
   created_by: string; source: string; paid_by?: string | null; receipt_url?: string | null
   payment?: string; paid_amount?: number; due_date?: string | null; buyer?: string | null; supplier?: string | null; uom?: string | null
+  gps_lat?: number | null; gps_away?: boolean; distance_m?: number | null; gps_note?: string | null
 }
 interface Note { body: string; author: string; at: string; explained: boolean }
 interface Item { key: string; title: string; amount: number; detail: string; explained: boolean; notes: Note[] }
@@ -60,7 +61,9 @@ interface Party {
   address?: string | null; country?: string | null; website?: string | null; payment_terms?: string | null; account_number?: string | null
   category?: string | null; status?: string | null; notes?: string | null; registered_on?: string | null
 }
-interface Lists { items: Item[]; suppliers: Party[]; buyers: Party[]; units: string[] }
+interface Shop { id: number; name: string; lat: number | null; lng: number | null; radius_m: number }
+interface Lists { items: Item[]; suppliers: Party[]; buyers: Party[]; units: string[]; shops: Shop[] }
+interface Fix { lat: number; lng: number; accuracy: number; at: number }
 interface Receivables { total: number; overdue: number; buyers: { buyer: string; owed: number; count: number; overdue: number; oldest: string | null }[] }
 interface Summary {
   lists: Lists; receivables: Receivables
@@ -315,9 +318,31 @@ function PartyPicker({ kind, value, parties, onChange, onAdded }: { kind: 'suppl
   )
 }
 
+const GEO_HELP = 'Allow location for this site in your phone settings (Site settings, Location), then tap Retry.'
+function useLocation() {
+  const [fix, setFix] = useState<Fix | null>(null)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ref = useRef<Fix | null>(null)
+  const locate = () => new Promise<Fix>((resolve, reject) => {
+    if (!navigator.geolocation) { const m = 'This phone or browser cannot give a location. ' + GEO_HELP; setErr(m); reject(new Error(m)); return }
+    setBusy(true); setErr('')
+    navigator.geolocation.getCurrentPosition(
+      pos => { const f = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, at: Date.now() }; ref.current = f; setFix(f); setBusy(false); resolve(f) },
+      e => { const m = e.code === 1 ? 'Location is switched off for this site. ' + GEO_HELP : 'Could not find your location yet. Go where there is a signal and tap Retry.'; setErr(m); setBusy(false); reject(new Error(m)) },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 })
+  })
+  useEffect(() => { locate().catch(() => undefined) }, [])  
+  // a location older than ten minutes is taken again before saving
+  const fresh = async () => (ref.current && Date.now() - ref.current.at < 600000 ? ref.current : locate())
+  return { fix, err, busy, retry: () => locate().catch(() => undefined), fresh }
+}
+
 function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
   const qc = useQueryClient()
   const reload = () => qc.invalidateQueries({ queryKey: ['ledger'] })
+  const loc = useLocation()
+  const [noLoc, setNoLoc] = useState(false)
   const [kind, setKind] = useState<Kind>('expense')
   const [f, setF] = useState<Record<string, string>>({ date: today(), kind: 'opex' })
   const [birds, setBirds] = useState(false)
@@ -341,6 +366,8 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
     try {
       const body: Record<string, unknown> = { ...f }
       if (kind === 'expense' && !birds) delete body.product_id
+      if (noLoc && s.is_admin) body.gps_override_reason = f.gps_reason || ''
+      else { const g = await loc.fresh(); body.gps = { lat: g.lat, lng: g.lng, accuracy: g.accuracy } }
       const res = await call(api('/' + kind), 'POST', body)
       if (file && res.id && kind !== 'loss') {
         const fd = new FormData(); fd.append('file', file)
@@ -348,7 +375,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
         if (!up.ok) throw new Error('Saved, but the receipt photo did not upload. Open Entries and add it again.')
       }
       setMsg({ ok: true, text: 'Saved.' + (res.warning ? ' ' + res.warning : '') })
-      setF({ date: f.date, kind: 'opex' }); setFile(null); setBirds(false); onSaved()
+      setF({ date: f.date, kind: 'opex', gps_reason: f.gps_reason || '' }); setFile(null); setBirds(false); onSaved()
     } catch (e) { setMsg({ ok: false, text: errMsg(e) }) }
     setBusy(false)
   }
@@ -362,6 +389,34 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
         ))}
       </div>
       <L t="Date"><input type="date" className={input} max={today()} value={f.date || ''} onChange={e => set('date', e.target.value)} style={{ colorScheme: 'dark' }} /></L>
+
+      <div className="rounded-lg border p-2.5 text-sm" style={{ borderColor: loc.fix ? '#166534' : loc.err ? '#7f1d1d' : 'var(--border)' }}>
+        {noLoc && s.is_admin ? (
+          <div className="space-y-2">
+            <div className="text-[#fbbf24]">Recording without a location. Say why (it is kept on the entry):</div>
+            <input className={input} value={f.gps_reason || ''} onChange={e => set('gps_reason', e.target.value)} placeholder="e.g. back-filling from receipts" />
+            <button type="button" className="text-xs text-[#60a5fa]" onClick={() => setNoLoc(false)}>Use my location instead</button>
+          </div>
+        ) : (
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              {loc.busy && <span className="text-[var(--muted-2)]">📍 Finding your location…</span>}
+              {!loc.busy && loc.fix && <span style={{ color: '#4ade80' }}>📍 Location found (within {Math.round(loc.fix.accuracy)} m)</span>}
+              {!loc.busy && !loc.fix && <span style={{ color: '#fca5a5' }}>📍 {loc.err || 'Location needed to save'}</span>}
+            </div>
+            <div className="flex shrink-0 gap-3 text-xs">
+              <button type="button" className="text-[#60a5fa]" onClick={loc.retry}>{loc.fix ? 'Refresh' : 'Retry'}</button>
+              {s.is_admin && <button type="button" className="text-[var(--muted-2)]" onClick={() => setNoLoc(true)}>Skip</button>}
+            </div>
+          </div>
+        )}
+        {s.lists.shops.length > 1 && (
+          <select className={input + ' mt-2'} value={f.shop_id || ''} onChange={e => set('shop_id', e.target.value)}>
+            <option value="">Shop: nearest to me</option>
+            {s.lists.shops.map(sh => <option key={sh.id} value={sh.id}>{sh.name}</option>)}
+          </select>
+        )}
+      </div>
 
       {kind === 'expense' && <>
         <L t="What was bought?">
@@ -478,6 +533,9 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
                 {r.receipt_url && <> · <a className="underline" href={r.receipt_url} target="_blank" rel="noreferrer">receipt</a></>}
                 {r.payment === 'Credit' && <> · <span className="font-semibold" style={{ color: (r.paid_amount ?? 0) >= (r.total ?? 0) ? '#4ade80' : '#fbbf24' }}>{(r.paid_amount ?? 0) >= (r.total ?? 0) ? 'credit, paid' : `credit, owed ${ugx((r.total ?? 0) - (r.paid_amount ?? 0))}`}</span>{r.due_date ? ' (due ' + r.due_date + ')' : ''}</>}
                 {r.buyer ? ' · ' + r.buyer : ''}{r.supplier ? ' · from ' + r.supplier : ''}
+                {r.source !== 'appsheet_import' && (r.gps_lat == null
+                  ? <span className="text-[#fbbf24]"> · no location</span>
+                  : r.gps_away ? <span className="text-[#fbbf24]"> · {((r.distance_m ?? 0) / 1000).toFixed(1)} km from the farm</span> : <span> · 📍</span>)}
               </div>
             </div>
             <div className="text-right tabular-nums">{ugx(amt(r))}</div>
@@ -653,18 +711,20 @@ function PartyForm({ kind, start, onDone }: { kind: 'supplier' | 'buyer'; start:
 
 function ListsTab({ s }: { s: Summary }) {
   const qc = useQueryClient()
-  const [which, setWhich] = useState<'suppliers' | 'buyers' | 'items' | 'units'>('suppliers')
+  const [which, setWhich] = useState<'suppliers' | 'buyers' | 'items' | 'units' | 'shops'>('suppliers')
   const [edit, setEdit] = useState<Party | 'new' | null>(null)
   const [find, setFind] = useState('')
   const [msg, setMsg] = useState('')
   const [it, setIt] = useState({ name: '', group_name: '', kind: 'opex', default_uom: 'pc', is_birds: false })
   const [unit, setUnit] = useState('')
+  const [shop, setShop] = useState({ name: '', lat: '', lng: '', radius_m: '1000' })
+  const here = () => navigator.geolocation?.getCurrentPosition(p => setShop(o => ({ ...o, lat: String(p.coords.latitude), lng: String(p.coords.longitude) })), () => setMsg('Could not get your location. ' + GEO_HELP), { enableHighAccuracy: true, timeout: 20000 })
   const reload = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); setEdit(null); setMsg('') }
   const guard = async (fn: () => Promise<unknown>) => { try { await fn(); reload() } catch (e) { setMsg(errMsg(e)) } }
   const kindOf = which === 'suppliers' ? 'supplier' : 'buyer'
   const people = (which === 'suppliers' ? s.lists.suppliers : s.lists.buyers).filter(p => !find || p.name.toLowerCase().includes(find.toLowerCase()))
   const groups = [...new Set(s.lists.items.map(i => i.group_name ?? 'Other'))].sort()
-  const tabs: ['suppliers' | 'buyers' | 'items' | 'units', string, number][] = [['suppliers', 'Suppliers', s.lists.suppliers.length], ['buyers', 'Buyers', s.lists.buyers.length], ['items', 'Items', s.lists.items.length], ['units', 'Units', s.lists.units.length]]
+  const tabs: ['suppliers' | 'buyers' | 'items' | 'units' | 'shops', string, number][] = [['suppliers', 'Suppliers', s.lists.suppliers.length], ['buyers', 'Buyers', s.lists.buyers.length], ['items', 'Items', s.lists.items.length], ['units', 'Units', s.lists.units.length], ['shops', 'Shops', s.lists.shops.length]]
   return (
     <div className="space-y-3">
       <p className="px-1 text-xs text-[var(--muted-2)]">The lists behind every dropdown. Pick from them when recording so the same thing is always spelt the same way. A new name typed while recording is added here automatically.</p>
@@ -725,6 +785,31 @@ function ListsTab({ s }: { s: Summary }) {
               ))}
             </div>
           ))}
+        </>
+      )}
+
+      {which === 'shops' && (
+        <>
+          <p className="px-1 text-xs text-[var(--muted-2)]">A shop is a place the farm records from. Entries are tagged with the nearest shop, and flagged when recorded farther away than its radius. Items, suppliers and buyers are shared by all shops. Adding a second shop does not change any existing record.</p>
+          {s.lists.shops.map(sh => (
+            <div key={sh.id} className={card}>
+              <div className="font-medium">{sh.name}</div>
+              <div className="text-xs text-[var(--muted-2)]">{sh.lat != null ? `${sh.lat.toFixed(5)}, ${sh.lng?.toFixed(5)}` : 'no location set'} · flags entries beyond {sh.radius_m} m</div>
+            </div>
+          ))}
+          {s.is_admin && (
+            <div className={card + ' space-y-2'}>
+              <div className="text-sm font-semibold">Add a shop</div>
+              <input className={input} placeholder="Shop or site name" value={shop.name} onChange={e => setShop(o => ({ ...o, name: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
+                <input className={input} placeholder="Latitude" value={shop.lat} onChange={e => setShop(o => ({ ...o, lat: e.target.value }))} />
+                <input className={input} placeholder="Longitude" value={shop.lng} onChange={e => setShop(o => ({ ...o, lng: e.target.value }))} />
+              </div>
+              <button type="button" className="text-xs text-[#60a5fa]" onClick={here}>Use my current location (stand at the shop)</button>
+              <input className={input} inputMode="numeric" placeholder="Radius in metres" value={shop.radius_m} onChange={e => setShop(o => ({ ...o, radius_m: e.target.value.replace(/[^0-9]/g, '') }))} />
+              <button className={btn + ' !h-9 !px-4'} onClick={() => guard(async () => { await call(api('/lists/shop'), 'POST', shop); setShop({ name: '', lat: '', lng: '', radius_m: '1000' }) })}>Add shop</button>
+            </div>
+          )}
         </>
       )}
 
