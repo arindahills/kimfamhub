@@ -2039,6 +2039,11 @@ class TestCashRoutes:
     """The four cash write routes need a person: the internal key (a credential, not a person) is refused; a message
     from WhatsApp can never carry a cash holder or record a credit payment."""
 
+    @staticmethod
+    def _anon():
+        """A client with no login cookie: the shared module client is logged in as a person, which would be the person path."""
+        return TestClient(app)
+
     def _stub(self, monkeypatch):
         import main as m
         monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "k")
@@ -2053,7 +2058,7 @@ class TestCashRoutes:
                                 ("post", a + "/1/decision", {"json": {"approve": True}}),
                                 ("post", a + "/1/receipt", {"files": {"file": ("a.png", b"x", "image/png")}}),
                                 ("delete", a + "/1", {})):
-            r = getattr(client, method)(url, headers=h, **kw)
+            r = getattr(self._anon(), method)(url, headers=h, **kw)
             assert r.status_code == 401, (method, url, r.status_code, r.text)
 
     def test_the_internal_key_can_still_read_cash(self, monkeypatch):
@@ -2061,7 +2066,7 @@ class TestCashRoutes:
         m = self._stub(monkeypatch)
         monkeypatch.setattr(ledger, "load", lambda pid: {"products": [], "stock": [], "sales": [], "losses": [], "expenses": []})
         monkeypatch.setattr(ledger, "load_cash", lambda pid: ([], []))
-        r = client.get("/api/ledger/chicken/cash", headers={"X-Internal-Key": "k"})
+        r = self._anon().get("/api/ledger/chicken/cash", headers={"X-Internal-Key": "k"})
         assert r.status_code == 200 and "holders" in r.json()
 
     def test_a_message_sale_never_carries_a_holder(self, monkeypatch):
@@ -2074,12 +2079,12 @@ class TestCashRoutes:
         monkeypatch.setattr(ledger, "record", lambda pid, table, row, who, source="app", source_ref=None: seen.update(row=row, source=source) or {"id": 1, "created": True})
         monkeypatch.setattr(ledger, "load", lambda pid: {"products": [{"product_id": "p", "name": "eggs", "cost_price": 0, "sell_price": 400}], "stock": [], "sales": [], "losses": [], "expenses": []})
         today = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date().isoformat()
-        r = client.post("/api/ledger/chicken/sale", headers={"X-Internal-Key": "k"},
+        r = self._anon().post("/api/ledger/chicken/sale", headers={"X-Internal-Key": "k"},
                         json={"reported_by": "Solomon", "date": today, "product_id": "p", "qty": 1, "unit_price": 400, "held_by": "Israel", "source_ref": "wa:1:s0"})
         assert r.status_code == 200, r.text
         assert seen["source"] == "whatsapp" and seen["row"]["held_by"] is None            # the spoofed holder was dropped
 
     def test_a_message_cannot_record_a_credit_payment(self, monkeypatch):
         self._stub(monkeypatch)
-        r = client.post("/api/ledger/chicken/sale/1/payment", headers={"X-Internal-Key": "k"}, json={"reported_by": "Solomon", "amount": 1000, "received_by": "Israel"})
+        r = self._anon().post("/api/ledger/chicken/sale/1/payment", headers={"X-Internal-Key": "k"}, json={"reported_by": "Solomon", "amount": 1000, "received_by": "Israel"})
         assert r.status_code == 422 and "Hub" in r.text
