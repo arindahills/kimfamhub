@@ -68,26 +68,114 @@ async function call<T = any>(url: string, method = 'GET', body?: unknown): Promi
   return j
 }
 
-function Stat({ l, v, tone }: { l: string; v: number; tone?: 'good' | 'bad' }) {
+function Stat({ l, v, tone, onClick }: { l: string; v: number; tone?: 'good' | 'bad'; onClick?: () => void }) {
   const color = tone === 'good' ? '#4ade80' : tone === 'bad' ? '#f87171' : 'var(--foreground)'
-  return (
-    <div className="rounded-[10px] bg-[var(--card-inset)] p-3 text-center">
+  const body = (
+    <>
       <div className="text-sm font-bold tabular-nums" style={{ color }}>{ugx(v)}</div>
       <div className="mt-0.5 text-[10px] uppercase tracking-wide text-[var(--muted-2)]">{l}</div>
+      {onClick && <div className="mt-1 text-[10px] text-[#60a5fa]">tap for details ›</div>}
+    </>
+  )
+  return onClick
+    ? <button onClick={onClick} className="rounded-[10px] bg-[var(--card-inset)] p-3 text-center transition-transform active:scale-[0.98]">{body}</button>
+    : <div className="rounded-[10px] bg-[var(--card-inset)] p-3 text-center">{body}</div>
+}
+
+interface DrillRow { key: string; label: string; count: number; amount: number; share: number; note?: string }
+interface DrillLine { date: string; title: string; detail: string; amount: number; balance?: number; unit?: string; id?: number | null; receipt_url?: string | null }
+interface Drill {
+  card: string; label: string; total: number; level: 'group' | 'year' | 'month' | 'lines' | 'movements'
+  crumbs: { label: string; params: { group?: string; year?: number; month?: number } }[]
+  rows: DrillRow[]; lines: DrillLine[]; qty_available?: number
+}
+
+function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
+  const [p, setP] = useState<{ group?: string; year?: number; month?: number }>({})
+  const qs = new URLSearchParams()
+  if (p.group) qs.set('group', p.group)
+  if (p.year) qs.set('year', String(p.year))
+  if (p.month) qs.set('month', String(p.month))
+  const q = useQuery<Drill>({ queryKey: ['ledger-drill', which, p.group, p.year, p.month], queryFn: () => call<Drill>(api(`/drill/${which}?${qs.toString()}`)) })
+  if (q.error) return <div className={card + ' text-sm'}>{(q.error as Error).message}</div>
+  const d = q.data
+  const open = (r: DrillRow) => {
+    if (!d) return
+    if (d.level === 'group') setP({ group: r.key })
+    else if (d.level === 'year') setP({ group: p.group, year: Number(r.key) })
+    else if (d.level === 'month') setP({ group: p.group, year: p.year, month: Number(r.key) })
+  }
+  const tappable = d && (d.level === 'group' || d.level === 'year' || d.level === 'month')
+  const isQty = d?.level === 'movements'
+  return (
+    <div className="space-y-3">
+      <button onClick={() => (d && d.crumbs.length > 1 ? setP(d.crumbs[d.crumbs.length - 2].params) : onBack())} className="text-sm font-semibold text-[#60a5fa]">‹ Back</button>
+      {d && (
+        <>
+          <div className="flex flex-wrap items-center gap-1 text-xs text-[var(--muted-2)]">
+            <button onClick={onBack} className="underline">Summary</button>
+            {d.crumbs.map((c, i) => (
+              <span key={i} className="flex items-center gap-1">›
+                {i < d.crumbs.length - 1 ? <button onClick={() => setP(c.params)} className="underline">{c.label}</button> : <span className="font-semibold text-[var(--foreground)]">{c.label}</span>}
+              </span>
+            ))}
+          </div>
+          <div className={card}>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{d.crumbs[d.crumbs.length - 1].label}</div>
+            <div className="mt-1 text-2xl font-bold tabular-nums">{isQty ? ugx(d.total) + ' UGX' : ugx(d.total)}</div>
+            {isQty && <div className="mt-0.5 text-xs text-[var(--muted-2)]">{d.qty_available} in stock now</div>}
+          </div>
+          {tappable && (
+            <div className="divide-y divide-[var(--border)] rounded-[12px] border border-[var(--border)] bg-[var(--card)]">
+              {d.rows.map(r => (
+                <button key={r.key} onClick={() => open(r)} className="block w-full px-4 py-3 text-left">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-medium">{r.label} <span className="text-xs font-normal text-[var(--muted-2)]">{r.note ?? `${r.count} ${r.count === 1 ? 'entry' : 'entries'}`}</span></span>
+                    <span className="tabular-nums">{ugx(r.amount)} <span className="text-[#60a5fa]">›</span></span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--card-inset)]"><div className="h-full rounded-full bg-[#22c55e]" style={{ width: Math.max(2, r.share) + '%' }} /></div>
+                  <div className="mt-0.5 text-right text-[10px] text-[var(--muted-2)]">{r.share}%</div>
+                </button>
+              ))}
+              {d.rows.length === 0 && <div className="p-4 text-sm text-[var(--muted-2)]">Nothing here.</div>}
+            </div>
+          )}
+          {!tappable && (
+            <div className="divide-y divide-[var(--border)] rounded-[12px] border border-[var(--border)] bg-[var(--card)]">
+              {d.lines.map((l, i) => (
+                <div key={i} className="flex items-start gap-3 px-4 py-3 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{l.title}</div>
+                    <div className="text-xs text-[var(--muted-2)]">{l.date}{l.detail ? ' · ' + l.detail : ''}{l.receipt_url && <> · <a className="underline" href={l.receipt_url} target="_blank" rel="noreferrer">receipt</a></>}</div>
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <div style={{ color: isQty ? (l.amount < 0 ? '#f87171' : '#4ade80') : undefined }}>{isQty ? (l.amount > 0 ? '+' : '') + l.amount : ugx(l.amount)}</div>
+                    {l.balance != null && <div className="text-[10px] text-[var(--muted-2)]">balance {l.balance}</div>}
+                  </div>
+                </div>
+              ))}
+              {d.lines.length === 0 && <div className="p-4 text-sm text-[var(--muted-2)]">Nothing here.</div>}
+            </div>
+          )}
+        </>
+      )}
+      {!d && <div className="p-4 text-sm text-[var(--muted-2)]">Loading…</div>}
     </div>
   )
 }
 
 function SummaryTab({ s }: { s: Summary }) {
   const st = s.statement
+  const [open, setCard] = useState<string | null>(null)
+  if (open) return <DrillView which={open} onBack={() => setCard(null)} />
   return (
     <div className="space-y-3">
       <div className={card}>
         <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Profit and loss (UGX)</div>
         <div className="grid grid-cols-2 gap-2">
-          <Stat l="Total sales" v={st.sales} /><Stat l="Spoilt / lost" v={st.spoilt} />
-          <Stat l="Running costs (OPEX)" v={st.opex} /><Stat l="Equipment (CapEx)" v={st.capex} />
-          <Stat l="Stock at cost" v={st.available_stock_cost} /><Stat l="Expected sales" v={st.expected_sales} />
+          <Stat l="Total sales" v={st.sales} onClick={() => setCard('sales')} /><Stat l="Spoilt / lost" v={st.spoilt} onClick={() => setCard('spoilt')} />
+          <Stat l="Running costs (OPEX)" v={st.opex} onClick={() => setCard('opex')} /><Stat l="Equipment (CapEx)" v={st.capex} onClick={() => setCard('capex')} />
+          <Stat l="Stock at cost" v={st.available_stock_cost} onClick={() => setCard('stock')} /><Stat l="Expected sales" v={st.expected_sales} onClick={() => setCard('expected')} />
         </div>
         <div className="mt-3 space-y-1 border-t border-[var(--border)] pt-3 text-xs">
           {([['Gross position', st.gross], ['Net (with CapEx)', st.net_with_capex], ['Net (with depreciation)', st.net_with_depreciation]] as const).map(([l, v]) => (

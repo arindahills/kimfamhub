@@ -1086,3 +1086,66 @@ class TestProjectionModel:
                {"id": 2, "txn_date": datetime.date(2024, 10, 6), "description": "Free range chicken capital", "amount_ugx": 9000000, "category": "project_investment", "recorded_by": "system_import"}]
         act = P.actual_monthly(self._rows(), tre, 6)
         assert act[4]["other"] == 20000 + 300000                                 # pay yes, capital no
+
+
+class TestLedgerDrill:
+    """Ticket #99: every summary card drills down, and every level adds up to the level above it."""
+
+    @staticmethod
+    def _rows():
+        import datetime
+        d = datetime.date
+        return {
+            "products": [{"product_id": "p1", "name": "eggs", "cost_price": 0, "sell_price": 400, "valuation": "sell"},
+                         {"product_id": "p2", "name": "hens", "cost_price": 10000, "sell_price": 30000, "valuation": "cost"}],
+            "stock": [{"id": 1, "product_id": "p1", "event_date": d(2025, 1, 5), "qty": 1000, "kind": "production", "unit_cost": 0, "total_cost": 0},
+                      {"id": 2, "product_id": "p2", "event_date": d(2025, 1, 2), "qty": 10, "kind": "purchase", "unit_cost": 10000, "total_cost": 100000}],
+            "sales": [{"id": 1, "product_id": "p1", "sale_date": d(2025, 1, 6), "qty": 100, "unit_price": 400, "total": 40000, "buyer": "x"},
+                      {"id": 2, "product_id": "p1", "sale_date": d(2025, 3, 6), "qty": 50, "unit_price": 400, "total": 20000, "buyer": ""},
+                      {"id": 3, "product_id": "p1", "sale_date": d(2026, 3, 9), "qty": 25, "unit_price": 400, "total": 10000, "buyer": ""},
+                      {"id": 4, "product_id": "p2", "sale_date": d(2025, 3, 7), "qty": 2, "unit_price": 30000, "total": 60000, "buyer": "y"}],
+            "losses": [{"id": 1, "product_id": "p2", "loss_date": d(2025, 2, 1), "qty": 1, "total": 10000, "kind": "Damaged", "reason": "died"}],
+            "expenses": [{"id": 1, "item": "Layer mash", "expense_date": d(2025, 1, 9), "total": 80000, "kind": "opex", "qty": 1, "unit_price": 80000},
+                         {"id": 2, "item": "Medicine for chicken", "expense_date": d(2025, 2, 9), "total": 5000, "kind": "opex", "qty": 1, "unit_price": 5000},
+                         {"id": 3, "item": "Coop", "expense_date": d(2025, 1, 1), "total": 300000, "kind": "capex", "qty": 1, "unit_price": 300000}],
+        }
+
+    def test_every_card_total_equals_the_statement(self):
+        import ledger
+        rows = self._rows()
+        st = ledger.statement(rows)
+        for card, key in (("sales", "sales"), ("spoilt", "spoilt"), ("opex", "opex"), ("capex", "capex"),
+                          ("stock", "available_stock_cost"), ("expected", "expected_sales")):
+            d = ledger.drill(rows, card)
+            assert d["total"] == st[key] and sum(r["amount"] for r in d["rows"]) == st[key], card
+
+    def test_sales_drill_sums_at_each_level_down_to_the_lines(self):
+        import ledger
+        rows = self._rows()
+        g = ledger.drill(rows, "sales")
+        assert [(r["label"], r["amount"]) for r in g["rows"]] == [("Eggs", 70000), ("Hens", 60000)]       # biggest first
+        y = ledger.drill(rows, "sales", "Eggs")
+        assert y["level"] == "year" and [(r["key"], r["amount"]) for r in y["rows"]] == [("2026", 10000), ("2025", 60000)]
+        m = ledger.drill(rows, "sales", "Eggs", 2025)
+        assert m["level"] == "month" and [(r["label"], r["amount"]) for r in m["rows"]] == [("March", 20000), ("January", 40000)]
+        ln = ledger.drill(rows, "sales", "Eggs", 2025, 1)
+        assert ln["level"] == "lines" and ln["total"] == 40000 and ln["lines"][0]["amount"] == 40000
+        assert [c["label"] for c in ln["crumbs"]] == ["Total sales", "Eggs", "2025", "January"]
+
+    def test_opex_groups_by_what_it_was_for_not_by_keyword_order(self):
+        import ledger
+        d = ledger.drill(self._rows(), "opex")
+        assert {(r["label"], r["amount"]) for r in d["rows"]} == {("Feed & Nutrition", 80000), ("Medicine & Vet", 5000)}
+
+    def test_stock_drill_shows_quantity_and_the_movements_behind_it(self):
+        import ledger
+        d = ledger.drill(self._rows(), "stock")
+        assert {r["label"]: r["count"] for r in d["rows"]} == {"Eggs": 825, "Hens": 7}
+        mv = ledger.drill(self._rows(), "stock", "Hens")
+        assert mv["level"] == "movements" and mv["qty_available"] == 7
+        assert [l["balance"] for l in mv["lines"]][0] == 7 and mv["lines"][-1]["amount"] == 10        # newest first, running balance
+
+    def test_unknown_card_is_refused(self):
+        import ledger
+        with pytest.raises(ValueError):
+            ledger.drill(self._rows(), "profit")
