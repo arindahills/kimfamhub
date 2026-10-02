@@ -84,12 +84,13 @@ function Stat({ l, v, tone, onClick }: { l: string; v: number; tone?: 'good' | '
     : <div className="rounded-[10px] bg-[var(--card-inset)] p-3 text-center">{body}</div>
 }
 
-interface DrillRow { key: string; label: string; count: number; amount: number; share: number; note?: string }
+interface UnitAvg { unit: string; qty: number; amount: number; avg: number | null }
+interface DrillRow { key: string; label: string; count: number; amount: number; share: number; note?: string; qty?: number | null; avg?: number | null; units?: UnitAvg[] }
 interface DrillLine { date: string; title: string; detail: string; amount: number; balance?: number; unit?: string; id?: number | null; receipt_url?: string | null }
 interface Drill {
   card: string; label: string; total: number; level: 'group' | 'year' | 'month' | 'lines' | 'movements'
   crumbs: { label: string; params: { group?: string; year?: number; month?: number } }[]
-  rows: DrillRow[]; lines: DrillLine[]; qty_available?: number
+  rows: DrillRow[]; lines: DrillLine[]; qty_available?: number; qty?: number | null; avg?: number | null; units?: UnitAvg[]
 }
 
 function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
@@ -126,13 +127,32 @@ function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
             <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{d.crumbs[d.crumbs.length - 1].label}</div>
             <div className="mt-1 text-2xl font-bold tabular-nums">{isQty ? ugx(d.total) + ' UGX' : ugx(d.total)}</div>
             {isQty && <div className="mt-0.5 text-xs text-[var(--muted-2)]">{d.qty_available} in stock now</div>}
+            {!isQty && d.units && d.units.length > 0 && (
+              <div className="mt-2 border-t border-[var(--border)] pt-2">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--muted-2)]">Average price per unit</div>
+                <div className="flex flex-wrap gap-2">
+                  {d.units.map(u => (
+                    <div key={u.unit} className="rounded-lg bg-[var(--card-inset)] px-3 py-1.5 text-center">
+                      <div className="text-sm font-bold tabular-nums">{u.avg != null ? ugx(u.avg) : '-'}<span className="text-[10px] font-normal text-[var(--muted-2)]"> / {u.unit}</span></div>
+                      <div className="text-[10px] text-[var(--muted-2)]">{ugx(u.qty)} {u.unit} bought</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!isQty && d.qty != null && (
+              <div className="mt-2 flex items-baseline justify-between border-t border-[var(--border)] pt-2 text-xs text-[var(--muted-2)]">
+                <span>{ugx(d.qty)} {d.qty === 1 ? 'item' : 'items'}</span>
+                {d.avg != null && <span>average per item <b className="text-sm text-[var(--foreground)] tabular-nums">{ugx(d.avg)}</b></span>}
+              </div>
+            )}
           </div>
           {tappable && (
             <div className="divide-y divide-[var(--border)] rounded-[12px] border border-[var(--border)] bg-[var(--card)]">
               {d.rows.map(r => (
                 <button key={r.key} onClick={() => open(r)} className="block w-full px-4 py-3 text-left">
                   <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="font-medium">{r.label} <span className="text-xs font-normal text-[var(--muted-2)]">{r.note ?? `${r.count} ${r.count === 1 ? 'entry' : 'entries'}`}</span></span>
+                    <span className="font-medium">{r.label} <span className="text-xs font-normal text-[var(--muted-2)]">{r.note ?? `${r.count} ${r.count === 1 ? 'entry' : 'entries'}`}{r.qty ? ` · ${ugx(r.qty)} items` : ''}{r.avg != null ? ` · avg ${ugx(r.avg)} each` : ''}{r.units && r.units.length ? ' · ' + r.units.slice(0, 2).map(u => `${u.avg != null ? ugx(u.avg) : '-'}/${u.unit}`).join(', ') : ''}</span></span>
                     <span className="tabular-nums">{ugx(r.amount)} <span className="text-[#60a5fa]">›</span></span>
                   </div>
                   <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--card-inset)]"><div className="h-full rounded-full bg-[#22c55e]" style={{ width: Math.max(2, r.share) + '%' }} /></div>
@@ -274,6 +294,11 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
           <L t="Quantity"><input className={input} inputMode="numeric" value={f.qty || ''} onChange={e => set('qty', e.target.value.replace(/[^0-9]/g, ''))} /></L>
           <L t="Total (UGX)">{money('total')}</L>
         </div>
+        <L t="Unit bought in (optional)">
+          <select className={input} value={f.uom || 'pc'} onChange={e => set('uom', e.target.value)}>
+            <option value="pc">pieces</option><option value="kg">kilograms</option><option value="bag">bags</option><option value="litre">litres</option>
+          </select>
+        </L>
         <L t="Type">
           <select className={input} value={f.kind} onChange={e => set('kind', e.target.value)}>
             <option value="opex">Running cost (feed, medicine, transport, labour)</option>

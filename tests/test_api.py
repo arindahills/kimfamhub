@@ -1619,3 +1619,77 @@ class TestFlockBatches:
         assert ledger.validate_expense(dict(base, age_weeks="16"), today, payers, prods)["stock"]["age_weeks"] == 16
         with pytest.raises(ValueError, match="(?i)age"):
             ledger.validate_expense(dict(base, age_weeks="999"), today, payers, prods)
+
+
+class TestDrillAverages:
+    """Average per item on the drill-down cards (sales and spoilt): only where the rows are one product."""
+
+    def test_average_per_item_at_each_level(self):
+        import ledger
+        rows = TestLedgerDrill._rows()
+        top = ledger.drill(rows, "sales")
+        assert top["avg"] is None and top["qty"] == 100 + 50 + 25 + 2                        # no average across eggs and hens
+        assert {r["label"]: r["avg"] for r in top["rows"]} == {"Eggs": 400, "Hens": 30000}   # per product on the rows
+        eggs = ledger.drill(rows, "sales", "Eggs")
+        assert eggs["qty"] == 175 and eggs["avg"] == round(70000 / 175)
+        yr = ledger.drill(rows, "sales", "Eggs", 2025)
+        assert yr["qty"] == 150 and yr["avg"] == round(60000 / 150) and {r["label"]: r["qty"] for r in yr["rows"]} == {"January": 100, "March": 50}
+        ln = ledger.drill(rows, "sales", "Eggs", 2025, 1)
+        assert ln["qty"] == 100 and ln["avg"] == 400
+
+    def test_costs_do_not_claim_an_average(self):
+        import ledger
+        d = ledger.drill(TestLedgerDrill._rows(), "opex")
+        assert d["qty"] is None and d["avg"] is None and all(r.get("avg") is None and "qty" not in r for r in d["rows"])
+
+
+class TestDrillUnits:
+    """Costs average per unit of measure (per kg, per bag, per litre, per piece), never across units."""
+
+    @staticmethod
+    def _rows():
+        import datetime
+        d = datetime.date
+        base = TestLedgerDrill._rows()
+        base["expenses"] = [
+            {"id": 1, "item": "Layer mash", "expense_date": d(2025, 1, 9), "total": 160000, "kind": "opex", "qty": 100, "unit_price": 1600, "raw": {"unit of measure": "Kg"}},
+            {"id": 2, "item": "Grower mash", "expense_date": d(2026, 2, 9), "total": 300000, "kind": "opex", "qty": 150, "unit_price": 2000, "raw": {"unit of measure": "kg"}},
+            {"id": 3, "item": "Layer mash", "expense_date": d(2026, 3, 9), "total": 160000, "kind": "opex", "qty": 2, "unit_price": 80000, "raw": {"unit of measure": "bag"}},
+            {"id": 4, "item": "Layer mash", "expense_date": d(2026, 4, 9), "total": 90000, "kind": "opex", "qty": 1, "unit_price": 90000, "uom": "bag"},   # native entry: stored unit wins
+            {"id": 5, "item": "Coop", "expense_date": d(2025, 1, 1), "total": 300000, "kind": "capex", "qty": 1, "unit_price": 300000},         # no unit anywhere: pieces
+        ]
+        return base
+
+    def test_unit_normalisation(self):
+        import ledger
+        assert [ledger.uom_of(r) for r in ({"raw": {"unit of measure": "Kg"}}, {"raw": {"unit of measure": "kg"}}, {"uom": "bag"}, {"raw": {"unit of measure": "Litres"}}, {})] == ["kg", "kg", "bag", "litre", "pc"]
+
+    def test_card_shows_each_unit_apart_biggest_spend_first(self):
+        import ledger
+        d = ledger.drill(self._rows(), "opex", "Feed & Nutrition")
+        assert [(u["unit"], u["qty"], u["amount"], u["avg"]) for u in d["units"]] == [("kg", 250, 460000, 1840), ("bag", 3, 250000, 83333)]
+        assert d["avg"] is None and d["qty"] is None                                    # no single average across kilos and bags
+
+    def test_units_follow_the_year_and_rows_carry_their_own(self):
+        import ledger
+        y = ledger.drill(self._rows(), "opex", "Feed & Nutrition", 2026)
+        assert [(u["unit"], u["avg"]) for u in y["units"]] == [("kg", 2000), ("bag", 83333)]
+        yrs = {r["label"]: [(u["unit"], u["avg"]) for u in r["units"]] for r in ledger.drill(self._rows(), "opex", "Feed & Nutrition")["rows"]}
+        assert yrs["2025"] == [("kg", 1600)]                                          # the price trend is visible year by year
+        top = ledger.drill(self._rows(), "opex")
+        assert top["rows"][0]["units"], "category rows show their units too"
+
+    def test_capex_without_a_unit_counts_pieces(self):
+        import ledger
+        assert [(u["unit"], u["qty"], u["avg"]) for u in ledger.drill(self._rows(), "capex")["units"]] == [("pc", 1, 300000)]
+
+    def test_sales_keep_their_per_item_average_and_no_units(self):
+        import ledger
+        d = ledger.drill(TestLedgerDrill._rows(), "sales", "Eggs")
+        assert d["units"] == [] and d["avg"] == round(70000 / 175)
+
+    def test_native_expense_takes_a_valid_unit_only(self):
+        import ledger, datetime
+        ok = {"date": "2026-09-30", "item": "Layer mash", "qty": 50, "total": 80000, "paid_by": "Club"}
+        v = lambda extra: ledger.validate_expense(dict(ok, **extra), datetime.date(2026, 10, 1), ["Club"], {})["uom"]
+        assert (v({}), v({"uom": "Kg"}), v({"uom": "bag"}), v({"uom": "furlong"})) == ("pc", "kg", "bag", "pc")

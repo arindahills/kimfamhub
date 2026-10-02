@@ -369,6 +369,16 @@ def _drill_source(rows, card):
     raise ValueError("unknown card")
 
 
+UNITS = ("pc", "kg", "bag", "litre")
+
+
+def uom_of(r):
+    """Unit of measure of an expense row, normalised ('Kg' and 'kg' are one unit)."""
+    u = (r.get("uom") or (r.get("raw") or {}).get("unit of measure") or "pc") if isinstance(r, dict) else "pc"
+    u = str(u).strip().lower()
+    return {"kgs": "kg", "kilo": "kg", "kilos": "kg", "litres": "litre", "liter": "litre", "l": "litre", "pcs": "pc", "piece": "pc", "bags": "bag"}.get(u, u) or "pc"
+
+
 def drill(rows, card, group=None, year=None, month=None):
     """One level of the drill-down for a summary card. Every level sums to its parent.
     sales / spoilt / opex / capex: total, then by product (or cost category), then year, month, lines.
@@ -406,14 +416,18 @@ def drill(rows, card, group=None, year=None, month=None):
                 "level": "movements", "crumbs": crumbs, "rows": [], "lines": lines, "qty_available": item["qty_available"]}
 
     recs, dkey, amount_of, group_of, line_of = _drill_source(rows, card)
+    qty_of = (lambda r: r["qty"]) if card in ("sales", "spoilt") else None      # items counted only where it is meaningful
+    cost = card in ("opex", "capex")                                           # costs average per unit of measure instead
     total = sum(amount_of(r) for r in recs)
     if group is None:
         bucket = {}
         for r in recs:
-            b = bucket.setdefault(group_of(r), {"key": group_of(r), "label": group_of(r), "count": 0, "amount": 0})
-            b["count"] += 1; b["amount"] += amount_of(r)
+            b = bucket.setdefault(group_of(r), {"key": group_of(r), "label": group_of(r), "count": 0, "amount": 0, "qty": 0})
+            b["count"] += 1; b["amount"] += amount_of(r); b["qty"] += qty_of(r) if qty_of else 0
+            if cost:
+                u = b.setdefault("_u", {}).setdefault(uom_of(r), [0, 0]); u[0] += r["qty"]; u[1] += amount_of(r)
         items = sorted(bucket.values(), key=lambda i: -i["amount"])
-        return {"card": card, "label": _DRILL_LABEL[card], "total": total, "level": "group", "crumbs": crumbs, "rows": _shares(items, total), "lines": []}
+        return {"card": card, "label": _DRILL_LABEL[card], "total": total, "level": "group", "crumbs": crumbs, "rows": _avgs(_shares(items, total), qty_of), "lines": [], **_top(recs, amount_of, qty_of, False, cost)}
     recs = [r for r in recs if group_of(r) == group]
     crumbs.append({"label": group, "params": {"group": group}})
     gtotal = sum(amount_of(r) for r in recs)
@@ -421,10 +435,12 @@ def drill(rows, card, group=None, year=None, month=None):
         bucket = {}
         for r in recs:
             y = r[dkey].year
-            b = bucket.setdefault(y, {"key": str(y), "label": str(y), "count": 0, "amount": 0})
-            b["count"] += 1; b["amount"] += amount_of(r)
+            b = bucket.setdefault(y, {"key": str(y), "label": str(y), "count": 0, "amount": 0, "qty": 0})
+            b["count"] += 1; b["amount"] += amount_of(r); b["qty"] += qty_of(r) if qty_of else 0
+            if cost:
+                u = b.setdefault("_u", {}).setdefault(uom_of(r), [0, 0]); u[0] += r["qty"]; u[1] += amount_of(r)
         items = sorted(bucket.values(), key=lambda i: -int(i["key"]))
-        return {"card": card, "label": _DRILL_LABEL[card], "total": gtotal, "level": "year", "crumbs": crumbs, "rows": _shares(items, gtotal), "lines": []}
+        return {"card": card, "label": _DRILL_LABEL[card], "total": gtotal, "level": "year", "crumbs": crumbs, "rows": _avgs(_shares(items, gtotal), qty_of), "lines": [], **_top(recs, amount_of, qty_of, True, cost)}
     recs = [r for r in recs if r[dkey].year == int(year)]
     crumbs.append({"label": str(year), "params": {"group": group, "year": int(year)}})
     ytotal = sum(amount_of(r) for r in recs)
@@ -432,10 +448,12 @@ def drill(rows, card, group=None, year=None, month=None):
         bucket = {}
         for r in recs:
             mo = r[dkey].month
-            b = bucket.setdefault(mo, {"key": str(mo), "label": _MONTHS[mo - 1], "count": 0, "amount": 0})
-            b["count"] += 1; b["amount"] += amount_of(r)
+            b = bucket.setdefault(mo, {"key": str(mo), "label": _MONTHS[mo - 1], "count": 0, "amount": 0, "qty": 0})
+            b["count"] += 1; b["amount"] += amount_of(r); b["qty"] += qty_of(r) if qty_of else 0
+            if cost:
+                u = b.setdefault("_u", {}).setdefault(uom_of(r), [0, 0]); u[0] += r["qty"]; u[1] += amount_of(r)
         items = sorted(bucket.values(), key=lambda i: -int(i["key"]))
-        return {"card": card, "label": _DRILL_LABEL[card], "total": ytotal, "level": "month", "crumbs": crumbs, "rows": _shares(items, ytotal), "lines": []}
+        return {"card": card, "label": _DRILL_LABEL[card], "total": ytotal, "level": "month", "crumbs": crumbs, "rows": _avgs(_shares(items, ytotal), qty_of), "lines": [], **_top(recs, amount_of, qty_of, True, cost)}
     recs = sorted([r for r in recs if r[dkey].month == int(month)], key=lambda r: (r[dkey], r.get("id") or 0), reverse=True)
     crumbs.append({"label": _MONTHS[int(month) - 1], "params": {"group": group, "year": int(year), "month": int(month)}})
     lines = []
@@ -443,7 +461,40 @@ def drill(rows, card, group=None, year=None, month=None):
         ln = line_of(r)
         ln.update({"date": r[dkey].isoformat(), "id": r.get("id"), "receipt_url": r.get("receipt_url")})
         lines.append(ln)
-    return {"card": card, "label": _DRILL_LABEL[card], "total": sum(amount_of(r) for r in recs), "level": "lines", "crumbs": crumbs, "rows": [], "lines": lines}
+    return {"card": card, "label": _DRILL_LABEL[card], "total": sum(amount_of(r) for r in recs), "level": "lines", "crumbs": crumbs, "rows": [], "lines": lines, **_top(recs, amount_of, qty_of, True, cost)}
+
+
+def _units(recs, amount_of):
+    """[{unit, qty, amount, avg}] for a set of expense rows, one entry per unit of measure, biggest spend first.
+    Never mixes units: kilos, bags and litres are averaged apart."""
+    acc = {}
+    for r in recs:
+        a = acc.setdefault(uom_of(r), [0, 0])
+        a[0] += r["qty"]; a[1] += amount_of(r)
+    out = [{"unit": u, "qty": q, "amount": amt, "avg": round(amt / q) if q else None} for u, (q, amt) in acc.items()]
+    return sorted(out, key=lambda x: -x["amount"])
+
+
+def _top(recs, amount_of, qty_of, single_product, cost=False):
+    """Items and the average per item for the top card. For sales and spoilt the average is only given where the rows
+    are one product (an average across eggs and hens would mean nothing). For costs the figures are per unit of
+    measure (per kg, per bag, per litre, per piece)."""
+    if cost:
+        return {"qty": None, "avg": None, "units": _units(recs, amount_of)}
+    if not qty_of:
+        return {"qty": None, "avg": None, "units": []}
+    q = sum(qty_of(r) for r in recs)
+    return {"qty": q, "avg": round(sum(amount_of(r) for r in recs) / q) if (single_product and q) else None, "units": []}
+
+
+def _avgs(items, qty_of):
+    for i in items:
+        i["avg"] = round(i["amount"] / i["qty"]) if (qty_of and i.get("qty")) else None
+        i["units"] = sorted(({"unit": u, "qty": q, "amount": a, "avg": round(a / q) if q else None} for u, (q, a) in i.pop("_u", {}).items()),
+                            key=lambda x: -x["amount"])
+        if not qty_of:
+            i.pop("qty", None)
+    return items
 
 
 def _shares(items, total):
@@ -561,6 +612,7 @@ def ready():
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
                 for ddl in _DDL:
                     cur.execute(ddl)
+                cur.execute("ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS uom TEXT")          # unit of measure, additive
                 cur.execute("ALTER TABLE ledger_stock ADD COLUMN IF NOT EXISTS age_weeks INTEGER")    # ticket 98, additive
                 for t in _TABLES:
                     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS %s_source_ref_uq ON %s(project_id, source_ref) "
@@ -687,7 +739,8 @@ def validate_expense(d, today, allowed_payers, products):
         raise ValueError("Amount must be more than zero.")
     out = {"expense_date": _need_date(d.get("date"), today), "item": item, "supplier": str(d.get("supplier") or "").strip(),
            "qty": qty, "unit_price": unit or total // qty, "total": total, "kind": kind,
-           "note": str(d.get("note") or "").strip(), "paid_by": _paid_by(d.get("paid_by"), allowed_payers), "stock": None}
+           "note": str(d.get("note") or "").strip(), "paid_by": _paid_by(d.get("paid_by"), allowed_payers), "stock": None,
+           "uom": (str(d.get("uom") or "pc").strip().lower() if str(d.get("uom") or "pc").strip().lower() in UNITS else "pc")}
     pid = str(d.get("product_id") or "").strip()
     if pid:
         if pid not in products:
@@ -750,7 +803,7 @@ def validate_stock(d, today, products, allowed_payers):
 
 
 _INSERT = {
-    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by"),
+    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom"),
     "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment"),
     "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason"),
     "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks"),
