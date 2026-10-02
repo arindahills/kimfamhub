@@ -1413,13 +1413,19 @@ def validate_move(d, today, holder_names):
 
 
 def can_acknowledge(move, who, name, is_admin, treasurer_names=("Hellen",)):
-    """Contributions rule: the submitter never acknowledges. `who` is the display name stored as created_by, `name` the login
-    name that holders are called. The Treasurer (or an admin) acknowledges the club account; the receiving person (or an
-    admin) acknowledges a handover to a person; an admin acknowledges an opening declaration."""
+    """Contributions rule, made strict for cash: nobody acknowledges money they are a party to. The submitter never
+    acknowledges (`who` is the display name stored as created_by); neither does the person handing the cash over
+    (from_holder), nor the person who would be holding it from an opening declaration (to_holder): that would be
+    attesting to your own cash. `name` is the login name that holders are called.
+      * club account: the Treasurer, or an admin who is not a party to it
+      * a person receiving a handover: that person (or an admin who is not a party)
+      * an opening declaration: an admin who is not the submitter or the holder"""
     if move["status"] != "pending" or move.get("created_by") == who:
         return False
+    if name and name == move.get("from_holder"):
+        return False
     if move["kind"] == "opening":
-        return is_admin
+        return is_admin and name != move["to_holder"]
     if move["to_holder"] == CLUB_ACCOUNT:
         return is_admin or name in treasurer_names
     return is_admin or name == move["to_holder"]
@@ -1488,15 +1494,15 @@ def decide_move(project_id, move_id, approve, note, who, name, is_admin):
     from db import db as _db
     with _db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT kind, to_holder, status, created_by FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL FOR UPDATE", (move_id, project_id))
+            cur.execute("SELECT kind, to_holder, status, created_by, from_holder FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL FOR UPDATE", (move_id, project_id))
             got = cur.fetchone()
             if not got:
                 raise LookupError("Not found")
-            m = {"kind": got[0], "to_holder": got[1], "status": got[2], "created_by": got[3]}
+            m = {"kind": got[0], "to_holder": got[1], "status": got[2], "created_by": got[3], "from_holder": got[4]}
             if m["status"] != "pending":
                 raise ValueError("That move has already been %s." % m["status"])
             if not can_acknowledge(m, who, name, is_admin):
-                raise PermissionError("You cannot acknowledge this one (not your own submission; the receiver or the Treasurer does).")
+                raise PermissionError("You cannot acknowledge this one: not your own submission, not cash you hold or hand over. The receiver or the Treasurer does.")
             st = "acknowledged" if approve else "rejected"
             cur.execute("UPDATE ledger_cash_moves SET status=%s, decided_by=%s, decided_at=now(), decision_note=%s WHERE id=%s", (st, who, canon(note) or None, move_id))
             return st

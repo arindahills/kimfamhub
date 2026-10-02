@@ -1932,6 +1932,8 @@ class TestCashCustody:
         assert ledger.can_acknowledge(ho, "Alex", "Alex", False) is False
         op = {"kind": "opening", "to_holder": "Israel", "status": "pending", "created_by": "Hillary"}
         assert ledger.can_acknowledge(op, "Hellen", "Hellen", True) is True and ledger.can_acknowledge(op, "Dad (Israel)", "Israel", False) is False
+        assert ledger.can_acknowledge(op, "Dad (Israel)", "Israel", True) is False           # the holder, even as an admin, cannot attest to his own cash
+        assert ledger.can_acknowledge(dict(ho, from_holder="Solomon"), "Solomon", "Solomon", True) is False   # the giver cannot confirm receipt either
         assert ledger.can_acknowledge(dict(mv, status="acknowledged"), "Hellen", "Hellen", True) is False
 
     def test_a_cash_sale_must_say_who_holds_the_cash_in_the_app(self):
