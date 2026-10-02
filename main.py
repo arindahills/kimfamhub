@@ -6853,6 +6853,85 @@ async def chicken_detail(request: Request):
         "monthly_spend":    data.get("monthly_spend", {}),
     }
 
+# ── Decision register, admin side (ADR-034). Registered before the ledger routes and the SPA catch-all. ──
+def _decision_admin(request):
+    """-> who. Admins only: a logged-in admin, or the internal key (maintainer scripts)."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload and _internal_key_ok(request):
+        return "internal"
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    if payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admins only")
+    return payload.get("display") or payload.get("sub")
+
+
+def _decision_ready():
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    if not _dt.ready():
+        raise _HE(status_code=503, detail="The decision register is initialising, please retry shortly")
+
+
+class _DecisionLinkIn(_BaseModel):
+    decision_id: int
+    target_type: str
+    target_ref: str
+    relation: str = "explains"
+    note: str = ""
+
+
+@app.get("/api/decision-register/{project_id}")
+def decision_register_list(project_id: str, request: Request, state: str = "", meeting_id: int = 0):
+    """Admin view of the register with every link (suggested, confirmed, rejected)."""
+    _decision_admin(request)
+    _decision_ready()
+    from db import query as _q
+    where, args = ["d.project_id=%s", "d.deleted_at IS NULL"], [project_id]
+    if meeting_id:
+        where.append("d.meeting_id=%s"); args.append(meeting_id)
+    decisions = _q("SELECT d.* FROM decisions d WHERE " + " AND ".join(where) + " ORDER BY d.meeting_id, d.quote_start NULLS LAST, d.id", args)
+    links = _q("SELECT l.* FROM decision_links l JOIN decisions d ON d.id=l.decision_id WHERE d.project_id=%s ORDER BY l.id", (project_id,))
+    if state in ("suggested", "confirmed", "rejected"):
+        links = [l for l in links if l["state"] == state]
+    by = {}
+    for l in links:
+        by.setdefault(l["decision_id"], []).append({k: _ledger_json(v) for k, v in l.items()})
+    return {"decisions": [dict({k: _ledger_json(v) for k, v in d.items()}, links=by.get(d["id"], [])) for d in decisions]}
+
+
+@app.post("/api/decision-register/links")
+def decision_link_add(body: _DecisionLinkIn, request: Request):
+    """Admin adds a link by hand; it is stored confirmed."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    who = _decision_admin(request)
+    _decision_ready()
+    try:
+        row = _dt.add_link(body.decision_id, body.target_type, body.target_ref, body.relation, who, body.note)
+    except ValueError:
+        raise _HE(status_code=400, detail="Unknown target_type or relation, or empty target_ref")
+    if not row:
+        raise _HE(status_code=404, detail="No such decision")
+    return {"link": {k: _ledger_json(v) for k, v in row.items()}}
+
+
+@app.post("/api/decision-register/links/{link_id}/{action}")
+def decision_link_review(link_id: int, action: str, request: Request):
+    """Admin confirms or rejects a suggested link. A rejected link is never suggested again."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    if action not in ("confirm", "reject"):
+        raise _HE(status_code=404, detail="Not found")
+    who = _decision_admin(request)
+    _decision_ready()
+    row = _dt.set_link_state(link_id, "confirmed" if action == "confirm" else "rejected", who)
+    if not row:
+        raise _HE(status_code=404, detail="No such link")
+    return {"link": {k: _ledger_json(v) for k, v in row.items()}}
+
+
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)

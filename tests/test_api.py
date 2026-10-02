@@ -1086,3 +1086,244 @@ class TestProjectionModel:
                {"id": 2, "txn_date": datetime.date(2024, 10, 6), "description": "Free range chicken capital", "amount_ugx": 9000000, "category": "project_investment", "recorded_by": "system_import"}]
         act = P.actual_monthly(self._rows(), tre, 6)
         assert act[4]["other"] == 20000 + 300000                                 # pay yes, capital no
+
+
+class TestDecisionTrace:
+    """ADR-034: the decision register. Pure functions and a fake store only, no database, no network.
+    All names, figures and transcript text are synthetic (the repo is public)."""
+
+    PROJECTS = [{"id": "proj-a", "name": "Project A"}]
+    MEMBERS = ["Ann", "Bob"]
+    LABELLED = ("[Ann] We agree to buy fifty widgets from the supplier next week.\n"
+                "[Bob] Fine, the budget is 500k for the widgets.\n"
+                "[Speaker 3] Somebody else said we should paint the shed.\n")
+    UNLABELLED = "We agree to buy fifty widgets from the supplier next week.\n\nThe budget is 1.3m for the widgets.\n"
+
+    @staticmethod
+    def _raw(*items):
+        import json
+        return json.dumps({"decisions": list(items)})
+
+    @staticmethod
+    def _d(**over):
+        d = {"project_id": "proj-a", "statement": "Buy fifty widgets", "rationale": "stock is low",
+             "quote": "We agree to buy fifty widgets from the supplier next week.", "speaker": "Ann",
+             "amount_ugx": None, "effective_date": None, "status": "agreed"}
+        d.update(over)
+        return d
+
+    def _check(self, raw, text=None):
+        import decision_trace as dt
+        return dt.check(raw, text or self.LABELLED, self.MEMBERS, self.PROJECTS)
+
+    def test_chunk_labelled_turns_with_offsets(self):
+        import decision_trace as dt
+        turns = dt.chunk_transcript(self.LABELLED)
+        assert [t["speaker"] for t in turns] == ["Ann", "Bob", "Speaker 3"]
+        for t in turns:
+            assert self.LABELLED[t["start"]:t["end"]] == t["text"]
+
+    def test_chunk_unlabelled_has_no_speaker(self):
+        import decision_trace as dt
+        turns = dt.chunk_transcript(self.UNLABELLED)
+        assert len(turns) == 2 and all(t["speaker"] is None for t in turns)
+
+    def test_pack_chunks_never_cuts_a_turn(self):
+        import decision_trace as dt
+        chunks = dt.pack_chunks(self.LABELLED, max_chars=70)
+        assert len(chunks) >= 2
+        assert all(self.LABELLED[c["start"]:c["end"]] == c["text"] for c in chunks)
+
+    def test_build_prompt_asks_for_strict_json_and_includes_text(self):
+        import decision_trace as dt
+        p = dt.build_prompt({"text": "[Ann] hello world"}, {"ref": "M1", "date": "2026-01-01"}, self.PROJECTS)
+        assert "proj-a" in p and "[Ann] hello world" in p and '"decisions"' in p and "word for word" in p
+
+    def test_verbatim_quote_kept_with_offset(self):
+        out = self._check(self._raw(self._d()))
+        assert len(out) == 1
+        assert self.LABELLED[out[0]["quote_start"]:].startswith(out[0]["quote"])
+
+    def test_quote_match_ignores_whitespace(self):
+        out = self._check(self._raw(self._d(quote="We agree  to buy\nfifty widgets from the supplier next week.")))
+        assert len(out) == 1
+
+    def test_hallucinated_quote_dropped(self):
+        assert self._check(self._raw(self._d(quote="We resolved to purchase eighty gadgets immediately."))) == []
+
+    def test_short_quote_dropped(self):
+        assert self._check(self._raw(self._d(quote="We agree"))) == []
+
+    def test_speaker_only_if_labelled(self):
+        out = self._check(self._raw(self._d()), self.LABELLED)
+        assert out[0]["speaker"] == "Ann"
+        out = self._check(self._raw(self._d()), self.UNLABELLED)
+        assert out[0]["speaker"] is None                      # model claimed Ann; the transcript has no label
+
+    def test_wrong_or_generic_speaker_not_trusted(self):
+        out = self._check(self._raw(self._d(speaker="Bob")))
+        assert out[0]["speaker"] is None                      # the turn is Ann's, the claim disagrees
+        out = self._check(self._raw(self._d(quote="Somebody else said we should paint the shed.", speaker="Speaker 3")))
+        assert out[0]["speaker"] is None                      # a label that is not a known member
+
+    def test_unknown_project_and_bad_statement_dropped(self):
+        assert self._check(self._raw(self._d(project_id="nope"))) == []
+        assert self._check(self._raw(self._d(statement=""))) == []
+        assert self._check(self._raw(self._d(statement="x" * 500))) == []
+
+    def test_garbage_never_raises(self):
+        for raw in ("", "not json", "[]", '{"decisions": "x"}', '{"decisions": [1, null]}'):
+            assert self._check(raw) == []
+
+    def test_fenced_json_accepted(self):
+        out = self._check("```json\n" + self._raw(self._d()) + "\n```")
+        assert len(out) == 1
+
+    def test_amounts_parse(self):
+        import decision_trace as dt
+        assert dt.parse_amount("1.3m") == 1300000
+        assert dt.parse_amount("500k") == 500000
+        assert dt.parse_amount("1,300,000") == 1300000
+        assert dt.parse_amount("UGX 2 million") == 2000000
+        assert dt.parse_amount(250000) == 250000 and dt.parse_amount(None) is None
+        with pytest.raises(ValueError):
+            dt.parse_amount("a lot")
+
+    def test_bad_amount_or_date_drops_decision(self):
+        assert self._check(self._raw(self._d(amount_ugx="a lot"))) == []
+        assert self._check(self._raw(self._d(effective_date="next week"))) == []
+        out = self._check(self._raw(self._d(amount_ugx="500k", effective_date="2026-03-01")))
+        assert out[0]["amount_ugx"] == 500000 and str(out[0]["effective_date"]) == "2026-03-01"
+
+    # ── extract_meeting with a fake store and a fake model ──
+    class _Store:
+        def __init__(self, meeting):
+            self.meeting, self.rows = meeting, []
+
+        def load_meeting(self, mid): return self.meeting
+        def projects(self): return TestDecisionTrace.PROJECTS
+        def members(self): return TestDecisionTrace.MEMBERS
+        def existing_keys(self, mid): return {(r["quote_start"], r["statement"]) for r in self.rows}
+
+        def insert_decisions(self, meeting, rows):
+            self.rows += rows
+            return len(rows)
+
+    def _meeting(self, **over):
+        m = {"id": 1, "ref": "M-1", "date": "2026-01-10", "transcript": self.LABELLED, "key_decisions": "", "is_private": False}
+        m.update(over)
+        return m
+
+    def test_extract_is_idempotent(self):
+        import decision_trace as dt
+        store, calls = self._Store(self._meeting()), []
+
+        def model(prompt):
+            calls.append(prompt)
+            return self._raw(self._d())
+        first = dt.extract_meeting(1, model, store=store)
+        again = dt.extract_meeting(1, model, store=store)
+        assert (first["status"], first["added"]) == ("ok", 1)
+        assert again["added"] == 0 and len(store.rows) == 1 and len(calls) == 2
+
+    def test_private_meeting_skipped_without_reading_or_calling_model(self):
+        import decision_trace as dt
+        store = self._Store(self._meeting(is_private=True))
+
+        def model(prompt):
+            raise AssertionError("model must not be called for a private meeting")
+        out = dt.extract_meeting(1, model, store=store)
+        assert out == {"status": "private", "found": 0, "added": 0} and store.rows == []
+
+    def test_missing_meeting(self):
+        import decision_trace as dt
+        assert dt.extract_meeting(9, lambda p: "", store=self._Store(None))["status"] == "missing"
+
+    def test_minutes_fallback_has_no_quote_or_speaker(self):
+        import decision_trace as dt
+        store = self._Store(self._meeting(transcript="", key_decisions='["Buy fifty widgets", "ok"]'))
+        out = dt.extract_meeting(1, lambda p: (_ for _ in ()).throw(AssertionError("no model")), store=store)
+        assert out["added"] == 1
+        r = store.rows[0]
+        assert r["source"] == "minutes" and r["quote"] is None and r["speaker"] is None and r["quote_start"] is None
+
+    # ── link suggestions ──
+    D = {"id": 7, "statement": "Buy fifty widgets from the supplier", "amount_ugx": 500000, "meeting_id": 1,
+         "meeting_date": "2026-01-10"}
+
+    @staticmethod
+    def _c(**over):
+        c = {"target_type": "ledger_expense", "target_ref": "11", "date": "2026-01-20", "amount": 500000,
+             "text": "misc", "meeting_id": None}
+        c.update(over)
+        return c
+
+    def test_amount_and_date_match_suggested(self):
+        import decision_trace as dt
+        out = dt.score_links([self.D], [self._c()])
+        assert len(out) == 1 and out[0]["score"] == 0.9 and out[0]["relation"] == "authorised"
+        near = dt.score_links([self.D], [self._c(amount=510000)])
+        assert near[0]["score"] == 0.7
+
+    def test_unrelated_rows_not_suggested(self):
+        import decision_trace as dt
+        cands = [self._c(amount=123456), self._c(date="2026-04-01"), self._c(date="2025-12-01"),
+                 self._c(target_type="action", target_ref="A1", text="paint the shed", meeting_id=1)]
+        assert dt.score_links([self.D], cands) == []
+
+    def test_keyword_overlap_inside_window_is_weak(self):
+        import decision_trace as dt
+        out = dt.score_links([self.D], [self._c(amount=1, text="fifty widgets supplier")])
+        assert len(out) == 1 and out[0]["score"] < 0.5
+
+    def test_action_of_same_meeting_suggested(self):
+        import decision_trace as dt
+        c = {"target_type": "action", "target_ref": "A-1", "date": None, "amount": None,
+             "text": "Order fifty widgets from supplier", "meeting_id": 1}
+        out = dt.score_links([self.D], [c])
+        assert out[0]["relation"] == "explains"
+        assert dt.score_links([self.D], [dict(c, meeting_id=2)]) == []
+
+    def test_rejected_or_existing_link_not_resuggested(self):
+        import decision_trace as dt
+        existing = {(7, "ledger_expense", "11", "authorised")}          # any state, including rejected
+        assert dt.score_links([self.D], [self._c()], existing) == []
+
+    def test_suggest_links_stores_only_suggested_and_never_confirms(self):
+        import decision_trace as dt
+
+        class S:
+            stored = []
+            def decisions(self, p): return [TestDecisionTrace.D]
+            def candidates(self, p): return [TestDecisionTrace._c()]
+            def existing_links(self, p): return set()
+            def insert_links(self, links, who):
+                S.stored = links
+                return len(links)
+        assert dt.suggest_links("proj-a", store=S()) == 1
+        assert all("state" not in k or k["state"] == "suggested" for k in S.stored)
+        import inspect
+        assert "'suggested'" in inspect.getsource(dt.DbStore.insert_links)   # the only state the system can write
+
+    def test_hand_added_link_validated(self):
+        import decision_trace as dt
+        with pytest.raises(ValueError):
+            dt.add_link(1, "bogus", "x", "explains", "admin")
+        with pytest.raises(ValueError):
+            dt.add_link(1, "action", "x", "bogus", "admin")
+        with pytest.raises(ValueError):
+            dt.set_link_state(1, "suggested", "admin")
+
+    def test_audit_script_prints_counts_only(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("decision_audit", os.path.join(os.path.dirname(__file__), "..", "scripts", "decision_audit.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        row = m.audit_row(self._meeting(transcript=self.LABELLED + "A plain continuation line.\n"), 3, 1)
+        assert row["transcript"] == "yes" and row["labelled"] == "75%" and row["actions"] == 3
+        text = m.render([row])
+        assert "widgets" not in text and "Ann" not in text
+
+    def test_register_routes_are_admin_only_and_before_catch_all(self):
+        src = open(os.path.join(os.path.dirname(__file__), "..", "main.py")).read()
+        assert src.index('"/api/decision-register/{project_id}"') < src.index('"/{full_path:path}"')
+        assert src.count("_decision_admin(request)") >= 4
