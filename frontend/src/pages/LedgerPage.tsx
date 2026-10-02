@@ -608,6 +608,7 @@ export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
   const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'recon'>('summary')
+  const [sumKey, setSumKey] = useState(0)          // tapping Summary always returns from a drill-down to the cards
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
   const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }); qc.invalidateQueries({ queryKey: ['ledger-entries'] }) }
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
@@ -622,11 +623,11 @@ export default function LedgerPage() {
       </div>
       <div className="flex flex-wrap gap-2">
         {tabs.map(([k, l]) => (
-          <button key={k} onClick={() => setTab(k)} className="shrink-0 rounded-full border px-4 py-2 text-xs font-semibold"
+          <button key={k} onClick={() => { setTab(k); if (k === 'summary') setSumKey(n => n + 1) }} className="shrink-0 rounded-full border px-4 py-2 text-xs font-semibold"
             style={{ borderColor: tab === k ? '#22c55e' : 'var(--border)', color: tab === k ? '#4ade80' : 'var(--muted-2)' }}>{l}</button>
         ))}
       </div>
-      {tab === 'summary' && <SummaryTab s={s} />}
+      {tab === 'summary' && <SummaryTab key={sumKey} s={s} />}
       {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
       {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
