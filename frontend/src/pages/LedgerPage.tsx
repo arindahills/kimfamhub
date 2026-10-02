@@ -852,7 +852,7 @@ interface Move { id: number; kind: 'opening' | 'handover' | 'banked'; from_holde
 interface CashData { holders: { holder: string; received: number; moved_in: number; moved_out: number; spent: number; balance: number; in_transit_in: number; in_transit_out: number }[]; unassigned: number; held_outside_club: number; moves: Move[]; options: string[] }
 const MOVE_LABEL: Record<Move['kind'], string> = { opening: 'Opening declaration', handover: 'Handover', banked: 'Banked' }
 
-function CashTab({ s: _s }: { s: Summary }) {
+function CashTab() {
   const { user } = useAuth()
   const qc = useQueryClient()
   const q = useQuery<CashData>({ queryKey: ['ledger-cash'], queryFn: () => call<CashData>(api('/cash')) })
@@ -1084,7 +1084,7 @@ export default function LedgerPage() {
       {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
       {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
-      {tab === 'cash' && <CashTab s={s} />}
+      {tab === 'cash' && <CashTab />}
       {tab === 'lists' && <ListsTab s={s} />}
       {tab === 'recon' && <ReconTab s={s} />}
     </div>
