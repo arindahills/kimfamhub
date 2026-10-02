@@ -31,6 +31,27 @@ interface Recon {
   treasury: { id: number; date: string; description: string; amount: number; kind: string }[]
   open_items: Item[]; open_count: number
 }
+interface Kpi { key: string; label: string; plan: number; plan_as_written: number; actual: number; pct: number | null; status: 'green' | 'amber' | 'red' }
+interface MonthRow {
+  n: number; month: string; past: boolean
+  plan: { eggs: number; revenue: number; cos: number; other: number; profit: number }
+  plan_as_written: { revenue: number }
+  actual: { eggs_sold: number; revenue: number; cos: number; other: number; profit: number; capex: number } | null
+}
+interface Scorecard {
+  as_of: string; month_now: number; months_total: number
+  execution: { birds_planned_by_now: number; birds_bought: number; pct: number }
+  score: { total: number; rating: string; meaning: string; parts: { key: string; weight: number; pct: number }[] }
+  kpis: Kpi[]
+  yield: { actual_rate: number | null; plan_rate: number }
+  flock: { bought: number; died: number; survival_pct: number | null }
+  months: MonthRow[]
+  phases: { n: number; name: string; birds: number; start: string | null; first_eggs: string | null; status: string }[]
+  capital: { sections: { name: string; total: number; items: { label: string; amount: number }[] }[]; plan_total: number; capex_to_date: number; note: string }
+  recoupment: { investment: number; share: number; plan_payback_month: string | null; actual_return_to_date: number }
+  findings: { severity: string; text: string }[]
+  source: { title: string; url: string; version: number; imported_at: string }
+}
 interface Summary {
   statement: Record<string, number>; products: Product[]; recent: Record<string, Row[]>
   options: { paid_by: string[]; loss_kinds: string[] }; can_write: boolean; is_admin: boolean; reads_ledger: boolean
@@ -245,6 +266,129 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
   )
 }
 
+const DOT = { green: '#4ade80', amber: '#fbbf24', red: '#f87171' } as const
+const PART_LABEL: Record<string, string> = { revenue: 'Revenue', profit: 'Profit', costs: 'Cost control', yield: 'Egg yield', survival: 'Flock survival' }
+
+function ScorecardTab() {
+  const q = useQuery<Scorecard>({ queryKey: ['ledger-score'], queryFn: () => call<Scorecard>(api('/scorecard')), retry: false })
+  const [written, setWritten] = useState(false)
+  if (q.error) return <div className={card + ' text-sm text-[var(--muted-2)]'}>{(q.error as Error).message}</div>
+  if (!q.data) return <div className="p-4 text-sm text-[var(--muted-2)]">Scoring against the proposal…</div>
+  const c = q.data
+  const tone = c.score.total >= 80 ? '#4ade80' : c.score.total >= 60 ? '#fbbf24' : '#f87171'
+  const exTone = c.execution.pct >= 80 ? '#4ade80' : c.execution.pct >= 60 ? '#fbbf24' : '#f87171'
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
+        <div className={card + ' text-center'}>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Execution</div>
+          <div className="mt-1 text-3xl font-bold tabular-nums" style={{ color: exTone }}>{c.execution.pct}%</div>
+          <div className="mt-1 text-xs text-[var(--muted-2)]">{c.execution.birds_bought} birds bought of {c.execution.birds_planned_by_now} planned by {c.as_of}</div>
+        </div>
+        <div className={card + ' text-center'}>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Performance</div>
+          <div className="mt-1 text-3xl font-bold tabular-nums" style={{ color: tone }}>{c.score.total}<span className="text-base text-[var(--muted-2)]">/100</span></div>
+          <div className="mt-1 text-xs font-semibold" style={{ color: tone }}>{c.score.rating}</div>
+        </div>
+      </div>
+      <p className="px-1 text-xs text-[var(--muted-2)]">Execution asks whether the plan's phases happened. Performance asks how the phases that did happen are doing against the plan for those phases.</p>
+
+      {c.findings.length > 0 && (
+        <div className={card + ' space-y-2'}>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">What stands out</div>
+          {c.findings.map((f, i) => (
+            <div key={i} className="flex gap-2 text-sm"><span style={{ color: f.severity === 'high' ? '#f87171' : '#fbbf24' }}>●</span><span>{f.text}</span></div>
+          ))}
+        </div>
+      )}
+
+      <div className={card}>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Plan against actual, to {c.as_of} (UGX)</div>
+          <label className="flex items-center gap-1.5 text-[11px] text-[var(--muted-2)]"><input type="checkbox" checked={written} onChange={e => setWritten(e.target.checked)} /> plan as written</label>
+        </div>
+        <div className="divide-y divide-[var(--border)]">
+          {c.kpis.map(k => {
+            const plan = written ? k.plan_as_written : k.plan
+            return (
+              <div key={k.key} className="flex items-center gap-3 py-2.5 text-sm">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: DOT[k.status] }} />
+                <div className="min-w-0 flex-1">
+                  <div>{k.label}</div>
+                  <div className="text-xs text-[var(--muted-2)]">plan {ugx(plan)}{!written && plan !== k.plan_as_written ? ` (as written ${ugx(k.plan_as_written)})` : ''}</div>
+                </div>
+                <div className="text-right"><div className="font-semibold tabular-nums">{ugx(k.actual)}</div>
+                  <div className="text-xs tabular-nums text-[var(--muted-2)]">{plan ? Math.round((100 * k.actual) / plan) + '%' : ''}</div></div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="mt-3 border-t border-[var(--border)] pt-3 text-xs text-[var(--muted-2)]">
+          Laying rate {c.yield.actual_rate != null ? Math.round(c.yield.actual_rate * 100) : '-'}% against {Math.round(c.yield.plan_rate * 100)}% planned · {c.flock.died} of {c.flock.bought} birds lost ({c.flock.survival_pct ?? '-'}% survived)
+        </div>
+      </div>
+
+      <div className={card}>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">How the score is made</div>
+        {c.score.parts.map(p => (
+          <div key={p.key} className="flex items-center gap-2 py-1 text-xs">
+            <span className="w-28 shrink-0">{PART_LABEL[p.key] ?? p.key} <span className="text-[var(--muted-2)]">({p.weight})</span></span>
+            <div className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--card-inset)]"><div className="h-full rounded-full" style={{ width: p.pct + '%', background: p.pct >= 80 ? '#4ade80' : p.pct >= 50 ? '#fbbf24' : '#f87171' }} /></div>
+            <span className="w-9 text-right tabular-nums">{p.pct}%</span>
+          </div>
+        ))}
+      </div>
+
+      <div className={card}>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Phases in the proposal</div>
+        {c.phases.map(p => (
+          <div key={p.n} className="flex items-center justify-between py-1.5 text-sm">
+            <span>{p.name}<span className="block text-xs text-[var(--muted-2)]">birds {p.start ?? '-'} · eggs from {p.first_eggs ?? '-'}</span></span>
+            <span className="rounded-full border px-2.5 py-0.5 text-[11px] font-semibold" style={{ borderColor: p.status === 'bought' ? '#22c55e' : p.status === 'overdue' ? '#f87171' : 'var(--border)', color: p.status === 'bought' ? '#4ade80' : p.status === 'overdue' ? '#f87171' : 'var(--muted-2)' }}>{p.status}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className={card}>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Month by month (revenue, UGX)</div>
+        <div className="max-h-80 overflow-y-auto">
+          <table className="w-full text-xs tabular-nums">
+            <thead><tr className="text-left text-[var(--muted-2)]"><th className="py-1">Month</th><th className="text-right">Plan</th><th className="text-right">Actual</th><th className="text-right">Profit</th></tr></thead>
+            <tbody>
+              {c.months.map(m => (
+                <tr key={m.n} className="border-t border-[var(--border)]" style={{ opacity: m.past ? 1 : 0.55 }}>
+                  <td className="py-1.5">{m.month}</td>
+                  <td className="text-right">{ugx(written ? m.plan_as_written.revenue : m.plan.revenue)}</td>
+                  <td className="text-right">{m.actual ? ugx(m.actual.revenue) : '-'}</td>
+                  <td className="text-right" style={{ color: m.actual ? (m.actual.profit >= 0 ? '#4ade80' : '#f87171') : undefined }}>{m.actual ? ugx(m.actual.profit) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className={card}>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Capital plan</div>
+        <div className="mb-2 text-sm">Proposal total {ugx(c.capital.plan_total)} · equipment recorded so far {ugx(c.capital.capex_to_date)}</div>
+        {c.capital.sections.map(sec => (
+          <details key={sec.name} className="border-t border-[var(--border)] py-1.5 text-sm">
+            <summary className="flex cursor-pointer justify-between"><span>{sec.name}</span><span className="tabular-nums">{ugx(sec.total)}</span></summary>
+            <div className="mt-1 space-y-0.5 pl-2 text-xs text-[var(--muted-2)]">
+              {sec.items.map((i, k) => <div key={k} className="flex justify-between gap-3"><span>{i.label}</span><span className="tabular-nums">{ugx(i.amount)}</span></div>)}
+            </div>
+          </details>
+        ))}
+        {c.capital.note && <p className="mt-2 text-xs text-[#fbbf24]">{c.capital.note}</p>}
+        <div className="mt-3 border-t border-[var(--border)] pt-2 text-xs text-[var(--muted-2)]">
+          Payback: the proposal returns {Math.round(c.recoupment.share * 100)}% of profit to the club and investor; on its own plan the investment is recovered by {c.recoupment.plan_payback_month ?? 'beyond the plan'}. Returned so far: {ugx(c.recoupment.actual_return_to_date)}.
+        </div>
+      </div>
+      <p className="px-1 text-[11px] text-[var(--muted-2)]">Source: <a className="underline" href={c.source.url} target="_blank" rel="noreferrer">{c.source.title}</a> (v{c.source.version}).</p>
+    </div>
+  )
+}
+
 function ReconTab({ s }: { s: Summary }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['ledger-recon'], queryFn: () => call<Recon>(api('/reconciliation')) })
@@ -352,13 +496,13 @@ function ReconTab({ s }: { s: Summary }) {
 export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'summary' | 'record' | 'entries' | 'recon'>('summary')
+  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'recon'>('summary')
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
   const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }); qc.invalidateQueries({ queryKey: ['ledger-entries'] }) }
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-6 text-sm text-[var(--muted-2)]">Loading the chicken ledger…</div>
   const s = q.data
-  const tabs: ['summary' | 'record' | 'entries' | 'recon', string][] = [['summary', 'Summary'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['recon', 'Reconciliation']]
+  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['recon', 'Reconciliation']]
   return (
     <div className="mx-auto max-w-2xl space-y-3 px-4 pb-24 pt-4">
       <div>
@@ -372,6 +516,7 @@ export default function LedgerPage() {
         ))}
       </div>
       {tab === 'summary' && <SummaryTab s={s} />}
+      {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
       {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
       {tab === 'recon' && <ReconTab s={s} />}

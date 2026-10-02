@@ -6951,6 +6951,25 @@ def ledger_entries(project_id: str, request: Request, kind: str = "expense", lim
                                          % (_LEDGER_TABLE[kind], dk), (project_id, max(1, min(limit, 1000)))))}
 
 
+@app.get("/api/ledger/{project_id}/scorecard")
+def ledger_scorecard(project_id: str, request: Request):
+    """Actual performance scored against the original proposal (ADR-033). Any logged-in member."""
+    import ledger as _ledger, projection as _proj
+    from fastapi import HTTPException as _HE
+    import datetime as _d
+    from db import query as _q
+    _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    got = _proj.load_model(project_id)
+    if not got:
+        raise _HE(status_code=503, detail="The proposal projections have not been imported yet")
+    treasury = _q("SELECT id, txn_date, description, amount_ugx, category, recorded_by FROM expenditure_records WHERE project=%s ORDER BY txn_date, id", (project_id,))
+    today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
+    out = _proj.score(got["model"], _ledger.load(project_id), treasury, today)
+    out["source"] = {"title": got["source_title"], "url": got["source_url"], "version": got["version"], "imported_at": _ledger_json(got["imported_at"])}
+    return json.loads(json.dumps(out, default=_ledger_json))
+
+
 @app.post("/api/ledger/{project_id}/notes")
 async def ledger_note(project_id: str, request: Request):
     from fastapi import HTTPException as _HE

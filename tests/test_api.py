@@ -969,3 +969,120 @@ class TestLedgerParity:
         done = {i["key"] for i in r2["open_items"] if i["explained"]}
         assert {"treasury:3", "gap"} <= done and r2["open_count"] < r["open_count"]
         assert [n["author"] for i in r2["open_items"] if i["key"] == "gap" for n in i["notes"]] == ["Hillary"]
+
+
+class TestProjectionModel:
+    """ADR-033: the proposal sheet parsed into a plan, and actuals scored against it. A small synthetic
+    sheet in the same layout as the real one (the repo is public: no real figures here)."""
+
+    @staticmethod
+    def _sheet():
+        H = ["", "1. Sales", "1st Month", "2nd Month", "3rd Month", "4th Month", "5th Month", "6th", "7th", "7th"]
+        return [
+            ["", "PROJECTIONS"],
+            ["", "", 45474, 45505],
+            H,
+            ["Phase 1( 100 chicken) ", "Eggs", "", "", "", "", 1500, 1800, 1800, ""],
+            ["", "Chicken", "", "", "", "", "", "", "", 80],
+            ["Phase 2 (100 chicken)", "Eggs", "", "", "", "", "", 1800, "", ""],
+            ["", "Chicken"],
+            ["", "Total"],
+            ["", "2. Revenue"] + H[2:],
+            ["Phase 1( 100 chicken) ", "Eggs", 0, 0, 0, 0, 600000, 720000, 720000, 0],
+            ["", "Chicken", 0, 0, 0, 0, 0, 0, 0, 2400000],
+            ["Phase 2 (100 chicken)", "Eggs", 0, 0, 0, 0, 0, 720000, 0, 0],
+            ["", "Chicken"],
+            ["", "Total"],
+            ["", "3. Cost of Sale", "1st Month (100 chicken)", "January", "February"],
+            ["", "Chicken", 1300000],
+            ["", "Supplementary food", "", 200000, 200000],
+            ["", "Total", 1300000, 200000, 200000],
+            ["", "4. Other Expences "],
+            ["", "Salaries", 100000, 100000, 100000, 100000, 100000, 100000, 100000],
+            ["", "Total", 100000, 100000, 100000, 100000, 100000, 100000, 100000],
+            ["", "Summary "],
+            ["", "Duration", "", "jul-24 to jan-26", "dec-24 to jun-26"],
+            ["", "Expenditure so far", "Amount"],
+            ["Construction", "Iron sheets", 500000],
+            ["", "Sub total", 500000],
+            ["", "Total investment", 1000000],
+        ]
+
+    def test_parse_phases_months_and_costs(self):
+        import projection as P
+        m = P.parse_sheet(self._sheet())
+        assert m["months"] == 7 and [p["birds"] for p in m["phases"]] == [100, 100]
+        p1, p2 = m["phases"]
+        assert p1["first_egg_month"] == 5 and p1["start_month"] == 1            # first eggs 4 months after the birds
+        assert p2["start_month"] == 6                                          # the Duration row wins where it states one
+        assert p1["eggs"] == {"5": 1500, "6": 1800, "7": 1800}
+        assert p1["birds_sold"] == {"7": 80} and p1["revenue_birds"] == {"7": 2400000}   # extra column folds into its month
+        assert m["cost_of_sale_blocks"]["100"] == {"0": 1300000, "1": 200000, "2": 200000}
+        assert m["other_monthly"]["1"] == 100000 and m["investment_total"] == 1000000
+        assert m["capital"][0]["items"] == [{"label": "Iron sheets", "amount": 500000}] and m["capital"][0]["total"] == 500000
+
+    def test_monthly_plan_combines_phases(self):
+        import projection as P
+        plan = P.monthly_plan(P.parse_sheet(self._sheet()))
+        assert plan[1]["cos"] == 1300000 and plan[2]["cos"] == 200000
+        assert plan[6]["rev_eggs"] == 1440000 and plan[7]["rev_birds"] == 2400000 and plan[7]["birds_sold"] == 80
+        assert plan[5]["profit"] == 600000 - 0 - 100000 - 0 or plan[5]["revenue"] == 600000
+        assert sum(v["revenue"] for v in plan.values()) == 600000 + 1440000 + 720000 + 2400000
+
+    def test_a_different_layout_is_refused(self):
+        import projection as P
+        with pytest.raises(ValueError):
+            P.parse_sheet([["", "nothing here"]])
+        bad = [r for r in self._sheet() if not str(r[1]).startswith("3. Cost")]
+        with pytest.raises(ValueError):
+            P.parse_sheet(bad)
+
+    def test_month_arithmetic(self):
+        import projection as P, datetime
+        assert P.month_label(1) == "Jul 2024" and P.month_label(7) == "Jan 2025" and P.month_label(38) == "Aug 2027"
+        assert P.month_number(datetime.date(2024, 7, 1)) == 1 and P.month_number(datetime.date(2026, 10, 2)) == 28
+        assert P.month_number(datetime.date(2024, 6, 17)) == 0               # before the plan began
+
+    def _rows(self, today_month_spend=0):
+        import datetime
+        d = datetime.date
+        return {
+            "products": [{"product_id": "p1", "name": "eggs"}, {"product_id": "p2", "name": "hens"}],
+            "stock": [{"product_id": "p2", "event_date": d(2024, 6, 20), "qty": 100, "kind": "purchase", "unit_cost": 13000, "total_cost": 1300000},
+                      {"product_id": "p1", "event_date": d(2024, 12, 5), "qty": 1000, "kind": "production", "unit_cost": 0, "total_cost": 0}],
+            "sales": [{"product_id": "p1", "sale_date": d(2024, 12, 6), "qty": 900, "total": 360000, "unit_price": 400},
+                      {"product_id": "p2", "sale_date": d(2024, 12, 9), "qty": 5, "total": 150000, "unit_price": 30000}],
+            "losses": [{"product_id": "p2", "loss_date": d(2024, 11, 1), "qty": 4, "total": 52000, "kind": "Damaged", "reason": "x"}],
+            "expenses": [{"item": "Chicken", "expense_date": d(2024, 6, 20), "total": 1300000, "kind": "opex"},
+                         {"item": "Layer mash", "expense_date": d(2024, 9, 3), "total": 200000, "kind": "opex"},
+                         {"item": "Fuel for fetching water", "expense_date": d(2024, 10, 3), "total": 20000, "kind": "opex"},
+                         {"item": "Iron sheets", "expense_date": d(2024, 8, 3), "total": 400000, "kind": "capex"}],
+        }
+
+    def test_score_has_two_answers_and_sane_values(self):
+        import projection as P, datetime
+        model = P.parse_sheet(self._sheet())
+        r = P.score(model, self._rows(), [], datetime.date(2024, 12, 15))
+        assert r["month_now"] == 6 and r["as_of"] == "Dec 2024"
+        assert r["execution"]["birds_bought"] == 100 and r["execution"]["birds_planned_by_now"] == 200 and r["execution"]["pct"] == 50
+        assert 0 <= r["score"]["total"] <= 100 and r["score"]["rating"] in ("On track", "Watch", "Behind", "Off plan")
+        assert sum(p["weight"] for p in r["score"]["parts"]) == 100
+        k = {x["key"]: x for x in r["kpis"]}
+        assert k["revenue"]["actual"] == 510000 and k["revenue"]["plan"] <= k["revenue"]["plan_as_written"]
+        assert k["cos"]["actual"] == 1500000                                     # birds + feed counted as cost of sale, fuel as other
+        assert k["other"]["actual"] == 20000
+        assert r["phases"][0]["status"] == "bought" and r["phases"][1]["status"] == "overdue"
+        assert r["capital"]["capex_to_date"] == 400000                           # equipment is kept apart from running costs
+        assert r["flock"] == {"bought": 100, "died": 4, "survival_pct": 96.0}
+
+    def test_pre_launch_spending_folds_into_month_one(self):
+        import projection as P, datetime
+        act = P.actual_monthly(self._rows(), [], 6)
+        assert act[1]["cos"] == 1300000                                          # the June 2024 birds land in month 1
+
+    def test_club_pay_counts_as_other_expense(self):
+        import projection as P, datetime
+        tre = [{"id": 1, "txn_date": datetime.date(2024, 10, 5), "description": "Manager pay", "amount_ugx": 300000, "category": "staff", "recorded_by": "x"},
+               {"id": 2, "txn_date": datetime.date(2024, 10, 6), "description": "Free range chicken capital", "amount_ugx": 9000000, "category": "project_investment", "recorded_by": "system_import"}]
+        act = P.actual_monthly(self._rows(), tre, 6)
+        assert act[4]["other"] == 20000 + 300000                                 # pay yes, capital no
