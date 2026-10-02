@@ -959,7 +959,7 @@ class TestLedgerParity:
                {"id": 3, "txn_date": d(2026, 1, 3), "description": "Refund to Dad for feeds", "amount_ugx": 700, "category": "project_investment", "recorded_by": "Hellen"}]
         r = ledger.build_reconciliation(self._recon_rows(), tre, [], [])
         fb = r["farm_box"]
-        assert fb["in"] == {"capital": 5000, "sales": 1000, "total": 6000}    # pay and refund are NOT farm money in
+        assert fb["in"] == {"capital": 5000, "sales": 1000, "owed_by_buyers": 0, "total": 6000}    # pay and refund are NOT farm money in
         assert fb["out"]["total"] == 100 + 200 + 500 + 400 and fb["gap"] == fb["out"]["total"] - 6000
         keys = {i["key"] for i in r["open_items"]}
         assert {"treasury:3", "preledger:unattributed", "receipts:missing", "gap"} <= keys and "treasury:2" not in keys
@@ -1693,3 +1693,94 @@ class TestDrillUnits:
         ok = {"date": "2026-09-30", "item": "Layer mash", "qty": 50, "total": 80000, "paid_by": "Club"}
         v = lambda extra: ledger.validate_expense(dict(ok, **extra), datetime.date(2026, 10, 1), ["Club"], {})["uom"]
         assert (v({}), v({"uom": "Kg"}), v({"uom": "bag"}), v({"uom": "furlong"})) == ("pc", "kg", "bag", "pc")
+
+
+class TestMasterData:
+    """The AppSheet's pick-lists in the Hub: items, suppliers (full form), buyers, units; credit sales."""
+
+    def test_party_form_validates_the_fourteen_fields(self):
+        import ledger
+        sup = ledger.validate_party("supplier", {"name": "  Farm   Feeds ", "contact_name": "Ann", "phone": "0777 123456", "email": "a@b.co",
+                                                  "payment_terms": "Cash", "status": "active", "registered_on": "2026-01-05"})
+        assert sup["name"] == "Farm Feeds" and sup["status"] == "Active" and sup["registered_on"].isoformat() == "2026-01-05"
+        for bad, why in (({"name": ""}, "name"), ({"name": "x", "email": "nope"}, "email"), ({"name": "x", "phone": "abc"}, "phone"),
+                         ({"name": "x", "status": "retired"}, "status"), ({"name": "x", "registered_on": "31/02/2026"}, "date")):
+            with pytest.raises(ValueError, match="(?i)" + why):
+                ledger.validate_party("supplier", bad)
+        with pytest.raises(ValueError):
+            ledger.validate_party("farmer", {"name": "x"})
+
+    def test_items_and_units_stay_consistent(self):
+        import ledger
+        units = ["tray", "pc", "litre", "kg", "bag"]
+        it = ledger.validate_item({"name": "Layer  mash", "default_uom": "Bag"}, units)
+        assert it["name"] == "Layer mash" and it["default_uom"] == "bag" and it["group_name"] == "Feed & Nutrition" and it["kind"] == "opex"
+        with pytest.raises(ValueError, match="(?i)unit"):
+            ledger.validate_item({"name": "x", "default_uom": "furlong"}, units)
+        with pytest.raises(ValueError, match="(?i)exists"):
+            ledger.validate_unit({"name": "KG"}, units)                                   # case-insensitive: no second 'kg'
+        assert ledger.validate_unit({"name": "Crate"}, units) == {"name": "crate"}
+        assert ledger.canon("  a   b ") == "a b"
+
+    def test_credit_sale_needs_a_buyer_and_a_sane_due_date(self):
+        import ledger, datetime
+        today = datetime.date(2026, 10, 1)
+        prods = {"p1": {"sell_price": 400, "cost_price": 0}}
+        base = {"date": "2026-09-30", "product_id": "p1", "qty": 30}
+        assert ledger.validate_sale(base, today, prods)["payment"] == "Cash"
+        ok = ledger.validate_sale(dict(base, payment="credit", buyer="Bright", due_date="2026-10-15"), today, prods)
+        assert ok["payment"] == "Credit" and ok["buyer"] == "Bright" and ok["due_date"].isoformat() == "2026-10-15"
+        for bad, why in ((dict(base, payment="Credit"), "buyer"), (dict(base, payment="Credit", buyer="B", due_date="2026-09-01"), "past"),
+                         (dict(base, payment="Barter"), "cash or credit")):
+            with pytest.raises(ValueError, match="(?i)" + why):
+                ledger.validate_sale(bad, today, prods)
+
+    def test_receivables_only_count_unpaid_credit(self):
+        import ledger, datetime
+        d = datetime.date
+        sales = [{"payment": "Cash", "total": 50000, "buyer": "x", "sale_date": d(2026, 9, 1)},
+                 {"payment": "Credit", "total": 100000, "paid_amount": 40000, "buyer": "Bright", "sale_date": d(2026, 9, 2), "due_date": d(2026, 9, 20)},
+                 {"payment": "Credit", "total": 30000, "paid_amount": 30000, "buyer": "Paid up", "sale_date": d(2026, 9, 3), "due_date": None},
+                 {"payment": "Credit", "total": 20000, "paid_amount": 0, "buyer": "Bright", "sale_date": d(2026, 8, 1), "due_date": d(2026, 12, 1)}]
+        r = ledger.receivables({"sales": sales}, d(2026, 10, 1))
+        assert r["total"] == 60000 + 20000 and r["overdue"] == 60000 and r["buyers"][0]["buyer"] == "Bright" and r["buyers"][0]["count"] == 2
+        assert r["buyers"][0]["oldest"] == "2026-08-01" and all(b["buyer"] != "Paid up" for b in r["buyers"])
+
+    def test_unpaid_credit_is_not_cash_in_the_farm_box(self):
+        import ledger, datetime
+        d = datetime.date
+        rows = {"products": [], "stock": [], "losses": [], "expenses": [],
+                "sales": [{"id": 1, "product_id": "p", "sale_date": d(2026, 9, 1), "qty": 1, "unit_price": 100000, "total": 100000, "payment": "Credit",
+                           "paid_amount": 30000, "buyer": "B", "due_date": None}]}
+        r = ledger.build_reconciliation(rows, [], [], [])
+        assert r["farm_box"]["in"]["sales"] == 30000 and r["farm_box"]["in"]["owed_by_buyers"] == 70000
+        assert r["statement"]["sales"] == 100000                                            # revenue is still the whole sale
+
+    def test_seed_lists_from_a_workbook_and_learn_names_from_records(self):
+        import ledger, datetime
+        d = datetime.date
+        tabs = {"expense categories": [["Category", "Expense Item"], ["FREE RANGE CHICKEN", "Layer mash"], ["FREE RANGE CHICKEN", "Chicken"]],
+                "credit buyers": [["Name of buyer", "contact of buyer"], ["Bright", "0770000001"]],
+                "suppliers list": [["Company Name", "contact Name", "phone number", "payment terms", "supplier category", "status", "registration date"],
+                                   ["Farm Feeds", "Ann", "0777000000", "Cash", "Feed", "Active", 45500]],
+                "units of measure": [["unit of measure"], ["tray"], ["Kg"], ["bag"]]}
+        parsed = {"expenses": [{"item": "Layer mash", "kind": "opex", "supplier": "New Shop", "raw": {"unit of measure": "bag"}},
+                               {"item": "Layer mash", "kind": "opex", "supplier": "New Shop", "raw": {"unit of measure": "Kg"}},
+                               {"item": "Layer mash", "kind": "opex", "supplier": "Farm Feeds", "raw": {"unit of measure": "bag"}},
+                               {"item": "Tarpaulin", "kind": "capex", "supplier": "", "raw": {}}],
+                  "sales": [{"buyer": "Bright"}, {"buyer": "Walk-in Joe"}], "stock": [{"supplier": "Farm Feeds"}]}
+        ref = ledger.parse_reference(tabs, parsed)
+        items = {i["name"]: i for i in ref["items"]}
+        assert set(items) == {"Layer mash", "Chicken", "Tarpaulin"}                          # listed items plus one used but unlisted
+        assert items["Layer mash"]["default_uom"] == "bag" and items["Chicken"]["is_birds"] and items["Tarpaulin"]["kind"] == "capex"
+        assert {b["name"] for b in ref["buyers"]} == {"Bright", "Walk-in Joe"} and ref["buyers"][0]["phone"] == "0770000001"
+        sup = {x["name"]: x for x in ref["suppliers"]}
+        assert sup["Farm Feeds"]["phone"] == "0777000000" and sup["Farm Feeds"]["payment_terms"] == "Cash" and sup["Farm Feeds"]["registered_on"] is not None
+        assert "Added from past records" in sup["New Shop"]["notes"]
+        assert ref["units"] == ["tray", "kg", "bag", "pc", "litre"]                          # the sheet's units, plus the ones records use
+
+    def test_expense_unit_follows_the_live_unit_list(self):
+        import ledger, datetime
+        ok = {"date": "2026-09-30", "item": "Eggs crates", "qty": 5, "total": 50000, "paid_by": "Club", "uom": "crate"}
+        v = lambda units: ledger.validate_expense(ok, datetime.date(2026, 10, 1), ["Club"], {}, units)["uom"]
+        assert v(["pc", "crate"]) == "crate" and v(["pc"]) == "pc"

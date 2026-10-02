@@ -22,6 +22,7 @@ interface Row {
   id: number; item?: string; product_id?: string; qty?: number; total?: number; total_cost?: number
   expense_date?: string; sale_date?: string; loss_date?: string; event_date?: string
   created_by: string; source: string; paid_by?: string | null; receipt_url?: string | null
+  payment?: string; paid_amount?: number; due_date?: string | null; buyer?: string | null; supplier?: string | null; uom?: string | null
 }
 interface Note { body: string; author: string; at: string; explained: boolean }
 interface Item { key: string; title: string; amount: number; detail: string; explained: boolean; notes: Note[] }
@@ -53,7 +54,16 @@ interface Scorecard {
   source: { title: string; url: string; version: number; imported_at: string }
 }
 interface Batch { id: number | null; date: string; product: string; qty: number; cost: number; held: string; held_days: number; age_at_purchase_weeks: number | null; age_now_weeks: number | null; supplier: string }
+interface Item { id: number; name: string; group_name: string | null; kind: 'opex' | 'capex'; default_uom: string; is_birds: boolean }
+interface Party {
+  id: number; name: string; contact_name?: string | null; title?: string | null; phone?: string | null; email?: string | null
+  address?: string | null; country?: string | null; website?: string | null; payment_terms?: string | null; account_number?: string | null
+  category?: string | null; status?: string | null; notes?: string | null; registered_on?: string | null
+}
+interface Lists { items: Item[]; suppliers: Party[]; buyers: Party[]; units: string[] }
+interface Receivables { total: number; overdue: number; buyers: { buyer: string; owed: number; count: number; overdue: number; oldest: string | null }[] }
 interface Summary {
+  lists: Lists; receivables: Receivables
   batches: Batch[]
   statement: Record<string, number>; products: Product[]; recent: Record<string, Row[]>
   options: { paid_by: string[]; loss_kinds: string[] }; can_write: boolean; is_admin: boolean; reads_ledger: boolean
@@ -206,6 +216,16 @@ function SummaryTab({ s }: { s: Summary }) {
           ))}
         </div>
       </div>
+      {s.receivables.total > 0 && (
+        <div className={card}>
+          <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Owed to the farm (credit sales)</div>
+          <div className="mb-2 text-2xl font-bold tabular-nums">{ugx(s.receivables.total)}{s.receivables.overdue > 0 && <span className="ml-2 text-sm font-semibold text-[#f87171]">{ugx(s.receivables.overdue)} overdue</span>}</div>
+          {s.receivables.buyers.map(b => (
+            <div key={b.buyer} className="flex justify-between py-1 text-sm"><span>{b.buyer} <span className="text-xs text-[var(--muted-2)]">{b.count} sale{b.count === 1 ? '' : 's'}{b.oldest ? ', since ' + b.oldest : ''}</span></span><span className="tabular-nums">{ugx(b.owed)}</span></div>
+          ))}
+          <p className="mt-2 text-xs text-[var(--muted-2)]">Record money received from Entries, then Sales.</p>
+        </div>
+      )}
       {s.batches.length > 0 && (
         <div className={card}>
           <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Flock by batch</div>
@@ -242,7 +262,61 @@ function L({ t, children }: { t: string; children: React.ReactNode }) {
   return <label className="block"><span className="mb-1 block text-xs text-[var(--muted-2)]">{t}</span>{children}</label>
 }
 
+function ItemPicker({ value, items, onChange, onPick }: { value: string; items: Item[]; onChange: (v: string) => void; onPick: (i: Item) => void }) {
+  const [open, setOpen] = useState(false)
+  const q = value.trim().toLowerCase()
+  const hits = items.filter(i => !q || i.name.toLowerCase().includes(q)).slice(0, 8)
+  const exact = items.some(i => i.name.toLowerCase() === q)
+  return (
+    <div className="relative">
+      <input className={input} value={value} placeholder="Start typing, e.g. Layer mash" autoComplete="off"
+        onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} onChange={e => { onChange(e.target.value); setOpen(true) }} />
+      {open && (hits.length > 0 || q) && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] shadow-lg">
+          {hits.map(i => (
+            <button key={i.id} type="button" onMouseDown={e => e.preventDefault()} onClick={() => { onPick(i); setOpen(false) }}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--card-inset)]">
+              <span>{i.name}</span><span className="text-[10px] text-[var(--muted-2)]">{i.group_name ?? ''} · {i.default_uom}</span>
+            </button>
+          ))}
+          {q && !exact && <div className="border-t border-[var(--border)] px-3 py-2 text-xs text-[#fbbf24]">"{value.trim()}" is new: it will be added to the list when you save.</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PartyPicker({ kind, value, parties, onChange, onAdded }: { kind: 'supplier' | 'buyer'; value: string; parties: Party[]; onChange: (v: string) => void; onAdded: () => void }) {
+  const [adding, setAdding] = useState(false)
+  const [nm, setNm] = useState(''); const [ph, setPh] = useState(''); const [err, setErr] = useState('')
+  const save = async () => {
+    try { await call(api('/lists/' + kind), 'POST', { name: nm, phone: ph }); onChange(nm.trim()); setAdding(false); setNm(''); setPh(''); setErr(''); onAdded() }
+    catch (e) { setErr(errMsg(e)) }
+  }
+  return (
+    <div className="space-y-2">
+      <select className={input} value={adding ? '__new' : value} onChange={e => { if (e.target.value === '__new') setAdding(true); else { setAdding(false); onChange(e.target.value) } }}>
+        <option value="">{kind === 'supplier' ? 'Choose a supplier…' : 'Choose a buyer…'}</option>
+        {parties.filter(p => (p.status ?? 'Active') === 'Active' || p.name === value).map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+        <option value="__new">+ Add a new {kind}…</option>
+      </select>
+      {adding && (
+        <div className="space-y-2 rounded-lg border border-[var(--border)] p-2.5">
+          <input className={input} placeholder={`${kind === 'supplier' ? 'Supplier' : 'Buyer'} name`} value={nm} onChange={e => setNm(e.target.value)} />
+          <input className={input} placeholder="Phone (optional)" inputMode="tel" value={ph} onChange={e => setPh(e.target.value)} />
+          {err && <div className="text-xs text-[#fca5a5]">{err}</div>}
+          <div className="flex gap-3"><button type="button" className={btn + ' !h-9 !px-4'} onClick={save}>Add</button>
+            <button type="button" className="text-xs text-[var(--muted-2)]" onClick={() => setAdding(false)}>Cancel</button></div>
+          <p className="text-[11px] text-[var(--muted-2)]">More details can be added later under Lists.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
+  const qc = useQueryClient()
+  const reload = () => qc.invalidateQueries({ queryKey: ['ledger'] })
   const [kind, setKind] = useState<Kind>('expense')
   const [f, setF] = useState<Record<string, string>>({ date: today(), kind: 'opex' })
   const [birds, setBirds] = useState(false)
@@ -289,14 +363,17 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
       <L t="Date"><input type="date" className={input} max={today()} value={f.date || ''} onChange={e => set('date', e.target.value)} style={{ colorScheme: 'dark' }} /></L>
 
       {kind === 'expense' && <>
-        <L t="What was bought?"><input className={input} value={f.item || ''} onChange={e => set('item', e.target.value)} placeholder="e.g. Layer mash" /></L>
+        <L t="What was bought?">
+          <ItemPicker value={f.item || ''} items={s.lists.items} onChange={v => set('item', v)}
+            onPick={i => { setF(o => ({ ...o, item: i.name, kind: i.kind, uom: i.default_uom })); setBirds(i.is_birds) }} />
+        </L>
         <div className="grid grid-cols-2 gap-2">
           <L t="Quantity"><input className={input} inputMode="numeric" value={f.qty || ''} onChange={e => set('qty', e.target.value.replace(/[^0-9]/g, ''))} /></L>
           <L t="Total (UGX)">{money('total')}</L>
         </div>
-        <L t="Unit bought in (optional)">
+        <L t="Unit bought in">
           <select className={input} value={f.uom || 'pc'} onChange={e => set('uom', e.target.value)}>
-            <option value="pc">pieces</option><option value="kg">kilograms</option><option value="bag">bags</option><option value="litre">litres</option>
+            {s.lists.units.map(u => <option key={u} value={u}>{u}</option>)}
           </select>
         </L>
         <L t="Type">
@@ -311,7 +388,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
             {s.options.paid_by.map(p => <option key={p} value={p}>{who(p)}</option>)}
           </select>
         </L>
-        <L t="Bought from (optional)"><input className={input} value={f.supplier || ''} onChange={e => set('supplier', e.target.value)} /></L>
+        <L t="Bought from (supplier)"><PartyPicker kind="supplier" value={f.supplier || ''} parties={s.lists.suppliers} onChange={v => set('supplier', v)} onAdded={reload} /></L>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={birds} onChange={e => setBirds(e.target.checked)} /> These are birds (adds them to the flock)</label>
         {birds && <div className="grid grid-cols-2 gap-2">
           <L t="Which birds">{product}</L>
@@ -327,7 +404,9 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
           <L t="Quantity"><input className={input} inputMode="numeric" value={f.qty || ''} onChange={e => set('qty', e.target.value.replace(/[^0-9]/g, ''))} /></L>
           <L t="Price each (UGX)">{money('unit_price')}</L>
         </div>
-        <L t="Buyer (optional)"><input className={input} value={f.buyer || ''} onChange={e => set('buyer', e.target.value)} /></L>
+        <L t="Paid"><select className={input} value={f.payment || 'Cash'} onChange={e => set('payment', e.target.value)}><option value="Cash">Cash, paid now</option><option value="Credit">On credit, paid later</option></select></L>
+        <L t={f.payment === 'Credit' ? 'Buyer (required for credit)' : 'Buyer (optional)'}><PartyPicker kind="buyer" value={f.buyer || ''} parties={s.lists.buyers} onChange={v => set('buyer', v)} onAdded={reload} /></L>
+        {f.payment === 'Credit' && <L t="Promised payment date (optional)"><input type="date" className={input} value={f.due_date || ''} onChange={e => set('due_date', e.target.value)} style={{ colorScheme: 'dark' }} /></L>}
       </>}
 
       {kind === 'stock' && <>
@@ -369,6 +448,12 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
   const dateOf = (r: Row) => r.expense_date || r.sale_date || r.loss_date || r.event_date
   const label = (r: Row) => kind === 'expense' ? r.item : (s.products.find(p => p.product_id === r.product_id)?.name ?? r.product_id)
   const amt = (r: Row) => (kind === 'stock' ? r.total_cost : r.total)
+  const pay = async (r: Row) => {
+    const owed = (r.total ?? 0) - (r.paid_amount ?? 0)
+    const a = window.prompt(`How much was received from ${r.buyer ?? 'the buyer'}? (owed ${ugx(owed)})`, String(owed))
+    if (!a) return
+    try { await call(api(`/sale/${r.id}/payment`), 'POST', { amount: a.replace(/[^0-9]/g, '') }); setErr(''); q.refetch(); onChanged() } catch (e) { setErr(errMsg(e)) }
+  }
   const remove = async (r: Row) => {
     if (!window.confirm(`Remove this entry (${label(r)}, ${ugx(amt(r))})?`)) return
     try { await call(api(`/${kind}/${r.id}`), 'DELETE'); setErr(''); q.refetch(); onChanged() } catch (e) { setErr(errMsg(e)) }
@@ -390,9 +475,14 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
               <div className="text-xs text-[var(--muted-2)]">
                 {dateOf(r)} · {r.created_by}{r.source === 'appsheet_import' ? ' (from AppSheet)' : ''}{r.paid_by ? ' · paid by ' + who(r.paid_by) : ''}
                 {r.receipt_url && <> · <a className="underline" href={r.receipt_url} target="_blank" rel="noreferrer">receipt</a></>}
+                {r.payment === 'Credit' && <> · <span className="font-semibold" style={{ color: (r.paid_amount ?? 0) >= (r.total ?? 0) ? '#4ade80' : '#fbbf24' }}>{(r.paid_amount ?? 0) >= (r.total ?? 0) ? 'credit, paid' : `credit, owed ${ugx((r.total ?? 0) - (r.paid_amount ?? 0))}`}</span>{r.due_date ? ' (due ' + r.due_date + ')' : ''}</>}
+                {r.buyer ? ' · ' + r.buyer : ''}{r.supplier ? ' · from ' + r.supplier : ''}
               </div>
             </div>
             <div className="text-right tabular-nums">{ugx(amt(r))}</div>
+            {s.can_write && kind === 'sale' && r.payment === 'Credit' && (r.paid_amount ?? 0) < (r.total ?? 0) && (
+              <button onClick={() => pay(r)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[#60a5fa]">Got paid</button>
+            )}
             {s.can_write && <button onClick={() => remove(r)} aria-label="Remove" className="text-[var(--muted-2)]">✕</button>}
           </div>
         ))}
@@ -525,6 +615,133 @@ function ScorecardTab() {
   )
 }
 
+const SUP_FIELDS: [keyof Party, string, string?][] = [
+  ['name', 'Company name'], ['contact_name', 'Contact person'], ['title', 'Contact title (Mr, Mrs…)'], ['phone', 'Phone number'], ['email', 'Email address'],
+  ['address', 'Physical address'], ['country', 'Country'], ['website', 'Website'], ['payment_terms', 'Payment terms (e.g. Cash, 30 days)'],
+  ['account_number', 'Account number'], ['category', 'What they supply (e.g. Feed, Chicken)'], ['notes', 'Notes'],
+]
+const BUY_FIELDS: [keyof Party, string][] = [['name', 'Buyer name'], ['phone', 'Contact (phone)'], ['address', 'Where they are (optional)'], ['notes', 'Notes']]
+
+function PartyForm({ kind, start, onDone }: { kind: 'supplier' | 'buyer'; start: Party | null; onDone: () => void }) {
+  const fields = kind === 'supplier' ? SUP_FIELDS : BUY_FIELDS
+  const [f, setF] = useState<Record<string, string>>(() => Object.fromEntries([...fields.map(([k]) => [k as string, String(start?.[k] ?? '')]), ['status', start?.status ?? 'Active'], ['registered_on', start?.registered_on ?? '']]))
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false)
+  const save = async () => {
+    setBusy(true)
+    try { await call(api(start ? `/lists/${kind}/${start.id}` : '/lists/' + kind), start ? 'PUT' : 'POST', f); onDone() } catch (e) { setErr(errMsg(e)) }
+    setBusy(false)
+  }
+  return (
+    <div className={card + ' space-y-2.5'}>
+      <div className="text-sm font-semibold">{start ? 'Edit ' + start.name : 'New ' + kind}</div>
+      {fields.map(([k, label]) => (
+        <L key={k as string} t={label}>{k === 'notes' ? <textarea className={input} rows={2} value={f[k as string]} onChange={e => setF(o => ({ ...o, [k as string]: e.target.value }))} />
+          : <input className={input} value={f[k as string]} onChange={e => setF(o => ({ ...o, [k as string]: e.target.value }))} />}</L>
+      ))}
+      {kind === 'supplier' && (
+        <div className="grid grid-cols-2 gap-2">
+          <L t="Status"><select className={input} value={f.status} onChange={e => setF(o => ({ ...o, status: e.target.value }))}><option>Active</option><option>Inactive</option></select></L>
+          <L t="Registered on"><input type="date" className={input} value={f.registered_on} onChange={e => setF(o => ({ ...o, registered_on: e.target.value }))} style={{ colorScheme: 'dark' }} /></L>
+        </div>
+      )}
+      {err && <div className="rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{err}</div>}
+      <div className="flex gap-3"><button className={btn} disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button><button className="text-sm text-[var(--muted-2)]" onClick={onDone}>Cancel</button></div>
+    </div>
+  )
+}
+
+function ListsTab({ s }: { s: Summary }) {
+  const qc = useQueryClient()
+  const [which, setWhich] = useState<'suppliers' | 'buyers' | 'items' | 'units'>('suppliers')
+  const [edit, setEdit] = useState<Party | 'new' | null>(null)
+  const [find, setFind] = useState('')
+  const [msg, setMsg] = useState('')
+  const [it, setIt] = useState({ name: '', group_name: '', kind: 'opex', default_uom: 'pc', is_birds: false })
+  const [unit, setUnit] = useState('')
+  const reload = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); setEdit(null); setMsg('') }
+  const guard = async (fn: () => Promise<unknown>) => { try { await fn(); reload() } catch (e) { setMsg(errMsg(e)) } }
+  const kindOf = which === 'suppliers' ? 'supplier' : 'buyer'
+  const people = (which === 'suppliers' ? s.lists.suppliers : s.lists.buyers).filter(p => !find || p.name.toLowerCase().includes(find.toLowerCase()))
+  const groups = [...new Set(s.lists.items.map(i => i.group_name ?? 'Other'))].sort()
+  const tabs: ['suppliers' | 'buyers' | 'items' | 'units', string, number][] = [['suppliers', 'Suppliers', s.lists.suppliers.length], ['buyers', 'Buyers', s.lists.buyers.length], ['items', 'Items', s.lists.items.length], ['units', 'Units', s.lists.units.length]]
+  return (
+    <div className="space-y-3">
+      <p className="px-1 text-xs text-[var(--muted-2)]">The lists behind every dropdown. Pick from them when recording so the same thing is always spelt the same way. A new name typed while recording is added here automatically.</p>
+      <div className="flex flex-wrap gap-2">
+        {tabs.map(([k, l, n]) => (
+          <button key={k} onClick={() => { setWhich(k); setEdit(null); setMsg('') }} className="rounded-full border px-3 py-1.5 text-xs font-semibold"
+            style={{ borderColor: which === k ? '#22c55e' : 'var(--border)', color: which === k ? '#4ade80' : 'var(--muted-2)' }}>{l} ({n})</button>
+        ))}
+      </div>
+      {msg && <div className="rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{msg}</div>}
+
+      {(which === 'suppliers' || which === 'buyers') && (edit
+        ? <PartyForm kind={kindOf} start={edit === 'new' ? null : edit} onDone={reload} />
+        : <>
+          <div className="flex gap-2">
+            <input className={input} placeholder="Search…" value={find} onChange={e => setFind(e.target.value)} />
+            {s.can_write && <button className={btn + ' shrink-0 !px-4'} onClick={() => setEdit('new')}>+ New</button>}
+          </div>
+          <div className={card + ' divide-y divide-[var(--border)] !p-0'}>
+            {people.map(p => (
+              <div key={p.id} className="flex items-start gap-3 px-4 py-3 text-sm">
+                <button className="min-w-0 flex-1 text-left" onClick={() => s.can_write && setEdit(p)}>
+                  <div className="font-medium">{p.name} {p.status === 'Inactive' && <span className="text-xs text-[var(--muted-2)]">(inactive)</span>}</div>
+                  <div className="text-xs text-[var(--muted-2)]">{[p.category, p.phone, p.payment_terms, p.address].filter(Boolean).join(' · ') || 'no details yet'}</div>
+                  {p.notes && <div className="mt-0.5 text-xs text-[var(--muted-2)]">{p.notes}</div>}
+                </button>
+                {s.is_admin && <button className="text-xs text-[var(--muted-2)]" onClick={() => window.confirm(`Stop offering ${p.name} in the dropdown? Past records keep their name.`) && guard(() => call(api(`/lists/${kindOf}/${p.id}`), 'DELETE'))}>remove</button>}
+              </div>
+            ))}
+            {people.length === 0 && <div className="p-4 text-sm text-[var(--muted-2)]">Nothing here yet.</div>}
+          </div>
+        </>)}
+
+      {which === 'items' && (
+        <>
+          {s.can_write && (
+            <div className={card + ' space-y-2'}>
+              <div className="text-sm font-semibold">Add an item to the "What was bought" list</div>
+              <input className={input} placeholder="Item name, e.g. Sunflower cake" value={it.name} onChange={e => setIt(o => ({ ...o, name: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-2">
+                <select className={input} value={it.group_name} onChange={e => setIt(o => ({ ...o, group_name: e.target.value }))}><option value="">Group (automatic)</option>{groups.map(g => <option key={g}>{g}</option>)}</select>
+                <select className={input} value={it.default_uom} onChange={e => setIt(o => ({ ...o, default_uom: e.target.value }))}>{s.lists.units.map(u => <option key={u}>{u}</option>)}</select>
+              </div>
+              <select className={input} value={it.kind} onChange={e => setIt(o => ({ ...o, kind: e.target.value }))}><option value="opex">Running cost</option><option value="capex">Equipment or building</option></select>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={it.is_birds} onChange={e => setIt(o => ({ ...o, is_birds: e.target.checked }))} /> These are birds</label>
+              <button className={btn + ' !h-9 !px-4'} onClick={() => guard(async () => { await call(api('/lists/item'), 'POST', it); setIt({ name: '', group_name: '', kind: 'opex', default_uom: 'pc', is_birds: false }) })}>Add item</button>
+            </div>
+          )}
+          {groups.map(g => (
+            <div key={g} className={card}>
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{g}</div>
+              {s.lists.items.filter(i => (i.group_name ?? 'Other') === g).map(i => (
+                <div key={i.id} className="flex items-center justify-between gap-2 py-1 text-sm">
+                  <span>{i.name}{i.is_birds ? ' 🐔' : ''}</span>
+                  <span className="flex items-center gap-3 text-xs text-[var(--muted-2)]">{i.kind === 'capex' ? 'equipment' : 'running'} · {i.default_uom}
+                    {s.is_admin && <button onClick={() => window.confirm(`Stop offering ${i.name}?`) && guard(() => call(api(`/lists/item/${i.id}`), 'DELETE'))}>remove</button>}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </>
+      )}
+
+      {which === 'units' && (
+        <div className={card + ' space-y-3'}>
+          <div className="flex flex-wrap gap-2">{s.lists.units.map(u => <span key={u} className="rounded-full border border-[var(--border)] px-3 py-1 text-sm">{u}</span>)}</div>
+          {s.can_write && (
+            <div className="flex gap-2">
+              <input className={input} placeholder="New unit, e.g. crate" value={unit} onChange={e => setUnit(e.target.value)} />
+              <button className={btn + ' shrink-0 !px-4'} onClick={() => guard(async () => { await call(api('/lists/unit'), 'POST', { name: unit }); setUnit('') })}>Add</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ReconTab({ s }: { s: Summary }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['ledger-recon'], queryFn: () => call<Recon>(api('/reconciliation')) })
@@ -632,14 +849,14 @@ function ReconTab({ s }: { s: Summary }) {
 export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'recon'>('summary')
+  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'lists' | 'recon'>('summary')
   const [sumKey, setSumKey] = useState(0)          // tapping Summary always returns from a drill-down to the cards
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
   const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }); qc.invalidateQueries({ queryKey: ['ledger-entries'] }) }
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-6 text-sm text-[var(--muted-2)]">Loading the chicken ledger…</div>
   const s = q.data
-  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['recon', 'Reconciliation']]
+  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'lists' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['lists', 'Lists'], ['recon', 'Reconciliation']]
   return (
     <div className="mx-auto max-w-2xl space-y-3 px-4 pb-24 pt-4">
       <div>
@@ -656,6 +873,7 @@ export default function LedgerPage() {
       {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
       {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
+      {tab === 'lists' && <ListsTab s={s} />}
       {tab === 'recon' && <ReconTab s={s} />}
     </div>
   )

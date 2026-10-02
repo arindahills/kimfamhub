@@ -549,6 +549,111 @@ def flock_batches(rows, today):
     return out
 
 
+# ── seeding the lists from the AppSheet workbook (once, idempotent) ───────────────────────────────────────
+REFERENCE_TABS = ("expense categories", "suppliers list", "credit buyers", "units of measure", "product categories", "shops data")
+
+
+def parse_reference(tabs, parsed):
+    """tabs = {title: rows} for REFERENCE_TABS; parsed = parse_snapshot() of the transactions. -> the four lists to seed.
+    Names that appear in past records but not in the AppSheet's lists (the sheet kept expense beneficiaries as free text)
+    are added too, so every old entry maps to a list entry."""
+    def rows_of(title):
+        data = tabs.get(title) or []
+        if not data:
+            return []
+        heads = [_norm(h) for h in data[0]]
+        return [{h: (r[j] if j < len(r) else "") for j, h in enumerate(heads)} for r in data[1:] if any(str(c).strip() for c in r)]
+    exp = parsed["expenses"]
+    kind_by, uom_by = {}, {}
+    for e in exp:
+        k = canon(e["item"]).lower()
+        kind_by.setdefault(k, {}).setdefault(e["kind"], 0); kind_by[k][e["kind"]] += 1
+        uom_by.setdefault(k, {}).setdefault(uom_of(e), 0); uom_by[k][uom_of(e)] += 1
+    mode = lambda d, dflt: max(d, key=d.get) if d else dflt
+    items = {}
+    for r in rows_of("expense categories"):
+        nm = canon(r.get("expense item"))
+        if nm:
+            k = nm.lower()
+            items[k] = {"name": nm, "group_name": expense_category(nm), "kind": mode(kind_by.get(k, {}), "opex"),
+                        "default_uom": mode(uom_by.get(k, {}), "pc"), "is_birds": bool(_BIRD_ITEM.match(nm))}
+    for e in exp:                                          # anything used but not listed
+        k = canon(e["item"]).lower()
+        if k and k not in items:
+            items[k] = {"name": canon(e["item"]), "group_name": expense_category(e["item"]), "kind": mode(kind_by.get(k, {}), "opex"),
+                        "default_uom": mode(uom_by.get(k, {}), "pc"), "is_birds": bool(_BIRD_ITEM.match(canon(e["item"])))}
+    buyers = {}
+    for r in rows_of("credit buyers"):
+        nm = canon(r.get("name of buyer"))
+        if nm:
+            buyers[nm.lower()] = {"name": nm, "phone": canon(r.get("contact of buyer")) or None}
+    for sl in parsed["sales"]:
+        nm = canon(sl["buyer"])
+        if nm and nm.lower() not in buyers:
+            buyers[nm.lower()] = {"name": nm, "phone": None}
+    sup = {}
+    for r in rows_of("suppliers list"):
+        nm = canon(r.get("company name"))
+        if nm:
+            reg = serial_date(r.get("registration date"))
+            sup[nm.lower()] = {"name": nm, "contact_name": canon(r.get("contact name")) or None, "title": canon(r.get("contact title")) or None,
+                               "phone": canon(r.get("phone number")) or None, "email": canon(r.get("email address")) or None,
+                               "address": canon(r.get("physical address")) or None, "country": canon(r.get("country")) or None,
+                               "website": canon(r.get("website url")) or None, "payment_terms": canon(r.get("payment terms")) or None,
+                               "account_number": canon(r.get("account number")) or None, "category": canon(r.get("supplier category")) or None,
+                               "status": canon(r.get("status")) or "Active", "notes": canon(r.get("notes")) or None, "registered_on": reg}
+    for nm in [canon(e["supplier"]) for e in exp] + [canon(st["supplier"]) for st in parsed["stock"]]:
+        if nm and nm.lower() not in sup:
+            sup[nm.lower()] = {"name": nm, "notes": "Added from past records (not on the AppSheet supplier list)", "status": "Active"}
+    units = []
+    for r in rows_of("units of measure"):
+        u = canon(r.get("unit of measure")).lower()
+        if u and u not in units:
+            units.append(u)
+    for u in SEED_UNITS:
+        if u not in units:
+            units.append(u)
+    return {"items": list(items.values()), "buyers": list(buyers.values()), "suppliers": list(sup.values()), "units": units}
+
+
+def import_reference(project_id, ref, who="appsheet import"):
+    """Seed the lists and tie every existing entry to them. Safe to run twice: existing names are left alone.
+    -> counts of what was added."""
+    from db import db as _db
+    if not ready():
+        raise RuntimeError("ledger tables unavailable")
+    added = {"items": 0, "suppliers": 0, "buyers": 0, "units": 0}
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
+            for u in ref["units"]:
+                cur.execute("INSERT INTO ledger_units (project_id, name, created_by) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (project_id, u, who))
+                added["units"] += cur.rowcount
+            for it in ref["items"]:
+                cur.execute("INSERT INTO ledger_items (project_id, created_by, source, name, group_name, kind, default_uom, is_birds) "
+                            "VALUES (%s,%s,'appsheet_import',%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                            (project_id, who, it["name"], it["group_name"], it["kind"], it["default_uom"], it["is_birds"]))
+                added["items"] += cur.rowcount
+            for kind, key in (("supplier", "suppliers"), ("buyer", "buyers")):
+                for pr in ref[key]:
+                    cols = ["name"] + [c for c in list(PARTY_FIELDS) + ["registered_on"] if pr.get(c) is not None]
+                    cur.execute("INSERT INTO ledger_parties (project_id, created_by, source, kind, %s) VALUES (%%s,%%s,'appsheet_import',%%s,%s) ON CONFLICT DO NOTHING"
+                                % (", ".join(cols), ", ".join(["%s"] * len(cols))), [project_id, who, kind] + [pr[c] for c in cols])
+                    added[key] += cur.rowcount
+            # tie existing rows to the lists by name (case-insensitive), without changing what they say
+            cur.execute("UPDATE ledger_expenses e SET item_id=i.id FROM ledger_items i WHERE e.project_id=%s AND i.project_id=e.project_id AND lower(i.name)=lower(e.item) AND i.deleted_at IS NULL AND e.item_id IS NULL", (project_id,))
+            cur.execute("UPDATE ledger_expenses e SET supplier_id=p.id FROM ledger_parties p WHERE e.project_id=%s AND p.project_id=e.project_id AND p.kind='supplier' AND lower(p.name)=lower(e.supplier) AND p.deleted_at IS NULL AND e.supplier_id IS NULL", (project_id,))
+            cur.execute("UPDATE ledger_stock e SET supplier_id=p.id FROM ledger_parties p WHERE e.project_id=%s AND p.project_id=e.project_id AND p.kind='supplier' AND lower(p.name)=lower(e.supplier) AND p.deleted_at IS NULL AND e.supplier_id IS NULL", (project_id,))
+            cur.execute("UPDATE ledger_sales e SET buyer_id=p.id FROM ledger_parties p WHERE e.project_id=%s AND p.project_id=e.project_id AND p.kind='buyer' AND lower(p.name)=lower(e.buyer) AND p.deleted_at IS NULL AND e.buyer_id IS NULL", (project_id,))
+            cur.execute("UPDATE ledger_expenses SET uom=NULL WHERE FALSE")        # (units already come from each row's raw AppSheet unit)
+    return added
+
+
+def fetch_reference(sheet_id, service_account_path):
+    snap = fetch_snapshot(sheet_id, service_account_path, tabs=REFERENCE_TABS)
+    return snap
+
+
 # ── database layer (ADR-032) ──────────────────────────────────────────────────────────────────
 _LOCK_KEY = 778813
 _READY = False
@@ -599,6 +704,21 @@ _DDL += [
 _TABLES = ("ledger_products", "ledger_stock", "ledger_sales", "ledger_losses", "ledger_expenses")
 
 
+_DDL_MASTER = [
+    """CREATE TABLE IF NOT EXISTS ledger_parties (%s,
+        kind TEXT NOT NULL CHECK (kind IN ('supplier','buyer')), name TEXT NOT NULL,
+        contact_name TEXT, title TEXT, phone TEXT, email TEXT, address TEXT, country TEXT, website TEXT,
+        payment_terms TEXT, account_number TEXT, category TEXT, status TEXT NOT NULL DEFAULT 'Active', notes TEXT,
+        registered_on DATE)""" % _COMMON,
+    """CREATE TABLE IF NOT EXISTS ledger_items (%s,
+        name TEXT NOT NULL, group_name TEXT, kind TEXT NOT NULL DEFAULT 'opex' CHECK (kind IN ('opex','capex')),
+        default_uom TEXT NOT NULL DEFAULT 'pc', is_birds BOOLEAN NOT NULL DEFAULT FALSE)""" % _COMMON,
+    """CREATE TABLE IF NOT EXISTS ledger_units (
+        id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT 'import',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
+]
+
+
 def ready():
     """Create the ledger tables once per process, under an advisory lock (two workers race here).
     Never raises; returns whether the ledger is usable."""
@@ -613,6 +733,19 @@ def ready():
                 for ddl in _DDL:
                     cur.execute(ddl)
                 cur.execute("ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS uom TEXT")          # unit of measure, additive
+                for ddl in _DDL_MASTER:                                                                  # reference data (ticket: dropdowns)
+                    cur.execute(ddl)
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_parties_name_uq ON ledger_parties(project_id, kind, lower(name)) WHERE deleted_at IS NULL")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_items_name_uq ON ledger_items(project_id, lower(name)) WHERE deleted_at IS NULL")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_units_name_uq ON ledger_units(project_id, lower(name))")
+                for alter in ("ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
+                              "ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS item_id INTEGER",
+                              "ALTER TABLE ledger_stock ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
+                              "ALTER TABLE ledger_sales ADD COLUMN IF NOT EXISTS buyer_id INTEGER",
+                              "ALTER TABLE ledger_sales ADD COLUMN IF NOT EXISTS due_date DATE",
+                              "ALTER TABLE ledger_sales ADD COLUMN IF NOT EXISTS paid_amount BIGINT NOT NULL DEFAULT 0",
+                              "ALTER TABLE ledger_sales ADD COLUMN IF NOT EXISTS paid_on DATE"):
+                    cur.execute(alter)
                 cur.execute("ALTER TABLE ledger_stock ADD COLUMN IF NOT EXISTS age_weeks INTEGER")    # ticket 98, additive
                 for t in _TABLES:
                     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS %s_source_ref_uq ON %s(project_id, source_ref) "
@@ -723,7 +856,7 @@ def _paid_by(v, allowed):
     return v
 
 
-def validate_expense(d, today, allowed_payers, products):
+def validate_expense(d, today, allowed_payers, products, units=None):
     """-> clean expense dict (+ optional bird stock effect). A purchase of birds (product_id given)
     is ONE entry with two effects: an expense line and a stock movement (ADR-032 decision 2)."""
     item = str(d.get("item") or "").strip()
@@ -740,7 +873,7 @@ def validate_expense(d, today, allowed_payers, products):
     out = {"expense_date": _need_date(d.get("date"), today), "item": item, "supplier": str(d.get("supplier") or "").strip(),
            "qty": qty, "unit_price": unit or total // qty, "total": total, "kind": kind,
            "note": str(d.get("note") or "").strip(), "paid_by": _paid_by(d.get("paid_by"), allowed_payers), "stock": None,
-           "uom": (str(d.get("uom") or "pc").strip().lower() if str(d.get("uom") or "pc").strip().lower() in UNITS else "pc")}
+           "uom": (str(d.get("uom") or "pc").strip().lower() if str(d.get("uom") or "pc").strip().lower() in [u.lower() for u in (units or UNITS)] else "pc")}
     pid = str(d.get("product_id") or "").strip()
     if pid:
         if pid not in products:
@@ -765,8 +898,9 @@ def validate_sale(d, today, products):
     total = to_int(d.get("total")) or qty * price
     if total <= 0:
         raise ValueError("Amount must be more than zero.")
+    pay, buyer, due = validate_credit(d, today)
     return {"product_id": pid, "sale_date": _need_date(d.get("date"), today), "qty": qty, "unit_price": price,
-            "total": total, "buyer": str(d.get("buyer") or "").strip(), "payment": str(d.get("payment") or "Cash").strip() or "Cash"}
+            "total": total, "buyer": buyer, "payment": pay, "due_date": due}
 
 
 def validate_loss(d, today, products):
@@ -803,10 +937,10 @@ def validate_stock(d, today, products, allowed_payers):
 
 
 _INSERT = {
-    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom"),
-    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment"),
+    "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom", "item_id", "supplier_id"),
+    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment", "buyer_id", "due_date"),
     "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason"),
-    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks"),
+    "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks", "supplier_id"),
 }
 
 
@@ -835,6 +969,7 @@ def record(project_id, table, row, who, source="app", source_ref=None):
         source_ref = "app:" + __import__("uuid").uuid4().hex   # links the expense to its stock effect, so they are removed together
     with _db() as conn:
         with conn.cursor() as cur:
+            resolve_names(cur, project_id, who, table, row, source)
             rid, created = insert_row(cur, table, project_id, who, source, source_ref, row)
             if created and table == "ledger_expenses" and row.get("stock"):
                 insert_row(cur, "ledger_stock", project_id, who, source, (source_ref + ":stock") if source_ref else None, row["stock"])
@@ -855,6 +990,242 @@ def soft_delete(project_id, table, row_id, who):
                 cur.execute("UPDATE ledger_stock SET deleted_at=now(), deleted_by=%s WHERE project_id=%s AND source_ref=%s AND deleted_at IS NULL",
                             (who, project_id, got[0] + ":stock"))
             return bool(got)
+
+
+# ── reference data: items, suppliers, buyers, units (the AppSheet's pick-lists), credit sales ────────────
+PARTY_FIELDS = ("contact_name", "title", "phone", "email", "address", "country", "website",
+                "payment_terms", "account_number", "category", "status", "notes")
+PARTY_KINDS = ("supplier", "buyer")
+SEED_UNITS = ("tray", "pc", "litre", "kg", "bag")
+PAYMENT_TYPES = ("Cash", "Credit")
+
+
+def canon(v):
+    """One spelling per thing: trimmed, single spaces. Matching ignores case, so 'layer mash' finds 'Layer mash'."""
+    return re.sub(r"\s+", " ", str(v or "")).strip()
+
+
+def validate_party(kind, d):
+    if kind not in PARTY_KINDS:
+        raise ValueError("A party is a supplier or a buyer.")
+    name = canon(d.get("name"))
+    if not name:
+        raise ValueError("A name is required.")
+    if len(name) > 120:
+        raise ValueError("Name is too long.")
+    out = {"name": name}
+    for f in PARTY_FIELDS:
+        out[f] = canon(d.get(f)) or None
+    if out["email"] and "@" not in out["email"]:
+        raise ValueError("That email does not look right.")
+    if out["phone"] and not re.fullmatch(r"[0-9+()\-\s]{6,20}", out["phone"]):
+        raise ValueError("Phone should be digits (with + or spaces), 6 to 20 characters.")
+    st = (out["status"] or "Active").capitalize()
+    if st not in ("Active", "Inactive"):
+        raise ValueError("Status is Active or Inactive.")
+    out["status"] = st
+    reg = d.get("registered_on")
+    out["registered_on"] = None
+    if reg:
+        try:
+            out["registered_on"] = _dt.date.fromisoformat(str(reg)[:10])
+        except ValueError:
+            raise ValueError("Registration date must be a real date.")
+    return out
+
+
+def validate_item(d, units):
+    name = canon(d.get("name"))
+    if not name:
+        raise ValueError("A name is required.")
+    kind = str(d.get("kind") or "opex").lower()
+    if kind not in ("opex", "capex"):
+        raise ValueError("An item is a running cost (opex) or equipment (capex).")
+    uom = canon(d.get("default_uom") or "pc").lower()
+    if units and uom not in [u.lower() for u in units]:
+        raise ValueError("Unknown unit %r." % uom)
+    return {"name": name, "group_name": canon(d.get("group_name")) or expense_category(name), "kind": kind,
+            "default_uom": uom, "is_birds": bool(d.get("is_birds"))}
+
+
+def validate_unit(d, units):
+    name = canon(d.get("name")).lower()
+    if not name or len(name) > 20:
+        raise ValueError("A unit is a short word such as kg, bag or tray.")
+    if name in [u.lower() for u in units]:
+        raise ValueError("That unit already exists.")
+    return {"name": name}
+
+
+def _get_or_create(cur, table, project_id, who, name, create_cols, source="app"):
+    """Match by name ignoring case; create when missing (the 'add new' that keeps the lists growing but consistent).
+    -> (id, canonical name, created)."""
+    name = canon(name)
+    cur.execute("SELECT id, name FROM %s WHERE project_id=%%s AND lower(name)=lower(%%s) AND deleted_at IS NULL" % table, (project_id, name))
+    got = cur.fetchone()
+    if got:
+        return got[0], got[1], False
+    cols = ["project_id", "created_by", "source", "name"] + list(create_cols)
+    vals = [project_id, who, source, name] + [create_cols[c] for c in create_cols]
+    cur.execute("INSERT INTO %s (%s) VALUES (%s) RETURNING id" % (table, ", ".join(cols), ", ".join(["%s"] * len(cols))), vals)
+    return cur.fetchone()[0], name, True
+
+
+def resolve_names(cur, project_id, who, table, row, source):
+    """Inside the entry's transaction: tie the typed item / supplier / buyer to the shared lists, creating a missing
+    one on the spot, and put the canonical spelling back on the row so analysis groups cleanly."""
+    if table == "ledger_expenses":
+        if row.get("item"):
+            iid, nm, _c = _get_or_create(cur, "ledger_items", project_id, who, row["item"],
+                                         {"group_name": expense_category(row["item"]), "kind": row.get("kind") or "opex",
+                                          "default_uom": row.get("uom") or "pc", "is_birds": bool(row.get("stock"))}, source)
+            row["item_id"], row["item"] = iid, nm
+        if row.get("supplier"):
+            sid, nm, _c = _get_or_create(cur, "ledger_parties", project_id, who, row["supplier"], {"kind": "supplier"}, source)
+            row["supplier_id"], row["supplier"] = sid, nm
+            if row.get("stock"):
+                row["stock"]["supplier"], row["stock"]["supplier_id"] = nm, sid
+    elif table == "ledger_stock" and row.get("supplier"):
+        sid, nm, _c = _get_or_create(cur, "ledger_parties", project_id, who, row["supplier"], {"kind": "supplier"}, source)
+        row["supplier_id"], row["supplier"] = sid, nm
+    elif table == "ledger_sales" and row.get("buyer"):
+        bid, nm, _c = _get_or_create(cur, "ledger_parties", project_id, who, row["buyer"], {"kind": "buyer"}, source)
+        row["buyer_id"], row["buyer"] = bid, nm
+
+
+def masterdata(project_id):
+    """All four lists, for the dropdowns and the Lists tab."""
+    from db import query as _q
+    live = " AND deleted_at IS NULL"
+    return {
+        "items": _q("SELECT id, name, group_name, kind, default_uom, is_birds FROM ledger_items WHERE project_id=%s" + live + " ORDER BY lower(name)", (project_id,)),
+        "suppliers": _q("SELECT id, name, " + ", ".join(PARTY_FIELDS) + ", registered_on FROM ledger_parties WHERE project_id=%s AND kind='supplier'" + live + " ORDER BY lower(name)", (project_id,)),
+        "buyers": _q("SELECT id, name, " + ", ".join(PARTY_FIELDS) + ", registered_on FROM ledger_parties WHERE project_id=%s AND kind='buyer'" + live + " ORDER BY lower(name)", (project_id,)),
+        "units": [r["name"] for r in _q("SELECT name FROM ledger_units WHERE project_id=%s ORDER BY id", (project_id,))],
+    }
+
+
+def add_party(project_id, kind, d, who):
+    from db import db as _db
+    row = validate_party(kind, d)
+    cols = ("name",) + PARTY_FIELDS + ("registered_on",)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM ledger_parties WHERE project_id=%s AND kind=%s AND lower(name)=lower(%s) AND deleted_at IS NULL", (project_id, kind, row["name"]))
+            if cur.fetchone():
+                raise ValueError("%s already exists." % row["name"])
+            cur.execute("INSERT INTO ledger_parties (project_id, created_by, source, kind, %s) VALUES (%%s,%%s,'app',%%s,%s) RETURNING id"
+                        % (", ".join(cols), ", ".join(["%s"] * len(cols))), [project_id, who, kind] + [row[c] for c in cols])
+            return cur.fetchone()[0]
+
+
+def update_party(project_id, party_id, d, who):
+    from db import db as _db
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT kind FROM ledger_parties WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (party_id, project_id))
+            got = cur.fetchone()
+            if not got:
+                return False
+            row = validate_party(got[0], d)
+            cols = ("name",) + PARTY_FIELDS + ("registered_on",)
+            cur.execute("UPDATE ledger_parties SET %s WHERE id=%%s" % ", ".join("%s=%%s" % c for c in cols), [row[c] for c in cols] + [party_id])
+            return True
+
+
+def add_item(project_id, d, who, units):
+    from db import db as _db
+    row = validate_item(d, units)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            iid, _nm, created = _get_or_create(cur, "ledger_items", project_id, who, row["name"],
+                                               {"group_name": row["group_name"], "kind": row["kind"], "default_uom": row["default_uom"], "is_birds": row["is_birds"]})
+            if not created:
+                raise ValueError("%s already exists." % row["name"])
+            return iid
+
+
+def add_unit(project_id, d, who):
+    from db import db as _db
+    units = [u for u in masterdata(project_id)["units"]]
+    row = validate_unit(d, units)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO ledger_units (project_id, name, created_by) VALUES (%s,%s,%s)", (project_id, row["name"], who))
+    return row["name"]
+
+
+def retire(project_id, kind, row_id, who):
+    """Soft-delete a list entry (items and parties). Past entries keep their spelling; the dropdown stops offering it."""
+    from db import db as _db
+    table = {"item": "ledger_items", "supplier": "ledger_parties", "buyer": "ledger_parties"}[kind]
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE %s SET deleted_at=now(), deleted_by=%%s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL" % table, (who, row_id, project_id))
+            return cur.rowcount == 1
+
+
+# credit sales: a sale to a named buyer, paid later (the AppSheet's 'type of sale' and 'proposed payment date')
+def validate_credit(d, today):
+    """-> (payment, buyer, due_date). Credit needs a buyer; the due date is optional but cannot be in the past."""
+    pay = canon(d.get("payment") or "Cash").capitalize()
+    if pay not in PAYMENT_TYPES:
+        raise ValueError("A sale is Cash or Credit.")
+    buyer = canon(d.get("buyer"))
+    due = None
+    if pay == "Credit":
+        if not buyer:
+            raise ValueError("A credit sale needs the buyer's name.")
+        if d.get("due_date"):
+            try:
+                due = _dt.date.fromisoformat(str(d["due_date"])[:10])
+            except ValueError:
+                raise ValueError("The due date must be a real date.")
+            if due < today:
+                raise ValueError("The due date is in the past.")
+    return pay, buyer, due
+
+
+def receivables(rows, today):
+    """Credit sales not yet fully paid, per buyer: what the farm is owed. Cash sales are never owed."""
+    by = {}
+    for s in rows["sales"]:
+        if (s.get("payment") or "Cash") != "Credit":
+            continue
+        owed = s["total"] - (s.get("paid_amount") or 0)
+        if owed <= 0:
+            continue
+        b = by.setdefault(s.get("buyer") or "(no name)", {"buyer": s.get("buyer") or "(no name)", "owed": 0, "count": 0, "overdue": 0, "oldest": None})
+        b["owed"] += owed; b["count"] += 1
+        due = s.get("due_date")
+        if due and due < today:
+            b["overdue"] += owed
+        d0 = s["sale_date"]
+        b["oldest"] = d0 if b["oldest"] is None or d0 < b["oldest"] else b["oldest"]
+    out = sorted(by.values(), key=lambda b: -b["owed"])
+    for b in out:
+        b["oldest"] = b["oldest"].isoformat() if b["oldest"] else None
+    return {"total": sum(b["owed"] for b in out), "overdue": sum(b["overdue"] for b in out), "buyers": out}
+
+
+def record_payment(project_id, sale_id, amount, when, who, today):
+    """Money received on a credit sale. Never more than is owed. -> {'owed': remaining}."""
+    from db import db as _db
+    amt = _need_pos(amount, "Amount")
+    d = _need_date(when or today.isoformat(), today)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT total, paid_amount, payment FROM ledger_sales WHERE id=%s AND project_id=%s AND deleted_at IS NULL FOR UPDATE", (sale_id, project_id))
+            got = cur.fetchone()
+            if not got:
+                raise LookupError("Sale not found")
+            total, paid, pay = got
+            if pay != "Credit":
+                raise ValueError("That sale was paid in cash.")
+            if amt > total - paid:
+                raise ValueError("That is more than is owed (%s)." % "{:,}".format(total - paid))
+            cur.execute("UPDATE ledger_sales SET paid_amount=paid_amount+%s, paid_on=%s WHERE id=%s", (amt, d, sale_id))
+            return {"owed": total - paid - amt}
 
 
 # ── reconciliation (ADR-032 decisions 4-6) ──────────────────────────────────────────────────
@@ -905,7 +1276,8 @@ def build_reconciliation(rows, treasury, links, notes):
     st = statement(rows)
     kinds = {t["id"]: classify_treasury(t) for t in treasury}
     capital = sum(t["amount_ugx"] for t in treasury if kinds[t["id"]] == "capital")
-    cash_in = capital + st["sales"]
+    owed = receivables(rows, _dt.date.today())["total"]                     # credit sales not yet paid are not cash in
+    cash_in = capital + st["sales"] - owed
     cash_out = st["opex"] + st["capex"]
     by_key = {}
     for n in sorted(notes, key=lambda n: n["created_at"]):
@@ -950,7 +1322,7 @@ def build_reconciliation(rows, treasury, links, notes):
         b["count"] += 1; b["total"] += e["total"]
     return {
         "statement": {k: v for k, v in st.items() if k != "per_product"},
-        "farm_box": {"in": {"capital": capital, "sales": st["sales"], "total": cash_in},
+        "farm_box": {"in": {"capital": capital, "sales": st["sales"] - owed, "owed_by_buyers": owed, "total": cash_in},
                      "out": {"opex": st["opex"], "capex": st["capex"], "total": cash_out}, "gap": gap},
         "treasury": [{"id": t["id"], "date": _d(t["txn_date"]), "description": t["description"], "amount": t["amount_ugx"],
                       "kind": kinds[t["id"]], "recorded_by": t.get("recorded_by")} for t in treasury],
@@ -970,7 +1342,7 @@ def reconciliation(project_id):
     return build_reconciliation(rows, treasury, links, notes)
 
 
-def fetch_snapshot(sheet_id, service_account_path):
+def fetch_snapshot(sheet_id, service_account_path, tabs=None):
     """Read the AppSheet workbook's tabs with UNFORMATTED values (serial dates, plain numbers)."""
     import gspread
     from google.oauth2.service_account import Credentials
@@ -979,7 +1351,7 @@ def fetch_snapshot(sheet_id, service_account_path):
 
     def once():
         sh = gspread.authorize(creds).open_by_key(sheet_id)
-        return {t: sh.worksheet(t).get_all_values(value_render_option="UNFORMATTED_VALUE") for t in TABS}
+        return {t: sh.worksheet(t).get_all_values(value_render_option="UNFORMATTED_VALUE") for t in (tabs or TABS)}
     for attempt in range(5):                     # Google answers 503 now and then
         try:
             return once()
@@ -995,6 +1367,13 @@ if __name__ == "__main__":
         with open(sys.argv[3], "w") as f:
             json.dump(_snap, f)
         print("snapshot", snapshot_hash(_snap), {k: len(v) for k, v in _snap.items()})
+        sys.exit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == "import-reference":  # import-reference <project> <sheet_id>  (app dir, needs DATABASE_URL)
+        _tabs = fetch_reference(sys.argv[3], "service-account.json")
+        _rows = load(sys.argv[2])
+        _parsed = {"expenses": [dict(e, uom=e.get("uom")) for e in _rows["expenses"]], "sales": _rows["sales"], "stock": _rows["stock"]}
+        _ref = parse_reference(_tabs, _parsed)
+        print(import_reference(sys.argv[2], _ref), {k: len(v) for k, v in _ref.items()})
         sys.exit(0)
     if len(sys.argv) == 4 and sys.argv[1] == "import":            # import <project> <snapshot.json>  (needs DATABASE_URL)
         with open(sys.argv[3]) as f:

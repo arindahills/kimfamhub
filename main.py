@@ -7021,6 +7021,8 @@ def ledger_summary(project_id: str, request: Request):
         "recent": recent,
         "batches": json.loads(json.dumps(_ledger.flock_batches(rows, (_dtm.datetime.utcnow() + _dtm.timedelta(hours=3)).date()), default=_ledger_json)),
         "options": {"paid_by": _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS]), "loss_kinds": list(_ledger.LOSS_KINDS)},
+        "lists": json.loads(json.dumps(_ledger.masterdata(project_id), default=_ledger_json)),
+        "receivables": json.loads(json.dumps(_ledger.receivables(rows, (_dtm.datetime.utcnow() + _dtm.timedelta(hours=3)).date()), default=_ledger_json)),
         "can_write": is_admin or payload.get("sub") in _LEDGER_WRITERS, "is_admin": is_admin,
         "reads_ledger": _ledger_reads(project_id),
     }
@@ -7071,6 +7073,87 @@ def ledger_scorecard(project_id: str, request: Request):
     out = _proj.score(got["model"], _ledger.load(project_id), treasury, today)
     out["source"] = {"title": got["source_title"], "url": got["source_url"], "version": got["version"], "imported_at": _ledger_json(got["imported_at"])}
     return json.loads(json.dumps(out, default=_ledger_json))
+
+
+@app.get("/api/ledger/{project_id}/lists")
+def ledger_lists(project_id: str, request: Request):
+    """The dropdown lists (items, suppliers, buyers, units): any logged-in member can read them."""
+    import ledger as _ledger
+    _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    return json.loads(json.dumps(_ledger.masterdata(project_id), default=_ledger_json))
+
+
+@app.post("/api/ledger/{project_id}/lists/{kind}")
+async def ledger_list_add(project_id: str, kind: str, request: Request):
+    """Add to a list (the 'add new' behind every dropdown). Recorders and admins."""
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    if kind not in ("item", "supplier", "buyer", "unit"):
+        raise _HE(status_code=404, detail="Unknown list")
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    _ledger_ready(project_id)
+    try:
+        if kind == "unit":
+            return {"ok": True, "name": _ledger.add_unit(project_id, body, who)}
+        if kind == "item":
+            return {"ok": True, "id": _ledger.add_item(project_id, body, who, _ledger.masterdata(project_id)["units"])}
+        return {"ok": True, "id": _ledger.add_party(project_id, kind, body, who)}
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
+
+
+@app.put("/api/ledger/{project_id}/lists/{kind}/{row_id}")
+async def ledger_list_update(project_id: str, kind: str, row_id: int, request: Request):
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    if kind not in ("supplier", "buyer"):
+        raise _HE(status_code=404, detail="Only suppliers and buyers can be edited")
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id, write=True)
+    _ledger_ready(project_id)
+    try:
+        ok = _ledger.update_party(project_id, row_id, body, who)
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
+    if not ok:
+        raise _HE(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+@app.delete("/api/ledger/{project_id}/lists/{kind}/{row_id}")
+def ledger_list_retire(project_id: str, kind: str, row_id: int, request: Request):
+    """Stop offering an entry in the dropdown. Past records keep their spelling."""
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    if kind not in ("item", "supplier", "buyer"):
+        raise _HE(status_code=404, detail="Unknown list")
+    who, payload, _w = _ledger_actor(request, project_id, write=True)
+    if payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Admins only")
+    _ledger_ready(project_id)
+    if not _ledger.retire(project_id, kind, row_id, who):
+        raise _HE(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+@app.post("/api/ledger/{project_id}/sale/{row_id}/payment")
+async def ledger_sale_payment(project_id: str, row_id: int, request: Request):
+    """Money received on a credit sale."""
+    import ledger as _ledger
+    import datetime as _d
+    from fastapi import HTTPException as _HE
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id, write=True, reported_by=body.get("reported_by"))
+    _ledger_ready(project_id)
+    today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
+    try:
+        return {"ok": True, **_ledger.record_payment(project_id, row_id, body.get("amount"), body.get("date"), who, today)}
+    except LookupError:
+        raise _HE(status_code=404, detail="Sale not found")
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
 
 
 @app.post("/api/ledger/{project_id}/notes")
@@ -7133,7 +7216,12 @@ async def ledger_add(project_id: str, kind: str, request: Request):
     payers = _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS])
     try:
         if kind == "expense":
-            row = _ledger.validate_expense(body, today, payers, products)
+            lists = _ledger.masterdata(project_id)
+            if not body.get("uom"):                                            # the item's usual unit, so Solomon need not pick it
+                hit = next((i for i in lists["items"] if i["name"].lower() == _ledger.canon(body.get("item")).lower()), None)
+                if hit:
+                    body = dict(body, uom=hit["default_uom"])
+            row = _ledger.validate_expense(body, today, payers, products, lists["units"])
         elif kind == "sale":
             row = _ledger.validate_sale(body, today, products)
         elif kind == "loss":
