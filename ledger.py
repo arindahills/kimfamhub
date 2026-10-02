@@ -344,6 +344,114 @@ def chicken_data(rows):
     }
 
 
+# ── drill-down: tap a summary card to see what is behind it (ADR-032, ticket #99) ────────────────
+DRILL_CARDS = ("sales", "spoilt", "opex", "capex", "stock", "expected")
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+_DRILL_LABEL = {"sales": "Total sales", "spoilt": "Spoilt / lost", "opex": "Running costs (OPEX)", "capex": "Equipment (CapEx)",
+                "stock": "Stock at cost", "expected": "Expected sales"}
+
+
+def _drill_source(rows, card):
+    """-> (records, date_key, amount_of, group_of, line_of). Each record is a ledger row."""
+    names = {p["product_id"]: p["name"].capitalize() for p in rows["products"]}
+    if card == "sales":
+        return (rows["sales"], "sale_date", lambda r: r["total"], lambda r: names.get(r["product_id"], r["product_id"]),
+                lambda r: {"title": names.get(r["product_id"], r["product_id"]), "detail": "%d at %s%s" % (r["qty"], "{:,}".format(r["unit_price"]), (" to " + r["buyer"]) if r.get("buyer") else ""), "amount": r["total"]})
+    if card == "spoilt":
+        return (rows["losses"], "loss_date", lambda r: r["total"], lambda r: names.get(r["product_id"], r["product_id"]),
+                lambda r: {"title": names.get(r["product_id"], r["product_id"]), "detail": "%d %s: %s" % (r["qty"], (r.get("kind") or "").lower(), r.get("reason") or ""), "amount": r["total"]})
+    if card in ("opex", "capex"):
+        recs = [e for e in rows["expenses"] if e["kind"] == card]
+        grp = (lambda r: expense_category(r["item"])) if card == "opex" else (lambda r: r["item"])
+        return (recs, "expense_date", lambda r: r["total"], grp,
+                lambda r: {"title": r["item"], "detail": " · ".join(x for x in ("%d × %s" % (r["qty"], "{:,}".format(r["unit_price"])) if r["qty"] else "", r.get("supplier") or "",
+                           ("paid by " + r["paid_by"]) if r.get("paid_by") else "") if x), "amount": r["total"]})
+    raise ValueError("unknown card")
+
+
+def drill(rows, card, group=None, year=None, month=None):
+    """One level of the drill-down for a summary card. Every level sums to its parent.
+    sales / spoilt / opex / capex: total, then by product (or cost category), then year, month, lines.
+    stock / expected: total, then per product (quantity on hand and its value), then the movements behind it."""
+    if card not in DRILL_CARDS:
+        raise ValueError("unknown card")
+    st = statement(rows)
+    total_key = {"sales": "sales", "spoilt": "spoilt", "opex": "opex", "capex": "capex", "stock": "available_stock_cost", "expected": "expected_sales"}[card]
+    crumbs = [{"label": _DRILL_LABEL[card], "params": {}}]
+    if card in ("stock", "expected"):
+        names = {p["product_id"]: p["name"].capitalize() for p in rows["products"]}
+        per = st["per_product"]
+        if group is None:
+            items = [{"key": names[pid], "label": names[pid], "count": per[pid]["qty_available"],
+                      "amount": per[pid]["available_stock" if card == "stock" else "expected_sales"],
+                      "note": "%d in stock" % per[pid]["qty_available"]} for pid in names]
+            items = [i for i in items if i["amount"] or i["count"]]
+            items.sort(key=lambda i: -i["amount"])
+            return {"card": card, "label": _DRILL_LABEL[card], "total": st[total_key], "level": "group", "crumbs": crumbs,
+                    "rows": _shares(items, st[total_key]), "lines": []}
+        pid = next((p for p, n in names.items() if n == group), None)
+        mv = [{"date": s["event_date"], "title": "Stocked" if s["kind"] == "purchase" else "Collected / produced", "detail": "", "qty": s["qty"]} for s in rows["stock"] if s["product_id"] == pid]
+        mv += [{"date": s["sale_date"], "title": "Sold", "detail": s.get("buyer") or "", "qty": -s["qty"]} for s in rows["sales"] if s["product_id"] == pid]
+        mv += [{"date": l["loss_date"], "title": "Lost" if (l.get("kind") or "") != "Used" else "Used", "detail": l.get("reason") or "", "qty": -l["qty"]} for l in rows["losses"] if l["product_id"] == pid]
+        mv.sort(key=lambda m: m["date"])
+        bal = 0
+        lines = []
+        for m in mv:
+            bal += m["qty"]
+            lines.append({"date": m["date"].isoformat(), "title": m["title"], "detail": m["detail"], "amount": m["qty"], "balance": bal, "unit": "pcs"})
+        lines.reverse()
+        crumbs.append({"label": group, "params": {"group": group}})
+        item = per.get(pid, {"qty_available": 0})
+        return {"card": card, "label": _DRILL_LABEL[card], "total": per[pid]["available_stock" if card == "stock" else "expected_sales"] if pid else 0,
+                "level": "movements", "crumbs": crumbs, "rows": [], "lines": lines, "qty_available": item["qty_available"]}
+
+    recs, dkey, amount_of, group_of, line_of = _drill_source(rows, card)
+    total = sum(amount_of(r) for r in recs)
+    if group is None:
+        bucket = {}
+        for r in recs:
+            b = bucket.setdefault(group_of(r), {"key": group_of(r), "label": group_of(r), "count": 0, "amount": 0})
+            b["count"] += 1; b["amount"] += amount_of(r)
+        items = sorted(bucket.values(), key=lambda i: -i["amount"])
+        return {"card": card, "label": _DRILL_LABEL[card], "total": total, "level": "group", "crumbs": crumbs, "rows": _shares(items, total), "lines": []}
+    recs = [r for r in recs if group_of(r) == group]
+    crumbs.append({"label": group, "params": {"group": group}})
+    gtotal = sum(amount_of(r) for r in recs)
+    if year is None:
+        bucket = {}
+        for r in recs:
+            y = r[dkey].year
+            b = bucket.setdefault(y, {"key": str(y), "label": str(y), "count": 0, "amount": 0})
+            b["count"] += 1; b["amount"] += amount_of(r)
+        items = sorted(bucket.values(), key=lambda i: -int(i["key"]))
+        return {"card": card, "label": _DRILL_LABEL[card], "total": gtotal, "level": "year", "crumbs": crumbs, "rows": _shares(items, gtotal), "lines": []}
+    recs = [r for r in recs if r[dkey].year == int(year)]
+    crumbs.append({"label": str(year), "params": {"group": group, "year": int(year)}})
+    ytotal = sum(amount_of(r) for r in recs)
+    if month is None:
+        bucket = {}
+        for r in recs:
+            mo = r[dkey].month
+            b = bucket.setdefault(mo, {"key": str(mo), "label": _MONTHS[mo - 1], "count": 0, "amount": 0})
+            b["count"] += 1; b["amount"] += amount_of(r)
+        items = sorted(bucket.values(), key=lambda i: -int(i["key"]))
+        return {"card": card, "label": _DRILL_LABEL[card], "total": ytotal, "level": "month", "crumbs": crumbs, "rows": _shares(items, ytotal), "lines": []}
+    recs = sorted([r for r in recs if r[dkey].month == int(month)], key=lambda r: (r[dkey], r.get("id") or 0), reverse=True)
+    crumbs.append({"label": _MONTHS[int(month) - 1], "params": {"group": group, "year": int(year), "month": int(month)}})
+    lines = []
+    for r in recs:
+        ln = line_of(r)
+        ln.update({"date": r[dkey].isoformat(), "id": r.get("id"), "receipt_url": r.get("receipt_url")})
+        lines.append(ln)
+    return {"card": card, "label": _DRILL_LABEL[card], "total": sum(amount_of(r) for r in recs), "level": "lines", "crumbs": crumbs, "rows": [], "lines": lines}
+
+
+def _shares(items, total):
+    for i in items:
+        i["share"] = round(100.0 * i["amount"] / total, 1) if total else 0
+    return items
+
+
 # ── database layer (ADR-032) ──────────────────────────────────────────────────────────────────
 _LOCK_KEY = 778813
 _READY = False

@@ -7030,6 +7030,20 @@ def ledger_entries(project_id: str, request: Request, kind: str = "expense", lim
                                          % (_LEDGER_TABLE[kind], dk), (project_id, max(1, min(limit, 1000)))))}
 
 
+@app.get("/api/ledger/{project_id}/drill/{card}")
+def ledger_drill(project_id: str, card: str, request: Request, group: str = None, year: int = None, month: int = None):
+    """One level of the summary-card drill-down (total, product or category, year, month, lines)."""
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    try:
+        out = _ledger.drill(_ledger.load(project_id), card, group, year, month)
+    except ValueError as e:
+        raise _HE(status_code=404, detail=str(e))
+    return json.loads(json.dumps(out, default=_ledger_json))
+
+
 @app.get("/api/ledger/{project_id}/scorecard")
 def ledger_scorecard(project_id: str, request: Request):
     """Actual performance scored against the original proposal (ADR-033). Any logged-in member."""
