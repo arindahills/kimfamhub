@@ -727,6 +727,14 @@ _DDL_MASTER = [
     """CREATE TABLE IF NOT EXISTS ledger_shops (%s,
         name TEXT NOT NULL, lat DOUBLE PRECISION, lng DOUBLE PRECISION, radius_m INTEGER NOT NULL DEFAULT 1000,
         active BOOLEAN NOT NULL DEFAULT TRUE)""" % _COMMON,
+    """CREATE TABLE IF NOT EXISTS ledger_cash_moves (%s,
+        move_date DATE NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('opening','handover','banked')),
+        from_holder TEXT, to_holder TEXT NOT NULL, amount BIGINT NOT NULL CHECK (amount > 0), note TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','acknowledged','rejected')),
+        decided_by TEXT, decided_at TIMESTAMPTZ, decision_note TEXT, receipt_url TEXT)""" % _COMMON,
+    """CREATE TABLE IF NOT EXISTS ledger_sale_payments (
+        id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, sale_id INTEGER NOT NULL, amount BIGINT NOT NULL,
+        paid_on DATE NOT NULL, received_by TEXT NOT NULL, created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
     """CREATE TABLE IF NOT EXISTS ledger_units (
         id SERIAL PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT 'import',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
@@ -747,6 +755,7 @@ def ready():
                 for ddl in _DDL:
                     cur.execute(ddl)
                 cur.execute("ALTER TABLE ledger_expenses ADD COLUMN IF NOT EXISTS uom TEXT")          # unit of measure, additive
+                cur.execute("ALTER TABLE ledger_sales ADD COLUMN IF NOT EXISTS held_by TEXT")      # who holds the cash from a cash sale
                 for ddl in _DDL_MASTER:                                                                  # reference data (ticket: dropdowns)
                     cur.execute(ddl)
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ledger_parties_name_uq ON ledger_parties(project_id, kind, lower(name)) WHERE deleted_at IS NULL")
@@ -843,8 +852,29 @@ FIRST_DATE = _dt.date(2024, 1, 1)
 LOSS_KINDS = ("Damaged", "Used")
 
 
+CLUB_ACCOUNT = "Club account"          # the Treasurer's bank account: a holder of cash like any other
+HELD_PREFIX = "Held cash: "            # an expense paid from cash someone holds (not their own money)
+CUSTODIANS = ("Israel", "Hellen", "Hillary")   # members who can hold farm cash besides Solomon's float
+
+
 def paid_by_options(member_names):
-    return [PAID_BY_FARM, PAID_BY_CLUB] + list(member_names) + [PAID_BY_UNKNOWN]
+    held = [HELD_PREFIX + m for m in member_names if m in CUSTODIANS]
+    return [PAID_BY_FARM, PAID_BY_CLUB] + held + list(member_names) + [PAID_BY_UNKNOWN]
+
+
+def holders(member_names):
+    """Who can hold farm cash: Solomon's float, any member, or the club account itself."""
+    return [PAID_BY_FARM] + list(member_names) + [CLUB_ACCOUNT]
+
+
+def holder_of_expense(paid_by):
+    """The holder an expense was paid from, or None when it was paid with someone's own money / by the club."""
+    p = paid_by or ""
+    if p == PAID_BY_FARM:
+        return PAID_BY_FARM
+    if p.startswith(HELD_PREFIX):
+        return p[len(HELD_PREFIX):]
+    return None
 
 
 def _need_date(v, today):
@@ -908,7 +938,7 @@ def validate_expense(d, today, allowed_payers, products, units=None):
     return out
 
 
-def validate_sale(d, today, products):
+def validate_sale(d, today, products, holder_names=None, require_holder=False):
     pid = str(d.get("product_id") or "").strip()
     if pid not in products:
         raise ValueError("Pick what was sold.")
@@ -918,8 +948,16 @@ def validate_sale(d, today, products):
     if total <= 0:
         raise ValueError("Amount must be more than zero.")
     pay, buyer, due = validate_credit(d, today)
+    held = canon(d.get("held_by")) or None
+    if pay == "Cash":
+        if held is None and require_holder:
+            raise ValueError("Say who is holding the cash from this sale.")
+        if held is not None and holder_names is not None and held not in holder_names:
+            raise ValueError("Unknown holder %r." % held)
+    else:
+        held = None                                   # credit: the holder is recorded when the money arrives
     return {"product_id": pid, "sale_date": _need_date(d.get("date"), today), "qty": qty, "unit_price": price,
-            "total": total, "buyer": buyer, "payment": pay, "due_date": due}
+            "total": total, "buyer": buyer, "payment": pay, "due_date": due, "held_by": held}
 
 
 def validate_loss(d, today, products):
@@ -957,7 +995,7 @@ def validate_stock(d, today, products, allowed_payers):
 
 _INSERT = {
     "ledger_expenses": ("expense_date", "item", "supplier", "qty", "unit_price", "total", "kind", "note", "paid_by", "uom", "item_id", "supplier_id", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
-    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment", "buyer_id", "due_date", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
+    "ledger_sales": ("product_id", "sale_date", "qty", "unit_price", "total", "buyer", "payment", "buyer_id", "due_date", "held_by", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
     "ledger_losses": ("product_id", "loss_date", "qty", "total", "kind", "reason", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
     "ledger_stock": ("product_id", "event_date", "qty", "unit_cost", "total_cost", "kind", "supplier", "paid_by", "age_weeks", "supplier_id", "shop_id", "gps_lat", "gps_lng", "gps_accuracy", "gps_note", "distance_m", "gps_away"),
 }
@@ -1320,11 +1358,14 @@ def receivables(rows, today):
     return {"total": sum(b["owed"] for b in out), "overdue": sum(b["overdue"] for b in out), "buyers": out}
 
 
-def record_payment(project_id, sale_id, amount, when, who, today):
+def record_payment(project_id, sale_id, amount, when, who, today, received_by=None, holder_names=None):
     """Money received on a credit sale. Never more than is owed. -> {'owed': remaining}."""
     from db import db as _db
     amt = _need_pos(amount, "Amount")
     d = _need_date(when or today.isoformat(), today)
+    rb = canon(received_by) or None
+    if holder_names is not None and (rb is None or rb not in holder_names):
+        raise ValueError("Say who received the money.")
     with _db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT total, paid_amount, payment FROM ledger_sales WHERE id=%s AND project_id=%s AND deleted_at IS NULL FOR UPDATE", (sale_id, project_id))
@@ -1337,7 +1378,134 @@ def record_payment(project_id, sale_id, amount, when, who, today):
             if amt > total - paid:
                 raise ValueError("That is more than is owed (%s)." % "{:,}".format(total - paid))
             cur.execute("UPDATE ledger_sales SET paid_amount=paid_amount+%s, paid_on=%s WHERE id=%s", (amt, d, sale_id))
+            cur.execute("INSERT INTO ledger_sale_payments (project_id, sale_id, amount, paid_on, received_by, created_by) VALUES (%s,%s,%s,%s,%s,%s)",
+                        (project_id, sale_id, amt, d, rb or PAID_BY_FARM, who))
             return {"owed": total - paid - amt}
+
+
+# ── cash custody: who is holding the farm's cash (ADR-035) ───────────────────────────────────────────────
+# The same shape as monthly contributions: a person SUBMITS (a handover or a banking, with a slip), the receiver
+# ACKNOWLEDGES, and only an acknowledged move counts as received. Nobody acknowledges their own submission.
+MOVE_KINDS = ("opening", "handover", "banked")
+
+
+def validate_move(d, today, holder_names):
+    kind = canon(d.get("kind")).lower()
+    if kind not in MOVE_KINDS:
+        raise ValueError("A cash move is an opening declaration, a handover or a banking.")
+    to = canon(d.get("to_holder"))
+    frm = canon(d.get("from_holder")) or None
+    if to not in holder_names:
+        raise ValueError("Say who the cash went to.")
+    if kind == "opening":
+        frm = None                                    # it comes from the AppSheet-period sales, not from a person
+    else:
+        if frm not in holder_names:
+            raise ValueError("Say who the cash came from.")
+        if frm == to:
+            raise ValueError("From and to cannot be the same.")
+        if frm == CLUB_ACCOUNT:
+            raise ValueError("Money leaves the club account through the Treasurer's expense record, not here.")
+    if kind == "banked" and to != CLUB_ACCOUNT:
+        raise ValueError("Banking means paying into the club account.")
+    return {"kind": kind, "from_holder": frm, "to_holder": to, "amount": _need_pos(d.get("amount"), "Amount"),
+            "move_date": _need_date(d.get("date"), today), "note": canon(d.get("note")) or None}
+
+
+def can_acknowledge(move, who, name, is_admin, treasurer_names=("Hellen",)):
+    """Contributions rule: the submitter never acknowledges. `who` is the display name stored as created_by, `name` the login
+    name that holders are called. The Treasurer (or an admin) acknowledges the club account; the receiving person (or an
+    admin) acknowledges a handover to a person; an admin acknowledges an opening declaration."""
+    if move["status"] != "pending" or move.get("created_by") == who:
+        return False
+    if move["kind"] == "opening":
+        return is_admin
+    if move["to_holder"] == CLUB_ACCOUNT:
+        return is_admin or name in treasurer_names
+    return is_admin or name == move["to_holder"]
+
+
+def cash_position(rows, moves, payments, holder_names):
+    """Where the farm's cash is. Received: cash sales and credit payments (to whoever recorded as holding them).
+    Moves: a handover or banking leaves the sender when submitted and arrives when acknowledged. Spent: expenses
+    paid from a holder's cash. -> {holders:[...], unassigned, pending:[...], total_held_outside_club}."""
+    h = {n: {"holder": n, "received": 0, "moved_in": 0, "moved_out": 0, "spent": 0, "in_transit_in": 0, "in_transit_out": 0} for n in holder_names}
+
+    def get(n):
+        return h.setdefault(n, {"holder": n, "received": 0, "moved_in": 0, "moved_out": 0, "spent": 0, "in_transit_in": 0, "in_transit_out": 0})
+    unassigned = 0
+    for sl in rows["sales"]:
+        if (sl.get("payment") or "Cash") != "Cash":
+            continue
+        if sl.get("held_by"):
+            get(sl["held_by"])["received"] += sl["total"]
+        else:
+            unassigned += sl["total"]
+    for pm in payments or []:
+        get(pm["received_by"])["received"] += pm["amount"]
+    opening_ack = 0
+    for m in moves or []:
+        if m["status"] == "rejected":
+            continue
+        if m["kind"] == "opening":
+            if m["status"] == "acknowledged":
+                get(m["to_holder"])["moved_in"] += m["amount"]; opening_ack += m["amount"]
+            else:
+                get(m["to_holder"])["in_transit_in"] += m["amount"]
+            continue
+        get(m["from_holder"])["moved_out"] += m["amount"]          # it has left the sender's hands either way
+        if m["status"] == "acknowledged":
+            get(m["to_holder"])["moved_in"] += m["amount"]
+        else:
+            get(m["to_holder"])["in_transit_in"] += m["amount"]; get(m["from_holder"])["in_transit_out"] += m["amount"]
+    for e in rows["expenses"]:
+        src = holder_of_expense(e.get("paid_by"))
+        if src:
+            get(src)["spent"] += e["total"]
+    out = []
+    for n, x in h.items():
+        x["balance"] = x["received"] + x["moved_in"] - x["moved_out"] - x["spent"]
+        if any(v for k, v in x.items() if k != "holder") or n in holder_names:
+            out.append(x)
+    held_outside = sum(max(x["balance"], 0) for x in out if x["holder"] != CLUB_ACCOUNT)
+    return {"holders": out, "unassigned": max(unassigned - opening_ack, 0), "unassigned_total": unassigned,
+            "pending": [m for m in (moves or []) if m["status"] == "pending"], "held_outside_club": held_outside}
+
+
+def submit_move(project_id, d, who, today, holder_names):
+    from db import db as _db
+    row = validate_move(d, today, holder_names)
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO ledger_cash_moves (project_id, created_by, source, move_date, kind, from_holder, to_holder, amount, note) "
+                        "VALUES (%s,%s,'app',%s,%s,%s,%s,%s,%s) RETURNING id",
+                        (project_id, who, row["move_date"], row["kind"], row["from_holder"], row["to_holder"], row["amount"], row["note"]))
+            return cur.fetchone()[0]
+
+
+def decide_move(project_id, move_id, approve, note, who, name, is_admin):
+    """Acknowledge or reject a pending move, under the rules in can_acknowledge. -> new status."""
+    from db import db as _db
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT kind, to_holder, status, created_by FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL FOR UPDATE", (move_id, project_id))
+            got = cur.fetchone()
+            if not got:
+                raise LookupError("Not found")
+            m = {"kind": got[0], "to_holder": got[1], "status": got[2], "created_by": got[3]}
+            if m["status"] != "pending":
+                raise ValueError("That move has already been %s." % m["status"])
+            if not can_acknowledge(m, who, name, is_admin):
+                raise PermissionError("You cannot acknowledge this one (not your own submission; the receiver or the Treasurer does).")
+            st = "acknowledged" if approve else "rejected"
+            cur.execute("UPDATE ledger_cash_moves SET status=%s, decided_by=%s, decided_at=now(), decision_note=%s WHERE id=%s", (st, who, canon(note) or None, move_id))
+            return st
+
+
+def load_cash(project_id):
+    from db import query as _q
+    return (_q("SELECT * FROM ledger_cash_moves WHERE project_id=%s AND deleted_at IS NULL ORDER BY move_date DESC, id DESC", (project_id,)),
+            _q("SELECT sale_id, amount, paid_on, received_by FROM ledger_sale_payments WHERE project_id=%s", (project_id,)))
 
 
 # ── reconciliation (ADR-032 decisions 4-6) ──────────────────────────────────────────────────
@@ -1381,7 +1549,7 @@ def classify_treasury(r):
     return "other"
 
 
-def build_reconciliation(rows, treasury, links, notes):
+def build_reconciliation(rows, treasury, links, notes, moves=None, payments=None, holder_names=None):
     """Pure. rows = ledger rows, treasury = club expenditure rows for the project, links =
     reimbursement links [{expenditure_id, amount}], notes = [{item_key, body, explained, author, created_at}].
     Two accounts, never merged: the farm cash box (the ledger) and the club treasury."""
@@ -1436,6 +1604,18 @@ def build_reconciliation(rows, treasury, links, notes):
     gap = cash_out - cash_in
     items.append(item("gap", "Farm spent more than it was given and earned" if gap > 0 else "Farm holds more than it spent",
                       abs(gap), "Capital %s + sales %s in, opex %s + capex %s out." % tuple("{:,}".format(x) for x in (capital, st["sales"], st["opex"], st["capex"]))))
+    cash = cash_position(rows, moves, payments, holder_names or [PAID_BY_FARM, CLUB_ACCOUNT])
+    if cash["unassigned"] > 0:
+        items.append(item("cash:unassigned", "Cash sales with no recorded holder", cash["unassigned"],
+                          "%s of cash sales (the AppSheet period and sales recorded by message) have no recorded holder. Declare who holds it under Cash, "
+                          "then the Treasurer acknowledges." % "{:,}".format(cash["unassigned"])))
+    for m in cash["pending"]:
+        items.append(item("cash:pending:%d" % m["id"], "Waiting for acknowledgement", m["amount"],
+                          "%s: %s to %s, submitted by %s on %s." % (m["kind"].capitalize(), m.get("from_holder") or "AppSheet-period sales", m["to_holder"], m.get("created_by"), _d(m["move_date"]))))
+    for x in cash["holders"]:
+        if x["balance"] < 0 and x["holder"] != CLUB_ACCOUNT:
+            items.append(item("cash:negative:" + x["holder"], "Spent more cash than is recorded as held", -x["balance"],
+                              "%s has spent %s from held cash but is recorded as receiving %s. Either some receipts or handovers are missing, or it was paid with their own money." % (x["holder"], "{:,}".format(x["spent"]), "{:,}".format(x["received"] + x["moved_in"]))))
     pay = {}
     for e in rows["expenses"]:
         w = e.get("paid_by") or "Pre-ledger, unattributed"
@@ -1448,6 +1628,7 @@ def build_reconciliation(rows, treasury, links, notes):
         "treasury": [{"id": t["id"], "date": _d(t["txn_date"]), "description": t["description"], "amount": t["amount_ugx"],
                       "kind": kinds[t["id"]], "recorded_by": t.get("recorded_by")} for t in treasury],
         "paid_by": sorted(pay.values(), key=lambda b: -b["total"]),
+        "custody": {"holders": cash["holders"], "held_outside_club": cash["held_outside_club"], "unassigned": cash["unassigned"]},
         "open_items": items,
         "open_count": sum(1 for i in items if not i["explained"]),
     }
@@ -1460,7 +1641,9 @@ def reconciliation(project_id):
                   "WHERE project=%s ORDER BY txn_date, id", (project_id,))
     links = _q("SELECT expenditure_id, amount FROM ledger_reimbursements WHERE project_id=%s AND deleted_at IS NULL", (project_id,))
     notes = _q("SELECT item_key, body, explained, author, created_at FROM ledger_notes WHERE project_id=%s", (project_id,))
-    return build_reconciliation(rows, treasury, links, notes)
+    moves = _q("SELECT * FROM ledger_cash_moves WHERE project_id=%s AND deleted_at IS NULL ORDER BY move_date, id", (project_id,))
+    payments = _q("SELECT sale_id, amount, paid_on, received_by FROM ledger_sale_payments WHERE project_id=%s", (project_id,))
+    return build_reconciliation(rows, treasury, links, notes, moves, payments)
 
 
 def fetch_snapshot(sheet_id, service_account_path, tabs=None):

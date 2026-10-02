@@ -12,7 +12,8 @@ const ugx = (n: number | null | undefined) => (n == null ? '-' : Number(n).toLoc
 const today = () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10)
 const card = 'rounded-[12px] border border-[var(--border)] bg-[var(--card)] p-4'
 const input = 'w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm text-[var(--foreground)] outline-none'
-const who = (n?: string | null) => (n === 'Israel' ? 'Dad (Israel)' : n === 'Merab' ? 'Mum (Merab)' : n ?? '')
+const nice = (n?: string | null) => (n === 'Israel' ? 'Dad (Israel)' : n === 'Merab' ? 'Mum (Merab)' : n ?? '')
+const who = (n?: string | null) => (n && n.startsWith('Held cash: ') ? 'Cash held by ' + nice(n.slice(11)) : nice(n))
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong. Try again.')
 const btn = 'h-11 rounded-[10px] bg-[#166534] px-5 text-sm font-semibold text-white disabled:opacity-40'
 
@@ -32,6 +33,7 @@ interface Recon {
   paid_by: { who: string; count: number; total: number }[]
   treasury: { id: number; date: string; description: string; amount: number; kind: string }[]
   open_items: Item[]; open_count: number
+  custody: { holders: { holder: string; received: number; moved_in: number; moved_out: number; spent: number; balance: number; in_transit_in: number }[]; held_outside_club: number; unassigned: number }
 }
 interface Kpi { key: string; label: string; plan: number; plan_as_written: number; actual: number; pct: number | null; status: 'green' | 'amber' | 'red' }
 interface MonthRow {
@@ -66,6 +68,7 @@ interface Lists { items: Item[]; suppliers: Party[]; buyers: Party[]; units: str
 interface Fix { lat: number; lng: number; accuracy: number; at: number }
 interface Receivables { total: number; overdue: number; buyers: { buyer: string; owed: number; count: number; overdue: number; oldest: string | null }[] }
 interface Summary {
+  holders: string[]
   lists: Lists; receivables: Receivables
   batches: Batch[]
   statement: Record<string, number>; products: Product[]; recent: Record<string, Row[]>
@@ -366,6 +369,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
     try {
       const body: Record<string, unknown> = { ...f }
       if (kind === 'expense' && !birds) delete body.product_id
+      if (kind === 'sale' && (f.payment || 'Cash') === 'Cash' && !body.held_by) { const r = localStorage.getItem('ledger_held_by'); if (r) body.held_by = r }
       if (noLoc && s.is_admin) body.gps_override_reason = f.gps_reason || ''
       else { const g = await loc.fresh(); body.gps = { lat: g.lat, lng: g.lng, accuracy: g.accuracy } }
       const res = await call(api('/' + kind), 'POST', body)
@@ -461,6 +465,14 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
           <L t="Price each (UGX)">{money('unit_price')}</L>
         </div>
         <L t="Paid"><select className={input} value={f.payment || 'Cash'} onChange={e => set('payment', e.target.value)}><option value="Cash">Cash, paid now</option><option value="Credit">On credit, paid later</option></select></L>
+        {(f.payment || 'Cash') === 'Cash' && (
+          <L t="Cash received by (who is holding it now)">
+            <select className={input} value={f.held_by || localStorage.getItem('ledger_held_by') || ''} onChange={e => { set('held_by', e.target.value); try { localStorage.setItem('ledger_held_by', e.target.value) } catch { /* private window */ } }}>
+              <option value="">Choose…</option>
+              {s.holders.map(h => <option key={h} value={h}>{nice(h)}</option>)}
+            </select>
+          </L>
+        )}
         <L t={f.payment === 'Credit' ? 'Buyer (required for credit)' : 'Buyer (optional)'}><PartyPicker kind="buyer" value={f.buyer || ''} parties={s.lists.buyers} onChange={v => set('buyer', v)} onAdded={reload} /></L>
         {f.payment === 'Credit' && <L t="Promised payment date (optional)"><input type="date" className={input} value={f.due_date || ''} onChange={e => set('due_date', e.target.value)} style={{ colorScheme: 'dark' }} /></L>}
       </>}
@@ -504,11 +516,12 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
   const dateOf = (r: Row) => r.expense_date || r.sale_date || r.loss_date || r.event_date
   const label = (r: Row) => kind === 'expense' ? r.item : (s.products.find(p => p.product_id === r.product_id)?.name ?? r.product_id)
   const amt = (r: Row) => (kind === 'stock' ? r.total_cost : r.total)
-  const pay = async (r: Row) => {
-    const owed = (r.total ?? 0) - (r.paid_amount ?? 0)
-    const a = window.prompt(`How much was received from ${r.buyer ?? 'the buyer'}? (owed ${ugx(owed)})`, String(owed))
-    if (!a) return
-    try { await call(api(`/sale/${r.id}/payment`), 'POST', { amount: a.replace(/[^0-9]/g, '') }); setErr(''); q.refetch(); onChanged() } catch (e) { setErr(errMsg(e)) }
+  const [payRow, setPayRow] = useState<number | null>(null)
+  const [payAmt, setPayAmt] = useState('')
+  const [payBy, setPayBy] = useState('')
+  const pay = (r: Row) => { setPayRow(r.id); setPayAmt(String((r.total ?? 0) - (r.paid_amount ?? 0))); setPayBy(localStorage.getItem('ledger_held_by') || '') }
+  const savePay = async (r: Row) => {
+    try { await call(api(`/sale/${r.id}/payment`), 'POST', { amount: payAmt.replace(/[^0-9]/g, ''), received_by: payBy }); setErr(''); setPayRow(null); q.refetch(); onChanged() } catch (e) { setErr(errMsg(e)) }
   }
   const remove = async (r: Row) => {
     if (!window.confirm(`Remove this entry (${label(r)}, ${ugx(amt(r))})?`)) return
@@ -525,7 +538,7 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
       {err && <div className="rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{err}</div>}
       <div className={card + ' divide-y divide-[var(--border)] !p-0'}>
         {(q.data?.rows ?? []).map((r: Row) => (
-          <div key={r.id} className="flex items-start gap-3 px-4 py-3 text-sm">
+          <div key={r.id} className="relative flex items-start gap-3 px-4 py-3 text-sm">
             <div className="min-w-0 flex-1">
               <div className="font-medium capitalize">{label(r)} {r.qty ? <span className="text-[var(--muted-2)]">× {r.qty}</span> : null}</div>
               <div className="text-xs text-[var(--muted-2)]">
@@ -539,6 +552,13 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
               </div>
             </div>
             <div className="text-right tabular-nums">{ugx(amt(r))}</div>
+            {payRow === r.id && (
+              <div className="absolute inset-x-3 z-10 mt-12 space-y-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg">
+                <input className={input} inputMode="numeric" value={payAmt ? Number(payAmt).toLocaleString('en-US') : ''} onChange={e => setPayAmt(e.target.value.replace(/[^0-9]/g, ''))} />
+                <select className={input} value={payBy} onChange={e => setPayBy(e.target.value)}><option value="">Who received the money?</option>{s.holders.map(h => <option key={h} value={h}>{nice(h)}</option>)}</select>
+                <div className="flex gap-3"><button className={btn + ' !h-9 !px-4'} onClick={() => savePay(r)}>Save</button><button className="text-xs text-[var(--muted-2)]" onClick={() => setPayRow(null)}>Cancel</button></div>
+              </div>
+            )}
             {s.can_write && kind === 'sale' && r.payment === 'Credit' && (r.paid_amount ?? 0) < (r.total ?? 0) && (
               <button onClick={() => pay(r)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[#60a5fa]">Got paid</button>
             )}
@@ -828,6 +848,103 @@ function ListsTab({ s }: { s: Summary }) {
   )
 }
 
+interface Move { id: number; kind: 'opening' | 'handover' | 'banked'; from_holder: string | null; to_holder: string; amount: number; move_date: string; note: string | null; status: 'pending' | 'acknowledged' | 'rejected'; created_by: string; decided_by: string | null; decision_note: string | null; receipt_url: string | null; can_acknowledge: boolean }
+interface CashData { holders: { holder: string; received: number; moved_in: number; moved_out: number; spent: number; balance: number; in_transit_in: number; in_transit_out: number }[]; unassigned: number; held_outside_club: number; moves: Move[]; options: string[] }
+const MOVE_LABEL: Record<Move['kind'], string> = { opening: 'Opening declaration', handover: 'Handover', banked: 'Banked' }
+
+function CashTab({ s: _s }: { s: Summary }) {
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  const q = useQuery<CashData>({ queryKey: ['ledger-cash'], queryFn: () => call<CashData>(api('/cash')) })
+  const [form, setForm] = useState<null | 'opening' | 'handover' | 'banked'>(null)
+  const [f, setF] = useState<Record<string, string>>({})
+  const [file, setFile] = useState<File | null>(null)
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false)
+  if (q.error) return <div className={card + ' text-sm'}>{(q.error as Error).message}</div>
+  if (!q.data) return <div className="p-4 text-sm text-[var(--muted-2)]">Loading…</div>
+  const c = q.data
+  const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger-cash'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }) }
+  const open = (k: 'opening' | 'handover' | 'banked') => { setForm(k); setErr(''); setFile(null); setF({ date: today(), amount: k === 'opening' ? String(c.unassigned) : '', to_holder: k === 'banked' ? 'Club account' : '', from_holder: localStorage.getItem('ledger_held_by') || '' }) }
+  const submit = async () => {
+    if (!form) return
+    setBusy(true)
+    try {
+      const res = await call(api('/cash/move'), 'POST', { ...f, kind: form })
+      if (file) { const fd = new FormData(); fd.append('file', file); await fetch(api(`/cash/move/${res.id}/receipt`), { method: 'POST', credentials: 'include', body: fd }) }
+      setForm(null); refresh()
+    } catch (e) { setErr(errMsg(e)) }
+    setBusy(false)
+  }
+  const decide = async (m: Move, approve: boolean) => {
+    const note = approve ? '' : (window.prompt('Why are you rejecting it?') ?? null)
+    if (!approve && note === null) return
+    try { await call(api(`/cash/move/${m.id}/decision`), 'POST', { approve, note }); refresh() } catch (e) { setErr(errMsg(e)) }
+  }
+  const withdraw = async (m: Move) => { if (window.confirm('Withdraw this submission?')) { try { await call(api(`/cash/move/${m.id}`), 'DELETE'); refresh() } catch (e) { setErr(errMsg(e)) } } }
+  const badge = (st: Move['status']) => <span className="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase" style={{ borderColor: st === 'acknowledged' ? '#22c55e' : st === 'rejected' ? '#f87171' : '#fbbf24', color: st === 'acknowledged' ? '#4ade80' : st === 'rejected' ? '#f87171' : '#fbbf24' }}>{st === 'pending' ? 'waiting' : st}</span>
+  const money = (k: string) => <input className={input} inputMode="numeric" value={f[k] ? Number(f[k]).toLocaleString('en-US') : ''} onChange={e => setF(o => ({ ...o, [k]: e.target.value.replace(/[^0-9]/g, '') }))} />
+  const sel = (k: string, label: string, opts: string[], fixed?: boolean) => (
+    <L t={label}><select className={input} disabled={fixed} value={f[k] || ''} onChange={e => setF(o => ({ ...o, [k]: e.target.value }))}><option value="">Choose…</option>{opts.map(o => <option key={o} value={o}>{nice(o)}</option>)}</select></L>
+  )
+  return (
+    <div className="space-y-3">
+      <p className="px-1 text-xs text-[var(--muted-2)]">Where the farm's cash physically is. Cash from sales is not in the club account until it is banked, but every shilling is tracked: whoever hands it over or banks it submits it with a slip, and the receiver (the Treasurer for the club account) acknowledges it, like a contribution.</p>
+      {c.unassigned > 0 && (
+        <div className={card + ' border-[#92400e]'}>
+          <div className="text-sm font-semibold text-[#fbbf24]">{ugx(c.unassigned)} of cash sales has no recorded holder</div>
+          <p className="mt-1 text-xs text-[var(--muted-2)]">These are the AppSheet-period sales (and any sold by message). Declare who is holding the cash; the Treasurer or an admin then acknowledges it.</p>
+          <button className={btn + ' mt-2 !h-9 !px-4'} onClick={() => open('opening')}>Declare who holds it</button>
+        </div>
+      )}
+      <div className={card}>
+        <div className="mb-2 flex items-baseline justify-between"><div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Cash held</div>
+          <div className="text-xs text-[var(--muted-2)]">outside the club account: <b className="text-[var(--foreground)]">{ugx(c.held_outside_club)}</b></div></div>
+        {c.holders.filter(h => h.received || h.moved_in || h.moved_out || h.spent || h.in_transit_in).map(h => (
+          <div key={h.holder} className="border-t border-[var(--border)] py-2 first:border-0">
+            <div className="flex justify-between text-sm"><span className="font-medium">{nice(h.holder)}</span><span className="font-bold tabular-nums" style={{ color: h.balance < 0 ? '#f87171' : undefined }}>{ugx(h.balance)}</span></div>
+            <div className="text-xs text-[var(--muted-2)]">received {ugx(h.received + h.moved_in)} · handed on {ugx(h.moved_out)} · spent {ugx(h.spent)}{h.in_transit_in ? ` · ${ugx(h.in_transit_in)} on its way` : ''}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <button className={btn + ' !h-10 flex-1'} onClick={() => open('handover')}>Hand over cash</button>
+        <button className={btn + ' !h-10 flex-1'} onClick={() => open('banked')}>Banked</button>
+      </div>
+      {err && <div className="rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{err}</div>}
+      {form && (
+        <div className={card + ' space-y-2.5'}>
+          <div className="text-sm font-semibold">{MOVE_LABEL[form]}</div>
+          {form === 'opening' ? sel('to_holder', 'Who is holding it?', c.options.filter(o => o !== 'Club account'))
+            : <>{sel('from_holder', 'From', c.options.filter(o => o !== 'Club account'))}{sel('to_holder', form === 'banked' ? 'Paid into' : 'To', form === 'banked' ? ['Club account'] : c.options.filter(o => o !== f.from_holder), form === 'banked')}</>}
+          <L t="Amount (UGX)">{money('amount')}</L>
+          <L t="Date"><input type="date" className={input} max={today()} value={f.date || ''} onChange={e => setF(o => ({ ...o, date: e.target.value }))} style={{ colorScheme: 'dark' }} /></L>
+          <L t="Note (optional)"><input className={input} value={f.note || ''} onChange={e => setF(o => ({ ...o, note: e.target.value }))} /></L>
+          {form !== 'opening' && <L t={form === 'banked' ? 'Deposit slip photo' : 'Photo of the handover note (optional)'}><input type="file" accept="image/*,application/pdf" className="text-xs" onChange={e => setFile(e.target.files?.[0] ?? null)} /></L>}
+          <div className="flex gap-3"><button className={btn} disabled={busy} onClick={submit}>{busy ? 'Submitting…' : 'Submit'}</button><button className="text-sm text-[var(--muted-2)]" onClick={() => setForm(null)}>Cancel</button></div>
+          <p className="text-[11px] text-[var(--muted-2)]">It counts once the {form === 'banked' ? 'Treasurer' : 'receiver'} acknowledges it.</p>
+        </div>
+      )}
+      <div className={card + ' divide-y divide-[var(--border)] !p-0'}>
+        {c.moves.map(m => (
+          <div key={m.id} className="space-y-1 px-4 py-3 text-sm">
+            <div className="flex items-center justify-between gap-2"><span className="font-medium">{MOVE_LABEL[m.kind]}: {ugx(m.amount)}</span>{badge(m.status)}</div>
+            <div className="text-xs text-[var(--muted-2)]">{m.move_date} · {m.from_holder ? nice(m.from_holder) + ' → ' : 'AppSheet-period sales → '}{nice(m.to_holder)} · submitted by {m.created_by}{m.decided_by ? ` · ${m.status} by ${m.decided_by}` : ''}{m.receipt_url && <> · <a className="underline" href={m.receipt_url} target="_blank" rel="noreferrer">slip</a></>}</div>
+            {m.note && <div className="text-xs text-[var(--muted-2)]">{m.note}</div>}
+            {m.decision_note && <div className="text-xs text-[#fca5a5]">{m.decision_note}</div>}
+            {m.status === 'pending' && (
+              <div className="flex gap-3 pt-1 text-xs font-semibold">
+                {m.can_acknowledge && <><button className="text-[#4ade80]" onClick={() => decide(m, true)}>Acknowledge</button><button className="text-[#f87171]" onClick={() => decide(m, false)}>Reject</button></>}
+                {(m.created_by === user?.display || user?.role === 'admin') && <button className="text-[var(--muted-2)]" onClick={() => withdraw(m)}>Withdraw</button>}
+              </div>
+            )}
+          </div>
+        ))}
+        {c.moves.length === 0 && <div className="p-4 text-sm text-[var(--muted-2)]">No handovers or bankings yet.</div>}
+      </div>
+    </div>
+  )
+}
+
 function ReconTab({ s }: { s: Summary }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['ledger-recon'], queryFn: () => call<Recon>(api('/reconciliation')) })
@@ -864,6 +981,14 @@ function ReconTab({ s }: { s: Summary }) {
           <b className="tabular-nums" style={{ color: fb.gap > 0 ? '#f87171' : '#4ade80' }}>{ugx(Math.abs(fb.gap))}</b>
         </div>
         <p className="mt-2 text-xs text-[var(--muted-2)]">The club treasury is a separate account: capital and the club's own payments are listed below, never mixed into the farm's spending.</p>
+      </div>
+
+      <div className={card}>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Where the cash is held</div>
+        {r.custody.holders.filter(h => h.balance || h.received || h.moved_in).map(h => (
+          <div key={h.holder} className="flex justify-between py-1 text-sm"><span>{nice(h.holder)}</span><span className="tabular-nums" style={{ color: h.balance < 0 ? '#f87171' : undefined }}>{ugx(h.balance)}</span></div>
+        ))}
+        <div className="mt-1 border-t border-[var(--border)] pt-1 text-xs text-[var(--muted-2)]">Held outside the club account: {ugx(r.custody.held_outside_club)}{r.custody.unassigned ? ` · with no recorded holder: ${ugx(r.custody.unassigned)}` : ''}. See the Cash tab.</div>
       </div>
 
       <div className={card}>
@@ -935,14 +1060,14 @@ function ReconTab({ s }: { s: Summary }) {
 export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'lists' | 'recon'>('summary')
+  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon'>('summary')
   const [sumKey, setSumKey] = useState(0)          // tapping Summary always returns from a drill-down to the cards
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
   const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }); qc.invalidateQueries({ queryKey: ['ledger-entries'] }) }
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-6 text-sm text-[var(--muted-2)]">Loading the chicken ledger…</div>
   const s = q.data
-  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'lists' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['lists', 'Lists'], ['recon', 'Reconciliation']]
+  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['cash', 'Cash'], ['lists', 'Lists'], ['recon', 'Reconciliation']]
   return (
     <div className="mx-auto max-w-2xl space-y-3 px-4 pb-24 pt-4">
       <div>
@@ -959,6 +1084,7 @@ export default function LedgerPage() {
       {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
       {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
+      {tab === 'cash' && <CashTab s={s} />}
       {tab === 'lists' && <ListsTab s={s} />}
       {tab === 'recon' && <ReconTab s={s} />}
     </div>

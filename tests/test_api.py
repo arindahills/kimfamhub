@@ -1851,3 +1851,113 @@ class TestLocationAndShops:
             {"id": 3, "product_id": "p", "sale_date": datetime.date(2026, 9, 3), "qty": 1, "unit_price": 10, "total": 10, "source": "appsheet_import", "gps_lat": None}]}
         keys = {i["key"]: i for i in ledger.build_reconciliation(rows, [], [], [])["open_items"]}
         assert keys["gps:missing"]["amount"] == 1 and keys["gps:away"]["amount"] == 1        # the imported AppSheet row is not counted
+
+
+class TestCashCustody:
+    """ADR-035: who holds the farm's cash. Submit, acknowledge, balances; nothing is entered twice."""
+
+    H = ["Farm cash (Solomon)", "Israel", "Hellen", "Hillary", "Club account"]
+
+    @staticmethod
+    def _rows():
+        import datetime
+        d = datetime.date
+        return {"products": [], "stock": [], "losses": [],
+                "sales": [{"id": 1, "product_id": "p", "qty": 1, "unit_price": 1, "payment": "Cash", "total": 100000, "held_by": "Israel", "sale_date": d(2026, 9, 1)},
+                          {"id": 2, "product_id": "p", "qty": 1, "unit_price": 1, "payment": "Cash", "total": 50000, "held_by": "Farm cash (Solomon)", "sale_date": d(2026, 9, 2)},
+                          {"id": 3, "product_id": "p", "qty": 1, "unit_price": 1, "payment": "Cash", "total": 80000, "held_by": None, "sale_date": d(2026, 1, 2)},          # AppSheet period
+                          {"id": 4, "product_id": "p", "qty": 1, "unit_price": 1, "payment": "Credit", "total": 70000, "held_by": None, "paid_amount": 0, "sale_date": d(2026, 9, 3)}],
+                "expenses": [{"id": 1, "item": "Feed", "total": 30000, "kind": "opex", "paid_by": "Held cash: Israel", "expense_date": d(2026, 9, 5)},
+                             {"id": 2, "item": "Feed", "total": 20000, "kind": "opex", "paid_by": "Israel", "expense_date": d(2026, 9, 6)},        # own pocket
+                             {"id": 3, "item": "Feed", "total": 10000, "kind": "opex", "paid_by": "Farm cash (Solomon)", "expense_date": d(2026, 9, 7)}]}
+
+    def _bal(self, pos):
+        return {x["holder"]: x["balance"] for x in pos["holders"]}
+
+    def test_received_minus_spent_from_held_cash_only(self):
+        import ledger
+        pos = ledger.cash_position(self._rows(), [], [], self.H)
+        b = self._bal(pos)
+        assert b["Israel"] == 100000 - 30000                 # the 20,000 he paid with his own money is NOT taken from held cash
+        assert b["Farm cash (Solomon)"] == 50000 - 10000
+        assert pos["unassigned"] == 80000                    # cash sales with no holder, and credit sales are not cash
+        assert pos["held_outside_club"] == 70000 + 40000
+
+    def test_a_handover_leaves_the_sender_at_once_and_arrives_when_acknowledged(self):
+        import ledger, datetime
+        mv = {"id": 1, "kind": "banked", "from_holder": "Israel", "to_holder": "Club account", "amount": 50000, "status": "pending", "move_date": datetime.date(2026, 9, 10), "created_by": "Dad"}
+        pos = ledger.cash_position(self._rows(), [mv], [], self.H); b = self._bal(pos)
+        assert b["Israel"] == 70000 - 50000 and b["Club account"] == 0                       # in transit: not yet the club's
+        x = next(h for h in pos["holders"] if h["holder"] == "Club account"); assert x["in_transit_in"] == 50000
+        pos2 = ledger.cash_position(self._rows(), [dict(mv, status="acknowledged")], [], self.H); b2 = self._bal(pos2)
+        assert b2["Israel"] == 20000 and b2["Club account"] == 50000 and pos2["held_outside_club"] == 20000 + 40000
+        pos3 = ledger.cash_position(self._rows(), [dict(mv, status="rejected")], [], self.H)
+        assert self._bal(pos3)["Israel"] == 70000                                              # a rejected move never happened
+
+    def test_opening_declaration_assigns_the_appsheet_period_cash(self):
+        import ledger, datetime
+        op = {"id": 2, "kind": "opening", "from_holder": None, "to_holder": "Israel", "amount": 80000, "status": "acknowledged", "move_date": datetime.date(2026, 10, 1), "created_by": "Hillary"}
+        pos = ledger.cash_position(self._rows(), [op], [], self.H)
+        assert pos["unassigned"] == 0 and self._bal(pos)["Israel"] == 70000 + 80000
+
+    def test_credit_payments_count_where_they_were_received(self):
+        import ledger, datetime
+        pay = [{"sale_id": 4, "amount": 25000, "paid_on": datetime.date(2026, 9, 20), "received_by": "Israel"}]
+        assert self._bal(ledger.cash_position(self._rows(), [], pay, self.H))["Israel"] == 70000 + 25000
+
+    def test_move_validation(self):
+        import ledger, datetime
+        today = datetime.date(2026, 10, 1)
+        ok = ledger.validate_move({"kind": "banked", "from_holder": "Israel", "to_holder": "Club account", "amount": "50,000", "date": "2026-09-30"}, today, self.H)
+        assert ok["amount"] == 50000 and ok["from_holder"] == "Israel"
+        for bad, why in (({"kind": "banked", "from_holder": "Israel", "to_holder": "Hellen", "amount": 5, "date": "2026-09-30"}, "paying into the club"),
+                         ({"kind": "handover", "from_holder": "Club account", "to_holder": "Israel", "amount": 5, "date": "2026-09-30"}, "treasurer"),
+                         ({"kind": "handover", "from_holder": "Israel", "to_holder": "Israel", "amount": 5, "date": "2026-09-30"}, "same"),
+                         ({"kind": "handover", "from_holder": "Israel", "to_holder": "Nobody", "amount": 5, "date": "2026-09-30"}, "went to"),
+                         ({"kind": "handover", "from_holder": "Israel", "to_holder": "Hellen", "amount": 0, "date": "2026-09-30"}, "more than zero"),
+                         ({"kind": "swap", "to_holder": "Hellen", "amount": 5, "date": "2026-09-30"}, "opening declaration")):
+            with pytest.raises(ValueError, match="(?i)" + why):
+                ledger.validate_move(bad, today, self.H)
+        op = ledger.validate_move({"kind": "opening", "from_holder": "Israel", "to_holder": "Israel", "amount": 9, "date": "2026-09-30"}, today, self.H)
+        assert op["from_holder"] is None                         # an opening declaration comes from the AppSheet-period sales, never a person
+
+    def test_nobody_acknowledges_their_own_submission(self):
+        import ledger
+        mv = {"kind": "banked", "to_holder": "Club account", "status": "pending", "created_by": "Dad (Israel)"}
+        assert ledger.can_acknowledge(mv, "Dad (Israel)", "Israel", True) is False           # not even an admin
+        assert ledger.can_acknowledge(mv, "Hellen", "Hellen", True) is True                  # the Treasurer
+        assert ledger.can_acknowledge(mv, "Mum (Merab)", "Merab", False) is False
+        ho = {"kind": "handover", "to_holder": "Israel", "status": "pending", "created_by": "Solomon"}
+        assert ledger.can_acknowledge(ho, "Dad (Israel)", "Israel", False) is True           # the receiver
+        assert ledger.can_acknowledge(ho, "Alex", "Alex", False) is False
+        op = {"kind": "opening", "to_holder": "Israel", "status": "pending", "created_by": "Hillary"}
+        assert ledger.can_acknowledge(op, "Hellen", "Hellen", True) is True and ledger.can_acknowledge(op, "Dad (Israel)", "Israel", False) is False
+        assert ledger.can_acknowledge(dict(mv, status="acknowledged"), "Hellen", "Hellen", True) is False
+
+    def test_a_cash_sale_must_say_who_holds_the_cash_in_the_app(self):
+        import ledger, datetime
+        today = datetime.date(2026, 10, 1); prods = {"p1": {"sell_price": 400, "cost_price": 0}}
+        base = {"date": "2026-09-30", "product_id": "p1", "qty": 30}
+        with pytest.raises(ValueError, match="(?i)holding the cash"):
+            ledger.validate_sale(base, today, prods, self.H, require_holder=True)
+        assert ledger.validate_sale(base, today, prods, self.H, require_holder=False)["held_by"] is None             # a message: not inferred from the sender
+        assert ledger.validate_sale(dict(base, held_by="Israel"), today, prods, self.H, True)["held_by"] == "Israel"
+        with pytest.raises(ValueError, match="(?i)unknown holder"):
+            ledger.validate_sale(dict(base, held_by="Stranger"), today, prods, self.H, True)
+        assert ledger.validate_sale(dict(base, payment="Credit", buyer="B", held_by="Israel"), today, prods, self.H, True)["held_by"] is None   # credit: set on payment
+
+    def test_expense_payer_options_include_held_cash(self):
+        import ledger
+        opts = ledger.paid_by_options(["Israel", "Solomon", "Hellen", "Alex"])
+        assert "Held cash: Israel" in opts and "Held cash: Hellen" in opts and "Held cash: Alex" not in opts and ledger.PAID_BY_FARM in opts
+        assert ledger.holder_of_expense("Held cash: Israel") == "Israel" and ledger.holder_of_expense("Israel") is None and ledger.holder_of_expense("Club") is None
+
+    def test_reconciliation_shows_custody_and_its_open_items(self):
+        import ledger, datetime
+        d = datetime.date
+        mv = [{"id": 7, "kind": "handover", "from_holder": "Israel", "to_holder": "Hellen", "amount": 10000, "status": "pending", "move_date": d(2026, 9, 10), "created_by": "Dad"}]
+        rows = self._rows(); rows["expenses"].append({"id": 4, "item": "Feed", "total": 500000, "kind": "opex", "paid_by": "Held cash: Hellen", "expense_date": d(2026, 9, 8)})
+        r = ledger.build_reconciliation(rows, [], [], [], mv, [], self.H)
+        keys = {i["key"]: i for i in r["open_items"]}
+        assert keys["cash:unassigned"]["amount"] == 80000 and "cash:pending:7" in keys and "cash:negative:Hellen" in keys
+        assert r["custody"]["held_outside_club"] > 0 and any(h["holder"] == "Israel" for h in r["custody"]["holders"])

@@ -7022,6 +7022,7 @@ def ledger_summary(project_id: str, request: Request):
         "batches": json.loads(json.dumps(_ledger.flock_batches(rows, (_dtm.datetime.utcnow() + _dtm.timedelta(hours=3)).date()), default=_ledger_json)),
         "options": {"paid_by": _ledger.paid_by_options([m["name"] for m in _auth.MEMBERS]), "loss_kinds": list(_ledger.LOSS_KINDS)},
         "lists": json.loads(json.dumps(_ledger.masterdata(project_id), default=_ledger_json)),
+        "holders": _ledger.holders([x["name"] for x in _auth.MEMBERS]),
         "receivables": json.loads(json.dumps(_ledger.receivables(rows, (_dtm.datetime.utcnow() + _dtm.timedelta(hours=3)).date()), default=_ledger_json)),
         "can_write": is_admin or payload.get("sub") in _LEDGER_WRITERS, "is_admin": is_admin,
         "reads_ledger": _ledger_reads(project_id),
@@ -7153,11 +7154,110 @@ async def ledger_sale_payment(project_id: str, row_id: int, request: Request):
     _ledger_ready(project_id)
     today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
     try:
-        return {"ok": True, **_ledger.record_payment(project_id, row_id, body.get("amount"), body.get("date"), who, today)}
+        import auth as _auth
+        return {"ok": True, **_ledger.record_payment(project_id, row_id, body.get("amount"), body.get("date"), who, today,
+                                                      received_by=body.get("received_by"), holder_names=_ledger.holders([x["name"] for x in _auth.MEMBERS]))}
     except LookupError:
         raise _HE(status_code=404, detail="Sale not found")
     except ValueError as e:
         raise _HE(status_code=422, detail=str(e))
+
+
+@app.get("/api/ledger/{project_id}/cash")
+def ledger_cash(project_id: str, request: Request):
+    """Where the farm's cash is, and the moves waiting for acknowledgement. Any logged-in member can read it."""
+    import ledger as _ledger, auth as _auth
+    who, payload, _w = _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    rows = _ledger.load(project_id)
+    moves, payments = _ledger.load_cash(project_id)
+    pos = _ledger.cash_position(rows, moves, payments, _ledger.holders([x["name"] for x in _auth.MEMBERS]))
+    is_admin = payload.get("role") == "admin"
+    name = payload.get("sub")
+    for mv in moves:
+        mv["can_acknowledge"] = _ledger.can_acknowledge(mv, who, name, is_admin) if mv["status"] == "pending" else False
+    out = {"holders": pos["holders"], "unassigned": pos["unassigned"], "held_outside_club": pos["held_outside_club"],
+           "moves": moves, "options": _ledger.holders([x["name"] for x in _auth.MEMBERS])}
+    return json.loads(json.dumps(out, default=_ledger_json))
+
+
+@app.post("/api/ledger/{project_id}/cash/move")
+async def ledger_cash_submit(project_id: str, request: Request):
+    """Submit an opening declaration, a handover or a banking. It counts once the receiver acknowledges it."""
+    import ledger as _ledger, auth as _auth
+    import datetime as _d
+    from fastapi import HTTPException as _HE
+    body = await request.json()
+    who, _p, _w = _ledger_actor(request, project_id)           # any member can submit what they handed over
+    _ledger_ready(project_id)
+    today = (_d.datetime.utcnow() + _d.timedelta(hours=3)).date()
+    try:
+        mid = _ledger.submit_move(project_id, body, who, today, _ledger.holders([x["name"] for x in _auth.MEMBERS]))
+    except ValueError as e:
+        raise _HE(status_code=422, detail=str(e))
+    return {"ok": True, "id": mid, "status": "pending"}
+
+
+@app.post("/api/ledger/{project_id}/cash/move/{move_id}/decision")
+async def ledger_cash_decide(project_id: str, move_id: int, request: Request):
+    import ledger as _ledger
+    from fastapi import HTTPException as _HE
+    body = await request.json()
+    who, payload, _w = _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    try:
+        st = _ledger.decide_move(project_id, move_id, bool(body.get("approve")), body.get("note"), who, payload.get("sub"), payload.get("role") == "admin")
+    except LookupError:
+        raise _HE(status_code=404, detail="Not found")
+    except PermissionError as e:
+        raise _HE(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise _HE(status_code=409, detail=str(e))
+    return {"ok": True, "status": st}
+
+
+@app.post("/api/ledger/{project_id}/cash/move/{move_id}/receipt")
+async def ledger_cash_receipt(project_id: str, move_id: int, request: Request):
+    """The deposit slip or handover note for a move."""
+    import re as _re
+    from fastapi import HTTPException as _HE
+    from db import query as _q, execute as _x
+    who, payload, _w = _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    row = _q("SELECT created_by FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (move_id, project_id))
+    if not row:
+        raise _HE(status_code=404, detail="Not found")
+    if row[0]["created_by"] != who and payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Only who submitted it can add the slip")
+    file = (await request.form()).get("file")
+    if not file:
+        raise _HE(status_code=400, detail="No file uploaded")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise _HE(status_code=413, detail="File is over 15 MB")
+    name = _re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "slip")
+    (_ledger_receipt_dir() / ("move_%d_%s" % (move_id, name))).write_bytes(data)
+    url = "/api/ledger/receipt/move/%d" % move_id
+    _x("UPDATE ledger_cash_moves SET receipt_url=%s WHERE id=%s", (url, move_id))
+    return {"ok": True, "receipt_url": url}
+
+
+@app.delete("/api/ledger/{project_id}/cash/move/{move_id}")
+def ledger_cash_withdraw(project_id: str, move_id: int, request: Request):
+    """Withdraw your own submission while it is still pending."""
+    from fastapi import HTTPException as _HE
+    from db import query as _q, execute as _x
+    who, payload, _w = _ledger_actor(request, project_id)
+    _ledger_ready(project_id)
+    row = _q("SELECT created_by, status FROM ledger_cash_moves WHERE id=%s AND project_id=%s AND deleted_at IS NULL", (move_id, project_id))
+    if not row:
+        raise _HE(status_code=404, detail="Not found")
+    if row[0]["status"] != "pending":
+        raise _HE(status_code=409, detail="Only a pending move can be withdrawn")
+    if row[0]["created_by"] != who and payload.get("role") != "admin":
+        raise _HE(status_code=403, detail="Only who submitted it can withdraw it")
+    _x("UPDATE ledger_cash_moves SET deleted_at=now(), deleted_by=%s WHERE id=%s", (who, move_id))
+    return {"ok": True}
 
 
 @app.post("/api/ledger/{project_id}/notes")
@@ -7227,7 +7327,7 @@ async def ledger_add(project_id: str, kind: str, request: Request):
                     body = dict(body, uom=hit["default_uom"])
             row = _ledger.validate_expense(body, today, payers, products, lists["units"])
         elif kind == "sale":
-            row = _ledger.validate_sale(body, today, products)
+            row = _ledger.validate_sale(body, today, products, _ledger.holders([x["name"] for x in _auth.MEMBERS]), require_holder=not via_wa)
         elif kind == "loss":
             row = _ledger.validate_loss(body, today, products)
         else:
@@ -7313,7 +7413,7 @@ def ledger_receipt_get(kind: str, row_id: int, request: Request):
     from fastapi.responses import FileResponse as _FR
     if not _auth_verify(_get_tok(request)):
         raise _HE(status_code=401, detail="Auth required")
-    hits = sorted(_ledger_receipt_dir().glob("%s_%d_*" % (kind, row_id))) if kind in ("expense", "sale", "stock") else []
+    hits = sorted(_ledger_receipt_dir().glob("%s_%d_*" % (kind, row_id))) if kind in ("expense", "sale", "stock", "move") else []
     if not hits:
         raise _HE(status_code=404, detail="No receipt")
     return _FR(str(hits[-1]))
