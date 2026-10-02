@@ -1505,7 +1505,7 @@ def decide_move(project_id, move_id, approve, note, who, name, is_admin):
 def load_cash(project_id):
     from db import query as _q
     return (_q("SELECT * FROM ledger_cash_moves WHERE project_id=%s AND deleted_at IS NULL ORDER BY move_date DESC, id DESC", (project_id,)),
-            _q("SELECT sale_id, amount, paid_on, received_by FROM ledger_sale_payments WHERE project_id=%s", (project_id,)))
+            _q("SELECT p.sale_id, p.amount, p.paid_on, p.received_by FROM ledger_sale_payments p JOIN ledger_sales s ON s.id=p.sale_id AND s.deleted_at IS NULL WHERE p.project_id=%s", (project_id,)))
 
 
 # ── reconciliation (ADR-032 decisions 4-6) ──────────────────────────────────────────────────
@@ -1642,7 +1642,7 @@ def reconciliation(project_id):
     links = _q("SELECT expenditure_id, amount FROM ledger_reimbursements WHERE project_id=%s AND deleted_at IS NULL", (project_id,))
     notes = _q("SELECT item_key, body, explained, author, created_at FROM ledger_notes WHERE project_id=%s", (project_id,))
     moves = _q("SELECT * FROM ledger_cash_moves WHERE project_id=%s AND deleted_at IS NULL ORDER BY move_date, id", (project_id,))
-    payments = _q("SELECT sale_id, amount, paid_on, received_by FROM ledger_sale_payments WHERE project_id=%s", (project_id,))
+    payments = _q("SELECT p.sale_id, p.amount, p.paid_on, p.received_by FROM ledger_sale_payments p JOIN ledger_sales s ON s.id=p.sale_id AND s.deleted_at IS NULL WHERE p.project_id=%s", (project_id,))
     return build_reconciliation(rows, treasury, links, notes, moves, payments)
 
 
