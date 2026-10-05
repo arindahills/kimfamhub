@@ -24,6 +24,7 @@ interface Summary {
   opening_balance: number
   total_contributions_paid: number
   total_loan_payments: number
+  project_cash_banked?: number
   total_expenditure: number
   computed_balance: number
   confirmed_bank_balance: number
@@ -1379,6 +1380,7 @@ export default function FinancesPage() {
             ['Opening Balance (Jan 2023)', summary.opening_balance, ''],
             ['Total Contributions Collected', summary.total_contributions_paid, '#22c55e'],
             ['+ Loan Repayments Received', summary.total_loan_payments, '#86efac'],
+            ...((summary.project_cash_banked ?? 0) > 0 ? [['+ Chicken sales banked (Treasurer acknowledged)', summary.project_cash_banked ?? 0, '#86efac'] as [string, number, string]] : []),
             ['- Total Expenditure', summary.total_expenditure, ''],
           ] as [string, number, string][]).map(([label, val, color]) => (
             <div key={label} className="flex justify-between text-sm py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>

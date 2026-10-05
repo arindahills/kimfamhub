@@ -256,6 +256,19 @@ def get_account_info():
 # ──────────────────────────────────────────────────────────
 # GET /api/contributions/summary
 # ──────────────────────────────────────────────────────────
+def _banked_from_projects():
+    """Project cash banked into the club account and acknowledged by the Treasurer (chicken sales so far), read from the
+    project ledger (ADR-035). Read only: the Treasurer records nothing extra, and this is 0 where the ledger is not live."""
+    try:
+        if not query("SELECT to_regclass('ledger_cash_moves') AS t")[0]["t"]:
+            return 0
+        r = query("SELECT COALESCE(SUM(amount),0) AS t FROM ledger_cash_moves WHERE kind='banked' AND to_holder='Club account' "
+                  "AND status='acknowledged' AND deleted_at IS NULL")
+        return int(r[0]["t"])
+    except Exception:
+        return 0
+
+
 @router.get("/summary")
 def get_summary():
     """Club-level finance summary computed from PostgreSQL."""
@@ -282,7 +295,8 @@ def get_summary():
         bal = compute_family_balance(row["id"])
         combined_balance_total += bal["combined_balance"]
 
-    computed_balance = OPENING_BALANCE + total_paid + total_loan_payments - total_expenditure
+    banked_projects = _banked_from_projects()
+    computed_balance = OPENING_BALANCE + total_paid + total_loan_payments + banked_projects - total_expenditure
 
     # Confirmed bank balance (Hellen-verified)
     cfg = query("SELECT key, value FROM club_config WHERE key IN ('confirmed_bank_balance','confirmed_balance_date')")
@@ -301,6 +315,7 @@ def get_summary():
         "opening_obligations":        opening_obligations,
         "total_contributions_paid":   total_paid,
         "total_loan_payments":        total_loan_payments,
+        "project_cash_banked":        banked_projects,
         "total_expenditure":          total_expenditure,
         "computed_balance":           computed_balance,
         "confirmed_bank_balance":     confirmed_balance,

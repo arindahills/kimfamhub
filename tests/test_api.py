@@ -2153,3 +2153,26 @@ class TestKlaFamAcknowledgements:
         monkeypatch.setattr(notifications, "IS_STAGING", False)
         notifications.notify_klafam("x")
         assert calls == [notifications.GROUP_KLAFAM]
+
+
+class TestClubBalanceIncludesBankedProjectCash:
+    def test_banked_cash_counts_only_when_acknowledged_and_the_table_exists(self, monkeypatch):
+        import contributions as c
+        calls = []
+
+        def q(sql, args=()):
+            calls.append(sql)
+            if "to_regclass" in sql:
+                return [{"t": "ledger_cash_moves"}]
+            assert "status='acknowledged'" in sql and "kind='banked'" in sql and "to_holder='Club account'" in sql and "deleted_at IS NULL" in sql
+            return [{"t": 1000000}]
+        monkeypatch.setattr(c, "query", q)
+        assert c._banked_from_projects() == 1000000
+        monkeypatch.setattr(c, "query", lambda sql, args=(): [{"t": None}])           # ledger not live (prod before cut-over)
+        assert c._banked_from_projects() == 0
+        monkeypatch.setattr(c, "query", lambda sql, args=(): (_ for _ in ()).throw(RuntimeError("db")))
+        assert c._banked_from_projects() == 0                                          # never breaks the Club Finances page
+
+    def test_summary_adds_it_to_the_expected_balance(self):
+        src = open(os.path.join(_APP_ROOT, "contributions.py")).read()
+        assert "total_loan_payments + banked_projects - total_expenditure" in src and '"project_cash_banked"' in src
