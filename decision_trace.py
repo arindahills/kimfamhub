@@ -742,6 +742,11 @@ def quote_context(transcript, quote_start, quote, lines=CONTEXT_LINES):
     transcript is never returned: only the quote's own lines plus the context, each capped in length."""
     if not transcript or quote_start is None or not quote or not (0 <= quote_start < len(transcript)):
         return None
+    # the transcript may have been edited or re-imported since extraction: the offset must still hold this quote,
+    # otherwise unrelated lines would be shown as its context
+    start, _end, _unique = find_quote_span(quote, transcript, span=(quote_start, quote_start + 1))
+    if start < 0:
+        return {"before": [], "quote": quote, "after": []}
     parts = transcript.split("\n")
     pos = 0
     spans = []
@@ -822,14 +827,15 @@ def _action_rows(refs, project_id):
     from db import query as _q
     out = []
     for ref in refs:
-        a = _q("SELECT id, ref, description, assignee, assignees, deadline, status FROM actions WHERE ref=%s", (ref,))
+        a = _q("SELECT id, ref, description, assignee, assignees, deadline, status FROM actions WHERE ref=%s AND project_id=%s AND "
+               + private_clause("meeting_id"), (ref, project_id))
         if not a:
             continue
         a = a[0]
         ups = _q("SELECT created_at, author, type, text FROM action_updates WHERE action_id=%s "
                  "ORDER BY created_at, id", (a["id"],))
         out.append({"ref": a["ref"], "description": a["description"],
-                    "assignees": a["assignees"] or a["assignee"], "deadline": _iso(a["deadline"]), "status": a["status"],
+                    "assignees": (", ".join(x for x in a["assignees"] if x) if isinstance(a["assignees"], (list, tuple)) and a["assignees"] else (a["assignee"] or "")), "deadline": _iso(a["deadline"]), "status": a["status"],
                     "updates": [{"at": _iso(u["created_at"]), "author": u["author"], "type": u["type"], "text": u["text"]}
                                 for u in ups]})
     return out
@@ -838,12 +844,12 @@ def _action_rows(refs, project_id):
 def trace(project_id, target_type, target_ref):
     """The chain for one target: decisions (confirmed or suggested links only, private meetings skipped, quote
     with context from the stored transcript), linked actions and outcome rows. Reads only."""
-    from db import query as _q
     if target_type not in TRACE_TARGETS:
         raise ValueError("target_type")
     target_ref = str(target_ref).strip()
     if not target_ref:
         raise ValueError("target_ref")
+    from db import query as _q
     rows = _q("SELECT d.*, m.date AS meeting_date, m.transcript AS _transcript, l.state AS link_state, l.relation AS link_relation "
               "FROM decision_links l JOIN decisions d ON d.id=l.decision_id JOIN meetings m ON m.id=d.meeting_id "
               "WHERE l.target_type=%s AND l.target_ref=%s AND l.state<>'rejected' AND d.project_id=%s AND d.deleted_at IS NULL AND "

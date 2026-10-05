@@ -110,7 +110,7 @@ interface TraceDecision {
   amount_ugx: number | null; suggested: boolean; quote: TraceQuote | null
 }
 interface TraceUpdate { at: string | null; author: string | null; type: string | null; text: string | null }
-interface TraceAction { ref: string; description: string | null; assignees: string | null; deadline: string | null; status: string | null; updates: TraceUpdate[] }
+interface TraceAction { ref: string; description: string | null; assignees: string; deadline: string | null; status: string | null; updates: TraceUpdate[] }
 interface TraceOutcomeRow { target_type: string; target_ref: string; date: string | null; label: string | null; amount: number | null; state: string }
 interface Trace { decisions: TraceDecision[]; actions: TraceAction[]; outcome: { rows: TraceOutcomeRow[]; total: number }; found: boolean }
 interface RegisterDecision {
@@ -164,7 +164,7 @@ function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onC
   const t = q.data
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center" onClick={onClose}>
-      <div role="dialog" aria-label="Why" className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-[var(--border)] bg-[var(--background)] p-4 pb-8 sm:rounded-2xl" onClick={e => e.stopPropagation()}>
+      <div role="dialog" aria-label="Why" tabIndex={-1} ref={el => el?.focus()} onKeyDown={e => { if (e.key === 'Escape') onClose() }} className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-[var(--border)] bg-[var(--background)] p-4 pb-8 sm:rounded-2xl" onClick={e => e.stopPropagation()}>
         <div className="mb-3 flex items-start justify-between gap-3">
           <div><div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Why?</div><div className="text-sm font-semibold">{target.title}</div></div>
           <button onClick={onClose} aria-label="Close" className="text-[var(--muted-2)]">✕</button>
@@ -212,7 +212,7 @@ function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onC
                 ))}
               </li>
             ))}
-            {t.outcome.rows.length > 0 && (
+            {(t.found || t.actions.length > 0) && t.outcome.rows.length > 0 && (
               <li className="relative">
                 <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-[#fbbf24]" />
                 <div className="text-[10px] font-bold uppercase text-[var(--muted-2)]">Outcome</div>

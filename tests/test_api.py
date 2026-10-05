@@ -2201,11 +2201,12 @@ class TestTraceChain:
 
     def test_context_never_returns_whole_transcript_and_clips_edges(self):
         import decision_trace as dt
-        q = "line one"
-        c = dt.quote_context(self.T, 0, q)
+        T = "line one is here\nline two\nline three\nline four\n"
+        q = "line one is here"
+        c = dt.quote_context(T, 0, q)
         assert c["before"] == [] and c["after"] == ["line two", "line three"]
-        big = "\n".join("x%d" % i for i in range(100))
-        c = dt.quote_context(big, big.index("x50"), "x50")
+        big = "\n".join("this is spoken line %03d" % i for i in range(100))
+        c = dt.quote_context(big, big.index("this is spoken line 050"), "this is spoken line 050")
         assert len(c["before"]) + len(c["after"]) == 4
 
     def test_context_absent_when_offset_missing_or_wrong(self):
@@ -2217,8 +2218,8 @@ class TestTraceChain:
 
     def test_long_lines_are_clipped(self):
         import decision_trace as dt
-        t = "a" * 2000 + "\nquote here"
-        assert len(dt.quote_context(t, 2001, "quote here")["before"][0]) == dt.MAX_LINE
+        t = "a" * 2000 + "\nthe quote is here"
+        assert len(dt.quote_context(t, 2001, "the quote is here")["before"][0]) == dt.MAX_LINE
 
     def test_rejected_links_hidden(self):
         import decision_trace as dt
@@ -2291,3 +2292,48 @@ class TestWritesAreCommitted:
         src = open(os.path.join(_APP_ROOT, "db.py")).read()
         body = src[src.index("def execute_returning("):]
         assert "conn.commit()" in body and "conn.rollback()" in body and "fetchall()" in body
+
+
+
+class TestTraceReviewFixes:
+    """Fixes from the independent review of the Why? panel (5 Oct)."""
+
+    def test_context_is_only_shown_when_the_offset_still_holds_the_quote(self):
+        import decision_trace as dt
+        tr = "secret line A\nsecret line B\nsecret line C\nwe agree to buy fifty widgets now\nafter one\nafter two\nafter three\n"
+        q = "we agree to buy fifty widgets now"
+        good = dt.quote_context(tr, tr.index(q), q)
+        assert good["before"][-1] == "secret line C" and good["after"][0] == "after one"
+        stale = dt.quote_context(tr, 0, q)                                  # an offset from an older version of the transcript
+        assert stale == {"before": [], "quote": q, "after": []}              # never unrelated lines as context
+
+    def test_assignees_are_joined_on_the_server_and_actions_respect_project_and_privacy(self):
+        src = open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+        body = src[src.index("def _action_rows("):src.index("def trace(")]
+        assert '", ".join(x for x in a["assignees"] if x)' in body
+        assert "AND project_id=%s AND" in body and 'private_clause("meeting_id")' in body
+
+    def test_unknown_targets_are_refused_before_any_database_access(self, monkeypatch):
+        import sys, types, decision_trace as dt
+        fake = types.ModuleType("db")
+        monkeypatch.setitem(sys.modules, "db", fake)                       # importing a name from this fake would raise ImportError
+        for bad in ("kpi", "nonsense", ""):
+            with pytest.raises(ValueError):
+                dt.trace("proj-a", bad, "1")
+        with pytest.raises(ValueError):
+            dt.trace("proj-a", "ledger_expense", "  ")
+
+    def test_trace_drops_decisions_from_private_meetings_and_hides_rejected_links(self, monkeypatch):
+        import sys, types, decision_trace as dt
+        seen = []
+        fake = types.ModuleType("db")
+
+        def q(sql, args=()):
+            seen.append(sql)
+            return []
+        fake.query = q
+        monkeypatch.setitem(sys.modules, "db", fake)
+        dt.trace("proj-a", "ledger_expense", "5")
+        main_sql = next(x for x in seen if "FROM decision_links l JOIN decisions d" in x)
+        assert "l.state<>'rejected'" in main_sql and "d.deleted_at IS NULL" in main_sql
+        assert "decision_private_meetings" in main_sql                       # private meetings excluded in the same query
