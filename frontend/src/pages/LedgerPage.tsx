@@ -1,4 +1,4 @@
-// LedgerPage — the project ledger that replaces Solomon's AppSheet (ADR-032).
+// LedgerPage, the project ledger that replaces Solomon's AppSheet (ADR-032).
 // APIs: GET /api/ledger/{pid}, /entries, /reconciliation · POST /api/ledger/{pid}/{expense|sale|loss|stock}
 //       GET /api/trace/{pid}, /api/trace/{pid}/decisions (Why? panel, Decisions tab); POST /api/decision-register/decisions/{id}/review (admin)
 //       POST .../{kind}/{id}/receipt · DELETE .../{kind}/{id} · POST .../notes, /reimbursements (admin)
@@ -268,6 +268,101 @@ function DecisionsTab({ s }: { s: Summary }) {
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ---- Report tab (ADR-034 phase 4): a cited narrative; every sentence was checked against the evidence ----
+interface ReportSentence { text: string; cites: string[] }
+interface ReportData {
+  id: number; generated_at: string; generated_by: string; stale: boolean; stripped_count: number
+  sections: { key: string; title: string; sentences: ReportSentence[] }[]
+  stripped?: { section: string; text: string; reason: string }[]
+}
+interface ReportResp { report: ReportData | null; stale: boolean; can_generate: boolean }
+
+function citeTarget(c: string): TraceTarget | 'score' | null {
+  const id = c.slice(2).trim()
+  if (/^D\d+$/.test(c)) return { type: 'decision', ref: c.slice(1), title: `Decision ${c}` }
+  if (c.startsWith('S ')) return 'score'
+  if (c.startsWith('A ')) return { type: 'action', ref: id, title: `Action ${id}` }
+  if (c.startsWith('T ')) return { type: 'treasury_payment', ref: id, title: `Club payment ${id}` }
+  if (c.startsWith('O ')) return { type: 'open_item', ref: id, title: `Open item ${id}` }
+  if (c.startsWith('L ')) {
+    const [kind, rid] = id.split(' ')
+    return traceType[kind] && rid ? { type: traceType[kind], ref: rid, title: `${OUTCOME_LABEL[traceType[kind]] ?? kind} ${rid}` } : null
+  }
+  return null
+}
+
+function CiteChip({ c, onWhy, onScore }: { c: string; onWhy: (t: TraceTarget) => void; onScore: () => void }) {
+  const t = citeTarget(c)
+  if (!t) return <span className="text-[10px] text-[var(--muted-2)]">[{c}]</span>
+  return (
+    <button onClick={() => (t === 'score' ? onScore() : onWhy(t))} aria-label={`Show evidence ${c}`}
+      className="cite-chip mx-0.5 rounded-full border border-[var(--border)] px-1.5 py-0 align-baseline text-[10px] font-semibold text-[#60a5fa]">{c}</button>
+  )
+}
+
+function ReportSentenceView({ s, onWhy, onScore }: { s: ReportSentence; onWhy: (t: TraceTarget) => void; onScore: () => void }) {
+  return (
+    <>
+      {s.text.split(/(\[[^\]]+\])/).map((part, i) => {
+        const m = /^\[([^\]]+)\]$/.exec(part)
+        return m && s.cites.includes(m[1]) ? <CiteChip key={i} c={m[1]} onWhy={onWhy} onScore={onScore} /> : <span key={i}>{part}</span>
+      })}
+    </>
+  )
+}
+
+function ReportTab({ s, onWhy, onScore }: { s: Summary; onWhy: (t: TraceTarget) => void; onScore: () => void }) {
+  const qc = useQueryClient()
+  const q = useQuery({ queryKey: ['trace-report'], queryFn: () => call<ReportResp>(`/api/trace/${PID}/report`) })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const generate = async () => {
+    setBusy(true); setErr('')
+    try { qc.setQueryData(['trace-report'], await call<ReportResp>(`/api/trace/${PID}/report`, 'POST')) }
+    catch (e) { setErr(errMsg(e)) }
+    setBusy(false)
+  }
+  if (q.error) return <div className="p-4 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
+  if (!q.data) return <div className="p-4 text-sm text-[var(--muted-2)]">Loading…</div>
+  const r = q.data.report
+  const canGen = s.is_admin && q.data.can_generate
+  return (
+    <div className="space-y-3">
+      <style>{`@media print { body * { visibility: hidden } .report-print, .report-print * { visibility: visible } .report-print { position: absolute; left: 0; top: 0; width: 100%; background: #fff; color: #000; padding: 16px } .no-print { display: none !important } .cite-chip { border: 0; color: #000; font-weight: 400 } }`}</style>
+      <div className="no-print flex flex-wrap items-center gap-2">
+        {canGen && <button className={btn + ' !h-9 !px-4'} disabled={busy} onClick={generate}>{busy ? 'Writing…' : r ? 'Refresh the report' : 'Generate the report'}</button>}
+        {r && <button className="h-9 rounded-[10px] border border-[var(--border)] px-4 text-sm font-semibold" onClick={() => window.print()}>Print or save as PDF</button>}
+      </div>
+      {err && <div className="no-print rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{err}</div>}
+      {!r && <div className={card + ' text-sm text-[var(--muted-2)]'}>{canGen ? 'No report has been written yet. Generate one from the decisions, actions and ledger.' : 'No report has been written yet. An admin can generate one.'}</div>}
+      {r && (
+        <div className={card + ' report-print space-y-4'}>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-2)]">
+            <span>Written {r.generated_at.slice(0, 16).replace('T', ' ')} by {nice(r.generated_by)}</span>
+            {q.data.stale ? <Badge text="out of date" tone="amber" /> : <Badge text="current" tone="green" />}
+            <span>{r.stripped_count} sentence{r.stripped_count === 1 ? '' : 's'} removed for lacking evidence</span>
+          </div>
+          {q.data.stale && <div className="no-print rounded-lg bg-[var(--card-inset)] p-2.5 text-xs text-[var(--muted-2)]">The decisions, actions or ledger have changed since this was written.{canGen ? ' Refresh to rewrite it.' : ' An admin can refresh it.'}</div>}
+          {r.sections.map(sec => (
+            <section key={sec.key}>
+              <h2 className="mb-1 text-sm font-bold">{sec.title}</h2>
+              {sec.sentences.length === 0
+                ? <p className="text-xs text-[var(--muted-2)]">Nothing here is supported by the record.</p>
+                : <ul className="space-y-1.5 text-sm">{sec.sentences.map((x, i) => <li key={i}><ReportSentenceView s={x} onWhy={onWhy} onScore={onScore} /></li>)}</ul>}
+            </section>
+          ))}
+          {s.is_admin && r.stripped && r.stripped.length > 0 && (
+            <details className="no-print text-xs">
+              <summary className="cursor-pointer font-semibold text-[#60a5fa]">Show the {r.stripped.length} removed sentence{r.stripped.length === 1 ? '' : 's'}</summary>
+              <ul className="mt-2 space-y-1.5">{r.stripped.map((x, i) => <li key={i} className="rounded-lg bg-[var(--card-inset)] p-2"><div className="text-[var(--muted-2)]">{x.section} · {x.reason}</div><div>{x.text}</div></li>)}</ul>
+            </details>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1237,7 +1332,7 @@ function ReconTab({ s, onWhy }: { s: Summary; onWhy: (t: TraceTarget) => void })
 export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions'>('summary')
+  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions' | 'report'>('summary')
   const [why, setWhy] = useState<TraceTarget | null>(null)
   const [sumKey, setSumKey] = useState(0)          // tapping Summary always returns from a drill-down to the cards
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
@@ -1245,7 +1340,7 @@ export default function LedgerPage() {
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-6 text-sm text-[var(--muted-2)]">Loading the chicken ledger…</div>
   const s = q.data
-  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['cash', 'Cash'], ['lists', 'Lists'], ['recon', 'Reconciliation'], ['decisions', 'Decisions']]
+  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions' | 'report', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['cash', 'Cash'], ['lists', 'Lists'], ['recon', 'Reconciliation'], ['decisions', 'Decisions'], ['report', 'Report']]
   return (
     <div className="mx-auto max-w-2xl space-y-3 px-4 pb-24 pt-4">
       <div>
@@ -1266,6 +1361,7 @@ export default function LedgerPage() {
       {tab === 'lists' && <ListsTab s={s} />}
       {tab === 'recon' && <ReconTab s={s} onWhy={setWhy} />}
       {tab === 'decisions' && <DecisionsTab s={s} />}
+      {tab === 'report' && <ReportTab s={s} onWhy={setWhy} onScore={() => setTab('score')} />}
       {why && <WhyPanel target={why} s={s} onClose={() => setWhy(null)} />}
     </div>
   )

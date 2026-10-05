@@ -727,7 +727,7 @@ def add_link(decision_id, target_type, target_ref, relation, who, note=""):
 CONTEXT_LINES = 2
 MAX_LINE = 400
 REVIEW_STATES = ("confirmed", "corrected")
-TRACE_TARGETS = ("ledger_expense", "ledger_sale", "ledger_stock", "ledger_loss", "treasury_payment", "open_item", "action")
+TRACE_TARGETS = ("ledger_expense", "ledger_sale", "ledger_stock", "ledger_loss", "treasury_payment", "open_item", "action", "decision")
 _OUTCOME_TABLES = {   # target_type -> (table, date column, amount column, label column)
     "ledger_expense": ("ledger_expenses", "expense_date", "total", "item"),
     "ledger_sale": ("ledger_sales", "sale_date", "total", "product_id"),
@@ -850,11 +850,18 @@ def trace(project_id, target_type, target_ref):
     if not target_ref:
         raise ValueError("target_ref")
     from db import query as _q
-    rows = _q("SELECT d.*, m.date AS meeting_date, m.transcript AS _transcript, l.state AS link_state, l.relation AS link_relation "
-              "FROM decision_links l JOIN decisions d ON d.id=l.decision_id JOIN meetings m ON m.id=d.meeting_id "
-              "WHERE l.target_type=%s AND l.target_ref=%s AND l.state<>'rejected' AND d.project_id=%s AND d.deleted_at IS NULL AND "
-              + private_clause("d.meeting_id") + " ORDER BY m.date, d.quote_start NULLS LAST, d.id",
-              (target_type, target_ref, project_id))
+    if target_type == "decision":     # a citation [D<id>] in the report: the decision itself, with its own links
+        if not target_ref.isdigit():
+            raise ValueError("target_ref")
+        rows = _q("SELECT d.*, m.date AS meeting_date, m.transcript AS _transcript, 'confirmed' AS link_state, 'explains' AS link_relation "
+                  "FROM decisions d JOIN meetings m ON m.id=d.meeting_id WHERE d.id=%s AND d.project_id=%s AND d.deleted_at IS NULL AND "
+                  + private_clause("d.meeting_id"), (int(target_ref), project_id))
+    else:
+        rows = _q("SELECT d.*, m.date AS meeting_date, m.transcript AS _transcript, l.state AS link_state, l.relation AS link_relation "
+                  "FROM decision_links l JOIN decisions d ON d.id=l.decision_id JOIN meetings m ON m.id=d.meeting_id "
+                  "WHERE l.target_type=%s AND l.target_ref=%s AND l.state<>'rejected' AND d.project_id=%s AND d.deleted_at IS NULL AND "
+                  + private_clause("d.meeting_id") + " ORDER BY m.date, d.quote_start NULLS LAST, d.id",
+                  (target_type, target_ref, project_id))
     decisions, ids = [], []
     for d in rows:
         ids.append(d["id"])
@@ -868,7 +875,7 @@ def trace(project_id, target_type, target_ref):
             "quote": quote_context(d["_transcript"], d["quote_start"], d["quote"]) if d["quote"] else None})
     links = _q("SELECT l.target_type, l.target_ref, l.state FROM decision_links l WHERE l.decision_id = ANY(%s) AND l.state<>'rejected'",
                (ids,)) if ids else []
-    own = [{"target_type": target_type, "target_ref": target_ref, "state": "confirmed"}] if target_type != "action" else []
+    own = [{"target_type": target_type, "target_ref": target_ref, "state": "confirmed"}] if target_type not in ("action", "decision") else []
     refs = sorted({l["target_ref"] for l in links if l["target_type"] == "action"} | ({target_ref} if target_type == "action" else set()))
     return {"target": {"type": target_type, "ref": target_ref}, "decisions": decisions,
             "actions": _action_rows(refs, project_id),
