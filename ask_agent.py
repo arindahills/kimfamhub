@@ -650,6 +650,21 @@ def tool_project_audit_summary(project_id: str) -> str:
         lines.append(f"  Data gaps: {'; '.join(g.get('gap','') for g in gaps[:3])}")
     return "\n".join(lines)
 
+def tool_decision_trace(project_id: str, question: str = "") -> str:
+    """Why a thing happened: matching decisions from the register with citations. Answers only from trace data."""
+    import urllib.request as _ur, json as _j
+    from report import trace_answer_text
+    pid = project_id if project_id in _PROJECT_IDS else "chicken"
+    _key = os.environ.get("KIMFAM_INTERNAL_KEY", "")
+    try:
+        req = _ur.Request(f"http://127.0.0.1:8000/api/trace/{pid}/decisions", headers={"X-Internal-Key": _key})
+        with _ur.urlopen(req, timeout=10) as resp:
+            decisions = _j.loads(resp.read()).get("decisions", [])
+    except Exception as e:
+        log.warning(f"tool_decision_trace {pid}: {e}")
+        return "DECISION TRACE: the decision register is unavailable right now. Say so."
+    return trace_answer_text(decisions, question)
+
 _DATA_TOOLS = {
     "my_family": tool_my_family,
     "all_families": tool_all_families,
@@ -660,9 +675,10 @@ _DATA_TOOLS = {
     "portfolio_overview": tool_portfolio_overview,
     "project_audit": tool_project_audit_summary,
     "equity_models": tool_equity_models,
+    "decision_trace": tool_decision_trace,
 }
 
-def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, project_id: str | None = None) -> str:
+def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, project_id: str | None = None, question: str = "") -> str:
     """Execute the data tools the Manager selected; return concatenated structured results."""
     out = []
     for t in tool_names or []:
@@ -687,6 +703,8 @@ def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, p
                 out.append(tool_project_audit_summary(project_id or "trees"))
             elif t == "equity_models":
                 out.append(tool_equity_models(member_name))
+            elif t == "decision_trace":
+                out.append(tool_decision_trace(project_id or "chicken", question))
         except Exception as e:
             log.warning(f"Data tool '{t}' failed: {e}")
     return "\n\n".join(x for x in out if x)
@@ -718,6 +736,9 @@ DATA TOOLS available (pick any that help answer; live PostgreSQL data):
 - "equity_models"      → the EQUITY VOTE: per-family stake under Models A/B/C (the KIM 008/2026 vote). Use for
                          "which equity model", "how does my family stand under A/B/C", "equity vote", "model A vs B".
                          Stay NEUTRAL: explain tradeoffs + show their numbers, never tell them how to vote.
+- "decision_trace"     → WHY something happened, from the register of meeting decisions (with citations and who said it
+                         when known). Use for "why did we bring in a second batch", "why was the refund paid", "who decided X".
+                         Set "project_id" (default chicken). Answer only from its lines; if it says nothing is recorded, say so.
 
 RAG (document store) — set use_rag=true for:
 - meetings (when/what decided/actions/latest) → doc_type_filter="minutes"
@@ -736,6 +757,7 @@ Guidance:
 - "what is [project] payback/ROI/revenue/profit" → tools=["project_analysis"], project_id="<pid>"
 - "how are the goats doing" / "how many goats (does X have)" / "goat deaths / births / sales" / "whose goats" / "goats vet / feed" → tools=["project_analysis"], project_id="goats"
 - "how is the sheep project doing" / "how many sheep died / sheep deaths / mortality" / "sheep flock / how many sheep" / "sheep vaccines / vet / feed / expenses" / "money sent to buy lambs" → tools=["project_analysis"], project_id="sheep"
+- "why did we [do something]" / "why was [payment] made" / "who decided" / "what was decided about" → tools=["decision_trace"], project_id="<pid>" (chicken if unsure)
 - "how was [metric] calculated" / "show assumptions" / "is [project] profitable" → tools=["project_audit"], project_id="<pid>"
 - "rank projects" / "best investment" / "compare projects" / "portfolio" → tools=["portfolio_overview"]
 - "equity model" / "model A vs B vs C" / "the vote" / "how does my family stand under each model" / "which model" → tools=["equity_models"], use_rag=true, doc_type_filter="constitution" (combine live numbers with the explainer doc; stay neutral)
@@ -780,7 +802,7 @@ def manager_node(state: KimFamState, sheet_context: str, progress_cb=None) -> Ki
             "all_families": "all family balances", "club_summary": "club overview",
             "expenditure": "expenditure records", "my_payments": "your payments",
             "project_analysis": "project data", "portfolio_overview": "all projects",
-            "project_audit": "audit figures",
+            "project_audit": "audit figures", "decision_trace": "the decision register",
         }
         tools = routing.get("tools", [])
         parts = [_tl.get(t, t) for t in tools if t in _tl]
@@ -797,7 +819,7 @@ def manager_node(state: KimFamState, sheet_context: str, progress_cb=None) -> Ki
     # Run selected data tools (live structured app data)
     state["tool_result"] = run_data_tools(
         routing.get("tools", []), member, routing.get("family"),
-        project_id=routing.get("project_id"))
+        project_id=routing.get("project_id"), question=state["question"])
 
     if routing.get("use_rag"):
         state["rag_result"] = rag_tool(state["question"], routing.get("doc_type_filter"))

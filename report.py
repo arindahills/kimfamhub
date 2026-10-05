@@ -294,6 +294,42 @@ def generate(pack, model_fn):
     return verify_report(str(raw), pack)
 
 
+# ── Ask KimFam: the register as a tool answer (pure) ───────────────────────────────────────────
+_ASK_STOP = set("why did we the was were what when who how for and with from this that have has had are our bring brought buy bought pay paid "
+                "does about into than then them they their which would should could been being get got make made second first".split())
+MAX_ASK = 6
+
+
+def _words(text):
+    return {w for w in re.findall(r"[a-z]{3,}", (text or "").lower()) if w not in _ASK_STOP}
+
+
+def trace_answer_text(decisions, question):
+    """Text for the Ask tool: the register decisions that match the question, each with its citation id, speaker or
+    'unattributed', and its linked items as citations. Says plainly when nothing is recorded. Pure."""
+    want = _words(question)
+    scored = []
+    for d in decisions:
+        if d.get("status") == "superseded":
+            continue
+        hay = _words(" ".join(str(d.get(k) or "") for k in ("statement", "rationale")))
+        n = len(want & hay)
+        if n:
+            scored.append((-n, d.get("meeting_date") or "", d["id"], d))
+    head = "DECISION TRACE (answer only from these lines, cite the [D..] ids, never guess a speaker):"
+    if not scored:
+        return head + "\n  Nothing is recorded in the decision register for this question. Say so plainly."
+    out = [head]
+    for _, _, _, d in sorted(scored)[:MAX_ASK]:
+        who = ("said by " + d["speaker"]) if d.get("speaker") else "unattributed"
+        links = "; ".join("%s%s" % (c, " (suggested link, not confirmed)" if l.get("state") == "suggested" else "")
+                          for l in d.get("links", []) if l.get("state") in LINK_STATES
+                          for c in [cite_for(l["target_type"], l["target_ref"])] if c)
+        out.append("  [D%s] %s | %s | %s | %s%s%s" % (d["id"], _day(d.get("meeting_date")) or "undated", d.get("meeting_ref") or "meeting", who, d["statement"],
+                                                    (" | why: " + d["rationale"]) if d.get("rationale") else "", (" | linked: " + links) if links else ""))
+    return "\n".join(out)
+
+
 # ── storage and collection (database; lazy imports) ───────────────────────────────────────────
 _LOCK_KEY = 778815
 _READY = False
