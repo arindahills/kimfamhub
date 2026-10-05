@@ -18,10 +18,11 @@ def claude(prompt, timeout=240, model="sonnet"):
     env["HOME"] = "/root"
     for attempt in range(2):
         try:
-            r = subprocess.run(["claude", "-p", prompt, "--model", model], capture_output=True, text=True, timeout=timeout, env=env)
+            # the prompt goes on stdin: a long transcript chunk as an argument exceeds the OS limit (MAX_ARG_STRLEN)
+            r = subprocess.run(["claude", "-p", "--model", model], input=prompt, capture_output=True, text=True, timeout=timeout, env=env)
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip()
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             pass
         time.sleep(3)
     return ""
@@ -44,7 +45,10 @@ def main():
     total = 0
     for m in meetings:
         t0 = time.time()
-        out = dt.extract_meeting(m["id"], claude)
+        try:
+            out = dt.extract_meeting(m["id"], claude)
+        except Exception as e:                      # one bad meeting never stops the others
+            out = {"status": "error", "found": 0, "added": 0, "message": repr(e)[:120]}
         total += out.get("added", 0)
         print("%-14s %-8s found=%-3s added=%-3s %.0fs %s" % (m["ref"], out["status"], out.get("found", 0), out.get("added", 0), time.time() - t0, out.get("message", "")), flush=True)
     print("done: %d new decisions" % total)
