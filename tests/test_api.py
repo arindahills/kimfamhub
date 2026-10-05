@@ -1403,8 +1403,8 @@ class TestDecisionTrace:
         import re
         src, routes = self._route_bodies()
         assert src.index('"/api/decision-register/{project_id}"') < src.index('"/{full_path:path}"')
-        assert set(routes) == {"decision_register_list", "decision_link_add", "decision_link_review", "decision_meeting_private"}
-        for name in ("decision_link_add", "decision_link_review", "decision_meeting_private"):
+        assert set(routes) == {"decision_register_list", "decision_link_add", "decision_link_review", "decision_meeting_private", "decision_review"}
+        for name in ("decision_link_add", "decision_link_review", "decision_meeting_private", "decision_review"):
             body = routes[name][2]
             assert re.search(r"_decision_admin\(request\)", body), name       # JWT admin only
             assert "internal" not in body.lower(), name
@@ -2181,6 +2181,97 @@ class TestClubBalanceIncludesBankedProjectCash:
         src = open(os.path.join(_APP_ROOT, "contributions.py")).read()
         assert "total_loan_payments + banked_projects - total_expenditure" in src and '"project_cash_banked"' in src
 
+
+
+class TestTraceChain:
+    """ADR-034 phase 3: the trace read side and the review route. Pure functions and source structure only.
+    All text is synthetic."""
+    T = "line one\nline two\nline three\n[Ann] We agree to buy fifty widgets.\nline five\nline six\nline seven\n"
+
+    def _src(self, f):
+        return open(os.path.join(_APP_ROOT, f)).read()
+
+    def test_context_has_two_lines_either_side(self):
+        import decision_trace as dt
+        q = "We agree to buy fifty widgets."
+        c = dt.quote_context(self.T, self.T.index(q), q)
+        assert c["before"] == ["line two", "line three"] or c["before"][-1] == "line three"
+        assert len(c["before"]) == 2 and len(c["after"]) == 2
+        assert c["after"] == ["line five", "line six"] and c["quote"] == q
+
+    def test_context_never_returns_whole_transcript_and_clips_edges(self):
+        import decision_trace as dt
+        q = "line one"
+        c = dt.quote_context(self.T, 0, q)
+        assert c["before"] == [] and c["after"] == ["line two", "line three"]
+        big = "\n".join("x%d" % i for i in range(100))
+        c = dt.quote_context(big, big.index("x50"), "x50")
+        assert len(c["before"]) + len(c["after"]) == 4
+
+    def test_context_absent_when_offset_missing_or_wrong(self):
+        import decision_trace as dt
+        assert dt.quote_context(None, 3, "q") is None
+        assert dt.quote_context(self.T, None, "q") is None
+        assert dt.quote_context(self.T, 99999, "q") is None
+        assert dt.quote_context(self.T, 0, "") is None
+
+    def test_long_lines_are_clipped(self):
+        import decision_trace as dt
+        t = "a" * 2000 + "\nquote here"
+        assert len(dt.quote_context(t, 2001, "quote here")["before"][0]) == dt.MAX_LINE
+
+    def test_rejected_links_hidden(self):
+        import decision_trace as dt
+        ls = [{"state": "confirmed"}, {"state": "suggested"}, {"state": "rejected"}]
+        assert [l["state"] for l in dt.visible_links(ls)] == ["confirmed", "suggested"]
+
+    def test_review_args(self):
+        import decision_trace as dt
+        assert dt.review_args("confirmed", "ignored") == ("confirmed", None)
+        assert dt.review_args("corrected", "  Buy  fifty\nwidgets ") == ("corrected", "Buy fifty widgets")
+        for bad in (("pending", "x"), ("corrected", ""), ("corrected", None), ("corrected", "x" * (dt.MAX_STATEMENT + 1))):
+            with pytest.raises(ValueError):
+                dt.review_args(*bad)
+
+    def test_trace_rejects_unknown_target(self):
+        import decision_trace as dt
+        for bad in ("kpi", "nonsense", ""):
+            with pytest.raises(ValueError):
+                dt.trace("proj-a", bad, "1")
+
+    def test_trace_source_skips_private_and_rejected(self):
+        src = self._src("decision_trace.py")
+        body = src[src.index("def trace("):src.index("def register(")]
+        assert "private_clause" in body and "state<>'rejected'" in body and "deleted_at IS NULL" in body
+        reg = src[src.index("def register("):]
+        assert "private_clause" in reg and "state<>'rejected'" in reg
+
+    def test_routes_exist_before_catch_alls(self):
+        m = self._src("main.py")
+        spa = m.index("def spa_fallback")
+        ledger = m.index('@app.get("/api/ledger/{project_id}")')
+        for route in ('"/api/trace/{project_id}/decisions"', '"/api/trace/{project_id}"',
+                      '"/api/decision-register/decisions/{decision_id}/review"'):
+            i = m.index("@app.%s(%s" % ("post" if "review" in route else "get", route))
+            assert i < ledger < spa
+        assert m.index('"/api/trace/{project_id}/decisions"') < m.index('"/api/trace/{project_id}"')
+
+    def test_review_route_is_admin_only_and_trace_is_login_only(self):
+        m = self._src("main.py")
+        rv = m[m.index("def decision_review("):m.index("def _trace_actor(")]
+        assert "_decision_admin(request)" in rv and "internal_ok" not in rv
+        ta = m[m.index("def _trace_actor("):m.index("def trace_decisions(")]
+        assert "_auth_verify" in ta and "_internal_key_ok" in ta and "Auth required" in ta
+
+    def test_review_write_is_committed(self):
+        src = self._src("decision_trace.py")
+        body = src[src.index("def review_decision("):src.index("def _iso(")]
+        assert "execute_returning" in body and "reviewed_by" in body and "reviewed_at" in body
+
+    def test_frontend_has_why_panel_and_decisions_tab(self):
+        f = self._src("frontend/src/pages/LedgerPage.tsx")
+        assert "Why?" in f and "/api/trace/" in f and "/api/decision-register/decisions/" in f
+        assert "'decisions'" in f and "unattributed" in f and "unreviewed" in f and "suggested" in f
 
 
 class TestWritesAreCommitted:

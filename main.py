@@ -6940,6 +6940,56 @@ def decision_meeting_private(meeting_id: int, body: _DecisionPrivateIn, request:
     return out
 
 
+class _DecisionReviewIn(_BaseModel):
+    state: str
+    statement: str | None = None
+
+
+@app.post("/api/decision-register/decisions/{decision_id}/review")
+def decision_review(decision_id: int, body: _DecisionReviewIn, request: Request):
+    """Admin (JWT) confirms a decision or corrects its statement; records reviewed_by and reviewed_at."""
+    from fastapi import HTTPException as _HE
+    import decision_trace as _dt
+    who = _decision_admin(request)
+    _decision_ready()
+    try:
+        row = _dt.review_decision(decision_id, body.state, body.statement, who)
+    except ValueError:
+        raise _HE(status_code=400, detail="State must be confirmed or corrected; a correction needs a statement of up to %d characters" % _dt.MAX_STATEMENT)
+    if not row:
+        raise _HE(status_code=404, detail="No such decision")
+    return {"decision": {k: _ledger_json(v) for k, v in row.items()}}
+
+
+# ── Decision trace, member side (ADR-034 phase 3): the Why? panel and the Decisions tab. ──
+def _trace_actor(request):
+    """Any logged-in member; the internal key may read. Never public."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload and not _internal_key_ok(request):
+        raise _HE(status_code=401, detail="Auth required")
+
+
+@app.get("/api/trace/{project_id}/decisions")
+def trace_decisions(project_id: str, request: Request):
+    _trace_actor(request)
+    _decision_ready()
+    import decision_trace as _dt
+    return {"decisions": _dt.register(project_id)}
+
+
+@app.get("/api/trace/{project_id}")
+def trace_chain(project_id: str, request: Request, target_type: str = "", target_ref: str = ""):
+    from fastapi import HTTPException as _HE
+    _trace_actor(request)
+    _decision_ready()
+    import decision_trace as _dt
+    try:
+        return _dt.trace(project_id, target_type, target_ref)
+    except ValueError:
+        raise _HE(status_code=400, detail="target_type must be one of: " + ", ".join(_dt.TRACE_TARGETS) + "; target_ref is required")
+
+
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)
