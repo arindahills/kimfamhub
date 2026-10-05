@@ -6990,6 +6990,53 @@ def trace_chain(project_id: str, request: Request, target_type: str = "", target
         raise _HE(status_code=400, detail="target_type must be one of: " + ", ".join(_dt.TRACE_TARGETS) + "; target_ref is required")
 
 
+# ── Decision trace report (ADR-034 phase 4): cached, cited, verified. Registered before the ledger routes and the SPA catch-all. ──
+def _report_ready():
+    from fastapi import HTTPException as _HE
+    import report as _rp
+    _decision_ready()
+    if not _rp.ready():
+        raise _HE(status_code=503, detail="The report store is initialising, please retry shortly")
+
+
+@app.get("/api/trace/{project_id}/report")
+def trace_report_get(project_id: str, request: Request):
+    """Any logged-in member. Returns the cached report when its pack hash matches the current data, otherwise
+    stale=true with the last cached report if there is one. Never generates on a GET."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    _report_ready()
+    import report as _rp
+    cur = _rp.pack_hash(_rp.collect(project_id))
+    row = _rp.latest(project_id, cur)
+    is_admin = payload.get("role") == "admin"
+    if row is None:
+        return {"report": None, "stale": True, "can_generate": is_admin}
+    view = _rp.public_view(row, cur, is_admin)
+    return {"report": view, "stale": view["stale"], "can_generate": is_admin}
+
+
+@app.post("/api/trace/{project_id}/report")
+def trace_report_generate(project_id: str, request: Request):
+    """Admin only (JWT, never the internal key). Builds the pack, asks Claude, verifies, stores and returns the report.
+    A failed model call is a 503 and stores nothing."""
+    from fastapi import HTTPException as _HE
+    who = _decision_admin(request)
+    _report_ready()
+    import report as _rp
+    pack = _rp.collect(project_id)
+    try:
+        verified = _rp.generate(pack, lambda p: _ask_claude(p, model="sonnet", timeout=240))
+    except RuntimeError:
+        raise _HE(status_code=503, detail="The report could not be written just now because the AI service did not answer. Nothing was saved. Please try again in a few minutes.")
+    h = _rp.pack_hash(pack)
+    rid, created = _rp.store(project_id, h, verified, who)
+    row = {"id": rid, "created_at": created, "created_by": who, "pack_hash": h, "body": {"sections": verified["sections"]}, "stripped": verified["stripped"]}
+    return {"report": _rp.public_view(row, h, True), "stale": False, "can_generate": True}
+
+
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)
