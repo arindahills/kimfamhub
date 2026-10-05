@@ -2521,6 +2521,9 @@ class TestReportVerifierHardening:
             assert self._keep(bad, names=["Hillary", "Ann"])[0] == [], bad
         assert self._keep("Zed proposed the refund [D2].", names=["Zed"])[0], "the recorded speaker of the cited decision may be named"
         assert self._keep("The club agreed to bring in 200 more birds [D1].")[0], "no person named: fine"
+        assert self._keep("The club agreed the manager compiles the spending and the treasurer refunds it [D1].")[0], "roles are the decision's content, 'agreed' is not speech"
+        assert self._keep("The refund to Dad is possibly related to that decision, but it is only a suggested link [D1].", names=["Dad"])[0], "'suggested link' is not a person suggesting"
+        assert not self._keep("The treasurer suggested the refund [D1].")[0], "a person suggesting is still stripped"
 
     def test_evidence_text_cannot_fake_a_citation_or_a_heading(self):
         import report

@@ -221,8 +221,10 @@ _CITE = re.compile(r"\[((?:D\d+)|(?:[ALTSO] [^\]\n]+))\]")
 _ATTRIB = re.compile(r"\b(said|says|told|argued|insisted|stated|claimed|according to|proposed by|suggested by|raised by|requested by|asked by|"
                      r"mentioned by|moved by|pushed for)\b", re.I)
 # verbs that credit a person with an act or a statement; with a person or a role named they are an attribution
-_ATTRIB_ANY = re.compile(r"\b(said|says|told|argued|insisted|stated|claimed|proposed|suggested|raised|requested|asked|decided|recommended|"
-                         r"wanted|agreed|insisted|mentioned|moved|pushed|promised|demanded|objected|opposed|supported|volunteered)\b", re.I)
+_ATTRIB_ANY = re.compile(r"\b(said|says|told|argued|insisted|stated|claimed|proposed|suggested|raised|requested|asked|recommended|"
+                         r"wanted|mentioned|promised|demanded|objected|volunteered|decided by|agreed by)\b", re.I)
+# "a suggested link" and "the club agreed" describe the evidence, not a person speaking
+_NOT_SPEECH = re.compile(r"\bsuggested (link|links|decision|relation|match)\b", re.I)
 ROLE_WORDS = ("chairman", "chair", "treasurer", "secretary", "manager", "dad", "mum", "chicken manager", "project manager", "lead")
 _NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s*(million|thousand|m|k)?\b", re.I)
 
@@ -307,7 +309,7 @@ def verify_report(text, pack, names=None):
                     reason = "names a speaker the record does not give"
                 elif _ATTRIB.search(body) and not cited_speakers:
                     reason = "attributes speech without a recorded speaker"
-                elif people and _ATTRIB_ANY.search(body) and not {x.lower() for x in people} <= {x.lower() for x in cited_speakers}:
+                elif people and _ATTRIB_ANY.search(_NOT_SPEECH.sub("", body)) and not {x.lower() for x in people} <= {x.lower() for x in cited_speakers}:
                     reason = "credits a person with something the record does not attribute to them"
                 if reason is None:
                     # a citation proves the item exists; every number in the sentence must also appear in the cited evidence
