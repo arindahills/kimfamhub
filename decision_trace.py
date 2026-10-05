@@ -1,5 +1,5 @@
 """
-decision_trace.py — the decision register behind "Why?" (ADR-034, docs/specs/decision-trace.md).
+decision_trace.py - the decision register behind "Why?" (ADR-034, docs/specs/decision-trace.md).
 
 Phases 0-2 only: tables, extraction pipeline, link suggestions. No trace API, no report, no UI.
 

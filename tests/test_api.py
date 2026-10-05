@@ -1,5 +1,5 @@
 """
-KimFam Hub — Backend API Tests
+KimFam Hub - Backend API Tests
 Run: venv/bin/pytest tests/test_api.py -v
 """
 import os, sys, tempfile, shutil
@@ -94,7 +94,7 @@ class TestAuth:
         assert fresh.get("/api/auth/me").status_code == 401
 
     def test_me_bad_token(self):
-        # Fresh client: no cookie, only a bad bearer — must be rejected
+        # Fresh client: no cookie, only a bad bearer - must be rejected
         from fastapi.testclient import TestClient as _TC
         fresh = _TC(app, raise_server_exceptions=True)
         r = fresh.get("/api/auth/me", headers={"Authorization": "Bearer rubbish"})
@@ -294,7 +294,7 @@ if __name__ == "__main__":
 class TestKlaFamRecordFor:
     """Only this cycle's beneficiary (or an admin) may record a contribution RECEIVED FROM
     another member. The deny path cannot be exercised against prod (the only real account is
-    an admin, who always passes) and staging has no klafam tables — so it is pinned here.
+    an admin, who always passes) and staging has no klafam tables - so it is pinned here.
     db.query/db.execute are stubbed because the endpoint imports them inside the handler."""
 
     @staticmethod
@@ -325,7 +325,7 @@ class TestKlaFamRecordFor:
 
     @staticmethod
     def _client_as(name, role="member"):
-        """Mint the JWT directly rather than logging in — other tests in this file rotate
+        """Mint the JWT directly rather than logging in - other tests in this file rotate
         Alex's and Esther's passwords, so the login flow is not dependable here."""
         import jwt as _jwt
         from datetime import datetime as _dtm, timezone as _tz, timedelta as _td
@@ -2282,7 +2282,7 @@ class TestWritesAreCommitted:
     def test_no_write_statement_goes_through_the_read_helper(self):
         import re
         bad = []
-        for f in ("ledger.py", "decision_trace.py", "main.py", "projection.py", "contributions.py"):
+        for f in ("ledger.py", "decision_trace.py", "main.py", "projection.py", "contributions.py", "report.py"):
             src = open(os.path.join(_APP_ROOT, f)).read()
             for m in re.finditer(r"\b(?:_q|_dbq|query)\(\s*[\"'](UPDATE|INSERT|DELETE)\b", src):
                 bad.append((f, src.count("\n", 0, m.start()) + 1))
@@ -2337,3 +2337,152 @@ class TestTraceReviewFixes:
         main_sql = next(x for x in seen if "FROM decision_links l JOIN decisions d" in x)
         assert "l.state<>'rejected'" in main_sql and "d.deleted_at IS NULL" in main_sql
         assert "decision_private_meetings" in main_sql                       # private meetings excluded in the same query
+
+
+class TestSmartReport:
+    """ADR-034 phase 4: the evidence pack, the citation verifier and the report routes. Synthetic data only."""
+
+    @staticmethod
+    def _pack(**kw):
+        import report as rp
+        decisions = [
+            {"id": 1, "meeting_id": 1, "meeting_ref": "MTG/1", "meeting_date": "2026-01-10", "statement": "Buy a second batch of birds", "rationale": "Demand is up",
+             "speaker": None, "amount_ugx": 500, "status": "agreed", "review_state": "confirmed",
+             "links": [{"target_type": "ledger_expense", "target_ref": "5", "state": "suggested", "relation": "authorised"},
+                       {"target_type": "action", "target_ref": "ACT/1", "state": "confirmed", "relation": "caused"},
+                       {"target_type": "ledger_expense", "target_ref": "9", "state": "rejected", "relation": "authorised"}]},
+            {"id": 2, "meeting_id": 1, "meeting_ref": "MTG/1", "meeting_date": "2026-01-10", "statement": "Refund the member", "rationale": None,
+             "speaker": "Zed", "amount_ugx": None, "status": "agreed", "review_state": "unreviewed", "links": []},
+            {"id": 3, "meeting_id": 2, "meeting_ref": "MTG/2", "meeting_date": "2026-02-01", "statement": "SECRET private plan", "speaker": None,
+             "status": "agreed", "review_state": "unreviewed", "is_private": True, "links": []},
+        ]
+        actions = [{"ref": "ACT/1", "description": "Order the birds", "assignees": "Ann", "deadline": "2026-01-20", "status": "open",
+                    "updates": [{"at": "2026-01-15", "type": "note", "text": "waiting on supplier"}]}]
+        ledger = [{"kind": "expense", "id": 5, "date": "2026-01-12", "label": "birds", "amount": 400},
+                  {"kind": "expense", "id": 6, "date": "2026-01-13", "label": "feed", "amount": 90}]
+        score = {"kpis": [{"key": "revenue", "label": "Revenue", "plan": 1000, "actual": 600, "pct": 60, "status": "red"}],
+                 "findings": [{"severity": "high", "text": "Revenue is below plan"}]}
+        items = [{"key": "gps:missing", "title": "No location", "amount": 2, "detail": "two entries", "explained": False},
+                 {"key": "gap", "title": "Gap", "amount": 1, "detail": "x", "explained": True}]
+        import datetime as d
+        args = dict(decisions=decisions, actions=actions, ledger=ledger, treasury=[{"id": 35, "date": "2026-01-14", "description": "Refund", "amount": 70, "kind": "refund"}],
+                    scorecard=score, open_items=items, today=d.date(2026, 3, 1))
+        args.update(kw)
+        return rp.build_evidence_pack("proj-a", **args)
+
+    def test_pack_has_stable_ids_marks_suggested_and_drops_rejected_links(self):
+        p = self._pack()
+        assert {"D1", "D2", "A ACT/1", "L expense 5", "L expense 6", "T 35", "S revenue", "S finding-1", "O gps:missing"} <= set(p["ids"])
+        d1 = next(i for i in p["items"] if i["id"] == "D1")
+        assert {"to": "L expense 5", "state": "suggested", "suggested": True, "relation": "authorised"} in d1["links"]
+        assert all(l["to"] != "L expense 9" for l in d1["links"])                      # rejected link not used
+        assert next(i for i in p["items"] if i["id"] == "L expense 5")["decisions"][0]["suggested"] is True
+        assert "O gap" not in p["ids"]                                                 # an explained open item is not an open item
+        assert next(i for i in p["items"] if i["id"] == "A ACT/1")["overdue"] is True
+
+    def test_private_data_is_not_in_the_pack_or_the_prompt(self):
+        import report as rp
+        p = self._pack()
+        assert "D3" not in p["ids"] and "SECRET" not in rp.build_prompt(p)
+
+    def test_speaker_only_shown_when_set(self):
+        import report as rp
+        p = self._pack()
+        text = rp.render_pack(p)
+        assert "[D1] DECISION" in text and "unattributed" in text and "said by Zed" in text
+        assert next(i for i in p["items"] if i["id"] == "D1")["speaker"] is None
+
+    def test_uncited_and_unknown_citation_sentences_are_stripped_not_softened(self):
+        import report as rp
+        p = self._pack()
+        out = rp.verify_report("## Summary\nA second batch was agreed [D1].\nThe farm did well.\nBirds cost 400 [L expense 5].\nSomething odd [D99].\n"
+                               "## Unexplained\n- The order is overdue [A ACT/1].\n- Nothing known [L expense 77].", p)
+        kept = [s["text"] for sec in out["sections"] for s in sec["sentences"]]
+        assert kept == ["A second batch was agreed [D1].", "Birds cost 400 [L expense 5].", "The order is overdue [A ACT/1]."]
+        reasons = {s["text"]: s["reason"] for s in out["stripped"]}
+        assert reasons["The farm did well."] == "no citation"
+        assert reasons["Something odd [D99]."] == "unknown citation" and reasons["Nothing known [L expense 77]."] == "unknown citation"
+        assert [s["section"] for s in out["stripped"]].count("Unexplained") == 1
+        assert [sec["title"] for sec in out["sections"]] == [t for _, t in rp.SECTIONS]
+
+    def test_a_citation_after_the_full_stop_still_counts(self):
+        import report as rp
+        out = rp.verify_report("## Summary\nA batch was agreed. [D1]", self._pack())
+        assert [s["text"] for s in out["sections"][0]["sentences"]] == ["A batch was agreed. [D1]"] and out["stripped"] == []
+
+    def test_a_speaker_is_never_named_unless_the_pack_sets_one(self):
+        import report as rp
+        p = self._pack()
+        out = rp.verify_report("## Timeline of decisions\nZed proposed the second batch [D1].\nThe meeting said the batch was needed [D1].\n"
+                               "Zed proposed the refund [D2].\nThe refund was agreed [D2].", p)
+        kept = [s["text"] for s in out["sections"][1]["sentences"]]
+        assert kept == ["Zed proposed the refund [D2].", "The refund was agreed [D2]."]
+        assert len(out["stripped"]) == 2 and all("speaker" in s["reason"] for s in out["stripped"])
+
+    def test_the_model_is_called_with_the_evidence_and_the_result_is_verified(self):
+        import report as rp
+        p = self._pack()
+        seen = []
+
+        def fake(prompt):
+            seen.append(prompt)
+            return "## Summary\nOne batch was agreed [D1]. Invented claim.\n"
+        v = rp.generate(p, fake)
+        assert "[D1] DECISION" in seen[0] and "unattributed" in seen[0]
+        assert v["stripped"][0]["text"] == "Invented claim."
+        with pytest.raises(RuntimeError):
+            rp.generate(p, lambda _p: "")
+
+    def test_stale_hash_is_detected(self):
+        import report as rp
+        a, b = self._pack(), self._pack()
+        assert rp.pack_hash(a) == rp.pack_hash(b)
+        c = self._pack(ledger=[{"kind": "expense", "id": 5, "date": "2026-01-12", "label": "birds", "amount": 401}])
+        assert rp.pack_hash(c) != rp.pack_hash(a)
+        row = {"id": 1, "created_at": __import__("datetime").datetime(2026, 3, 1), "created_by": "Hillary", "pack_hash": rp.pack_hash(a),
+               "body": {"sections": []}, "stripped": [{"section": "Summary", "text": "x", "reason": "no citation"}]}
+        assert rp.public_view(row, rp.pack_hash(a), False)["stale"] is False
+        v = rp.public_view(row, rp.pack_hash(c), False)
+        assert v["stale"] is True and v["stripped_count"] == 1 and "stripped" not in v           # text is for admins only
+        assert "stripped" in rp.public_view(row, rp.pack_hash(c), True)
+
+    def test_store_commits_through_execute_and_never_the_read_helper(self, monkeypatch):
+        import sys, types, report as rp
+        calls = []
+        fake = types.ModuleType("db")
+        fake.execute = lambda sql, params=None: calls.append((sql, params)) or (7, "t")
+        monkeypatch.setitem(sys.modules, "db", fake)
+        assert rp.store("proj-a", "h", {"sections": [], "stripped": []}, "Hillary") == (7, "t")
+        assert calls and calls[0][0].startswith("INSERT INTO decision_reports") and "RETURNING" in calls[0][0]
+        src = open(os.path.join(_APP_ROOT, "report.py")).read()
+        import re
+        assert not re.search(r"\b(?:_q|q|query)\(\s*[\"'](UPDATE|INSERT|DELETE)\b", src)
+        assert "pg_advisory_xact_lock" in src[src.index("def ready("):]
+
+    def test_post_is_admin_only_jwt_and_stores_and_get_never_generates(self):
+        src = open(os.path.join(_APP_ROOT, "main.py")).read()
+        post = src[src.index("def trace_report_generate("):src.index("# ── Project ledger API (ADR-032)")]
+        assert "_decision_admin(request)" in post and "internal_ok" not in post          # admin JWT, not the internal key
+        assert "_rp.store(" in post and "_ask_claude(" in post and "status_code=503" in post
+        assert post.index("_rp.generate(") < post.index("_rp.store(")                    # nothing stored when the model fails
+        get = src[src.index("def trace_report_get("):src.index("@app.post(\"/api/trace/{project_id}/report\")")]
+        assert "_ask_claude" not in get and "generate(" not in get and "store(" not in get
+        assert src.index('"/api/trace/{project_id}/report"') < src.index("# ── Project ledger API (ADR-032)") < src.index("def spa_fallback")
+
+    def test_ask_tool_answers_only_from_the_register_with_citations(self):
+        import report as rp
+        ds = [{"id": 1, "statement": "Buy a second batch of birds", "rationale": "Demand", "speaker": None, "status": "agreed", "meeting_date": "2026-01-10",
+               "meeting_ref": "MTG/1", "links": [{"target_type": "ledger_expense", "target_ref": "5", "state": "suggested"}]}]
+        out = rp.trace_answer_text(ds, "why did we bring in a second batch")
+        assert "[D1]" in out and "L expense 5 (suggested link, not confirmed)" in out and "unattributed" in out
+        none = rp.trace_answer_text(ds, "why was the roof painted")
+        assert "Nothing is recorded" in none and "[D" not in none.split("\n", 1)[1]
+        src = open(os.path.join(_APP_ROOT, "ask_agent.py")).read()
+        assert '"decision_trace": tool_decision_trace' in src and "X-Internal-Key" in src[src.index("def tool_decision_trace"):]
+
+    def test_report_tab_source_structure(self):
+        src = open(os.path.join(_APP_ROOT, "frontend", "src", "pages", "LedgerPage.tsx")).read()
+        assert "function ReportTab(" in src and "@media print" in src and "window.print()" in src
+        assert "tab === 'report'" in src and "onScore={() => setTab('score')}" in src
+        dt = open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+        assert '"decision")' in dt[dt.index("TRACE_TARGETS ="):dt.index("TRACE_TARGETS =") + 200]

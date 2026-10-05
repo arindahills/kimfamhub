@@ -162,7 +162,7 @@ def ai_health(request: Request):
 
 
 def _compute_next_ref():
-    """Next meeting ref based on the HIGHEST meeting NUMBER (not the latest date —
+    """Next meeting ref based on the HIGHEST meeting NUMBER (not the latest date -
     multiple meetings can share a date, which made date-ordering collide)."""
     from db import query as _dbq
     from datetime import date as _date
@@ -291,7 +291,7 @@ _VALID_ITEM_TYPES = {"epic", "feature", "task", "bug"}
 _ACTION_COLS_READY = False
 def _ensure_action_cols():
     """Additive: work-item type for the Jira-lite tracker (#10). The `actions` table is owned
-    by `postgres`, NOT the app role, so the app cannot ALTER it — the column is created by the
+    by `postgres`, NOT the app role, so the app cannot ALTER it - the column is created by the
     owner out-of-band (a one-time `ALTER TABLE actions ADD COLUMN item_type ...`). This checks
     the column EXISTS (a read the app role is allowed) and only attempts the ALTER as a
     best-effort fallback; failures are logged, never silently swallowed, and never block."""
@@ -310,7 +310,7 @@ def _ensure_action_cols():
         log.warning(f"_ensure_action_cols (column may need owner ALTER): {e}")
 
 
-# Standing KimFam Google Meet link — THE link members are invited to on the calendar
+# Standing KimFam Google Meet link - THE link members are invited to on the calendar
 # event, so the announcement always matches the invite. Do NOT create a new per-meeting
 # calendar event (Google mints a fresh link → mismatch); reuse this one room.
 KIMFAM_MEET_LINK = "https://meet.google.com/iim-ugbx-vcn"
@@ -324,7 +324,7 @@ def _ensure_meeting_cols():
     from db import query as _q, execute as _exec
     try:
         # meetings is owned by postgres; the app role can't ALTER it. The column is
-        # added out-of-band by the owner (see deploy notes). If it exists, we're done —
+        # added out-of-band by the owner (see deploy notes). If it exists, we're done -
         # never keep retrying a failing ALTER on every call.
         if _q("""SELECT 1 FROM information_schema.columns
                  WHERE table_name='meetings' AND column_name='meet_link'"""):
@@ -617,7 +617,7 @@ def _next_or_create_meeting():
                    ORDER BY date ASC, ref ASC LIMIT 1""")
     if rows:
         return rows[0]["id"], rows[0]["ref"]
-    # None upcoming — create the next meeting on the next Sunday.
+    # None upcoming - create the next meeting on the next Sunday.
     ref, _prev = _compute_next_ref()
     today = _date.today()
     days = (6 - today.weekday()) % 7  # Sunday = weekday 6; 0 if today is Sunday
@@ -692,7 +692,7 @@ async def carry_over_action(request: Request):
 async def _ai_complete(prompt: str, claude_timeout: int = 150) -> str:
     """One AI completion. Claude CLI is PRIMARY (for prompts it can handle in time);
     DeepSeek is the high-capacity fallback for oversized prompts or Claude failures;
-    Groq (truncated) is the last resort. Never raises — returns '' if all fail."""
+    Groq (truncated) is the last resort. Never raises - returns '' if all fail."""
     import os as _os, logging as _lg_ai, asyncio as _aio
     raw = ""
     if len(prompt) <= 24000:
@@ -771,7 +771,7 @@ def _transcribe_audio(audio_bytes: bytes, audio_name: str, groq_key: str) -> str
             file=path_or_tuple, model="whisper-large-v3-turbo",
             response_format="text")).strip()
 
-    # Small enough for a single Whisper call — keep the original bytes as-is.
+    # Small enough for a single Whisper call - keep the original bytes as-is.
     if len(audio_bytes) <= 24 * 1024 * 1024:
         return _one((audio_name, audio_bytes, "audio/mpeg"))
 
@@ -907,7 +907,7 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
     """
     Accept audio / pasted text / .txt / .docx, transcribe if needed,
     extract actions + decisions via Claude, return for frontend review.
-    Nothing is written to DB here — that happens on /confirm.
+    Nothing is written to DB here - that happens on /confirm.
     """
     from fastapi import HTTPException as _HE, UploadFile as _UF, File as _File, Form as _Form
     from db import query as _dbq
@@ -994,7 +994,7 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
 
     # Fallback: if the form carried no transcript/audio (e.g. the paste box was
     # cleared, or a recording was lost), use a transcript already saved on this
-    # meeting — group auto-capture or an earlier attempt may have stored it. This
+    # meeting - group auto-capture or an earlier attempt may have stored it. This
     # stops a cleared text box from silently downgrading the minutes to notes-only.
     if not transcript_parts:
         try:
@@ -1006,15 +1006,15 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
             pass
 
     if not transcript_parts and not sec_notes:
-        raise _HE(status_code=400, detail="No content provided — supply audio, a transcript, or your notes")
+        raise _HE(status_code=400, detail="No content provided - supply audio, a transcript, or your notes")
 
     if not transcript_parts:
         # Notes-only: the secretary's notes ARE the meeting record
-        transcript = "(No recording or transcript — see the secretary's notes below.)"
+        transcript = "(No recording or transcript - see the secretary's notes below.)"
     elif len(transcript_parts) == 1:
         transcript = transcript_parts[0][1]
     else:
-        # Multiple sources — label clearly so Claude can reconcile
+        # Multiple sources - label clearly so Claude can reconcile
         transcript = "\n\n".join(
             f"[SOURCE: {label}]\n{text}"
             for label, text in transcript_parts
@@ -1088,7 +1088,7 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
             _lines.append(f"- {_m}: {_st}" + (f" ({_cm})" if _cm else ""))
         if _lines:
             attendance_block = (
-                "\n\nATTENDANCE (roll call taken in the meeting — record this in the minutes "
+                "\n\nATTENDANCE (roll call taken in the meeting - record this in the minutes "
                 "under attendance/apologies; do NOT invent names beyond this list):\n"
                 + "\n".join(_lines) + "\n"
             )
@@ -1120,7 +1120,7 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
     )
 
     secretary_block = (
-        f"\n\nSECRETARY'S NOTES (authoritative — these come directly from the meeting secretary "
+        f"\n\nSECRETARY'S NOTES (authoritative - these come directly from the meeting secretary "
         f"and OVERRIDE the transcript where they conflict. Use them for framing, emphasis, "
         f"corrections, and any context the transcript missed):\n{sec_notes}\n"
         if sec_notes else ""
@@ -1131,7 +1131,7 @@ async def _process_meeting_impl(meeting_id: int, request: Request,
 RECENT MEETINGS (for context):
 {prev_summary or 'None yet'}
 
-OPEN AND RECENTLY-COMPLETED ACTIONS — with the progress updates members have already posted
+OPEN AND RECENTLY-COMPLETED ACTIONS - with the progress updates members have already posted
 in the app. Items tagged [done] were completed in the last few weeks: acknowledge them as
 closed/achieved in the summary or decisions, but do NOT reopen them.
 (Do NOT recreate any of these unless the transcript explicitly assigns a new deadline or owner;
@@ -1181,7 +1181,7 @@ Rules:
     raw_json = await _ai_complete(prompt, claude_timeout=150)
 
     if not raw_json:
-        raise _HE(status_code=503, detail="AI extraction is busy right now — please tap Extract again in a moment.")
+        raise _HE(status_code=503, detail="AI extraction is busy right now - please tap Extract again in a moment.")
 
     # Strip markdown fences if model wrapped the JSON
     raw_json = _re.sub(r"^```(?:json)?\s*", "", raw_json)
@@ -1914,7 +1914,7 @@ def _build_minutes_docx_v2(meeting_ref: str, mtg: dict, narrative: dict, actions
             rc[2].text = a.get("responsible", "")
             rc[3].text = a.get("outcome", "")
 
-    # Decisions — grouped per project (list of {"group","items"}) or flat list of strings
+    # Decisions - grouped per project (list of {"group","items"}) or flat list of strings
     if narrative.get("decisions"):
         doc.add_heading("KEY DECISIONS", 1)
         dec = narrative["decisions"]
@@ -1995,7 +1995,7 @@ async def meetings_minutes_draft(meeting_id: int, request: Request):
 
     path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
     if not _os.path.exists(path):
-        raise _HE(status_code=404, detail="Draft not found — run Process + Confirm first")
+        raise _HE(status_code=404, detail="Draft not found - run Process + Confirm first")
 
     rows = _dbq("SELECT date FROM meetings WHERE id=%s", (meeting_id,))
     fname = _minutes_filename(rows[0]["date"]) if rows else f"KIMFAM_Meeting_Minutes_{meeting_id}.docx"
@@ -2031,7 +2031,7 @@ async def meetings_minutes_draft_replace(meeting_id: int, request: Request):
     with open(path, "wb") as f:
         f.write(raw)
 
-    return {"ok": True, "message": "Draft replaced — Approve & Send will use this version"}
+    return {"ok": True, "message": "Draft replaced - Approve & Send will use this version"}
 
 
 @app.post("/api/meetings/{meeting_id}/minutes/edit")
@@ -2056,7 +2056,7 @@ async def meetings_minutes_edit(meeting_id: int, request: Request):
     data_path  = f"/tmp/kimfam_minutes_{meeting_id}_data.json"
     draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
     if not _os.path.exists(data_path):
-        raise _HE(status_code=404, detail="Minutes data not found — confirm meeting first")
+        raise _HE(status_code=404, detail="Minutes data not found - confirm meeting first")
 
     with open(data_path) as _f:
         minutes_data = _json3.load(_f)
@@ -2066,8 +2066,8 @@ async def meetings_minutes_edit(meeting_id: int, request: Request):
     meeting_ref = minutes_data.get("meeting_ref") or ""
 
     async def _apply_edit():
-        # Edit the RICH narrative that the draft was actually built from — not the thin
-        # summary — and rebuild with the same v2 builder, so an edit can never downgrade
+        # Edit the RICH narrative that the draft was actually built from - not the thin
+        # summary - and rebuild with the same v2 builder, so an edit can never downgrade
         # the document. Regenerate the narrative if this meeting predates persistence.
         narrative = None
         if _os.path.exists(narr_path):
@@ -2224,7 +2224,7 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
 
     draft_path = f"/tmp/kimfam_minutes_{meeting_id}.docx"
     if not _os.path.exists(draft_path):
-        raise _HE(status_code=404, detail="Draft not found — confirm meeting first")
+        raise _HE(status_code=404, detail="Draft not found - confirm meeting first")
 
     # Upload to R2. File named to match the old convention:
     # KIMFAM_Meeting_Minutes_June_7_2026.docx
@@ -2256,7 +2256,7 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
            (final_url, meeting_id))
 
     # WhatsApp notification. Use the SAME env flag as the rest of the app
-    # (KIMFAM_ENV). On staging this must NEVER reach the real family group —
+    # (KIMFAM_ENV). On staging this must NEVER reach the real family group -
     # send to Hillary only so testing can't leak to the club.
     is_stg = _os.getenv("KIMFAM_ENV", "prod") == "staging"
     recipient = "256775102684" if is_stg else "254716595631-1631997730@g.us"  # Hillary vs KIM FAM PROJECTS
@@ -2265,7 +2265,7 @@ async def meetings_minutes_publish(meeting_id: int, request: Request):
     _link_line = (f"\n\nRead and download (link valid 7 days):\n{minutes_url}"
                   if minutes_url else "\n\nOpen kimfamhub.com to read and download.")
     msg = (
-        f"*KimFam Hub{env_tag}* — Meeting minutes ready\n\n"
+        f"*KimFam Hub{env_tag}* - Meeting minutes ready\n\n"
         f"*{mtg['ref']}* ({mtg['date']})"
         + _link_line
         + _SIGNOFF
@@ -2361,7 +2361,7 @@ def get_activity():
         items.append({
             "ts": ts,
             "icon": _cat_icons.get(r["category"], "📤"),
-            "title": desc + " — UGX " + "{:,}".format(int(r['amount_ugx'])),
+            "title": desc + " - UGX " + "{:,}".format(int(r['amount_ugx'])),
             "nav": "finances"
         })
 
@@ -2376,7 +2376,7 @@ def get_activity():
         items.append({
             "ts": r["ts"].isoformat() if r["ts"] else None,
             "icon": "🏦",
-            "title": "Loan disbursed to " + r['family_name'].title() + " — UGX " + "{:,}".format(int(r['amount_ugx'])),
+            "title": "Loan disbursed to " + r['family_name'].title() + " - UGX " + "{:,}".format(int(r['amount_ugx'])),
             "nav": "loans"
         })
 
@@ -2444,7 +2444,7 @@ def get_loans():
     payments = []
     for p in prows:
         ref = p.get("reference","")
-        month = ref.replace("Sheet import — ","") if "Sheet import" in (ref or "") else ref
+        month = ref.replace("Sheet import - ","") if "Sheet import" in (ref or "") else ref
         notes = p.get("notes","") or ""
         interest_paid = ""
         balance_val = ""
@@ -2616,7 +2616,7 @@ async def create_meeting(request: Request):
 
 @app.patch("/api/meetings/{meeting_id}")
 async def edit_meeting(meeting_id: int, request: Request):
-    """Edit a meeting's date/time/venue/topics — allowed until it is conducted.
+    """Edit a meeting's date/time/venue/topics - allowed until it is conducted.
     Rebuilds the agenda from the new topics. Admin only."""
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _dbq
@@ -2629,7 +2629,7 @@ async def edit_meeting(meeting_id: int, request: Request):
     if not rows:
         raise _HE(status_code=404, detail="Meeting not found")
     if rows[0]["conductor_started_at"] is not None:
-        raise _HE(status_code=409, detail="This meeting has already been conducted — its agenda is locked.")
+        raise _HE(status_code=409, detail="This meeting has already been conducted - its agenda is locked.")
     body = await request.json()
     date_str   = str(body.get("date", "")).strip()
     venue      = str(body.get("venue", "")).strip() or None
@@ -2690,7 +2690,7 @@ def _build_default_agenda(key_topics: str | None = None) -> list:
 
 @app.get("/api/meetings/{meeting_id}/conductor")
 async def conductor_state(meeting_id: int, request: Request):
-    """Current conductor state — polled by all participants every 5s."""
+    """Current conductor state - polled by all participants every 5s."""
     from fastapi import HTTPException as _HE
     from db import query as _dbq
     import json as _json_c, datetime as _dt
@@ -2722,7 +2722,7 @@ async def conductor_state(meeting_id: int, request: Request):
     if r["conductor_started_at"]:
         total_elapsed = int((now_utc - r["conductor_started_at"]).total_seconds())
 
-    # Previous meeting's retrospective — for the "Review of Last Meeting" item.
+    # Previous meeting's retrospective - for the "Review of Last Meeting" item.
     import re as _re_pc
     _cur_m = _re_pc.match(r"KIM\s+(\d+)/(\d{4})", (r["ref"] or "").strip())
     prev_retro, prev_ref = None, None
@@ -2783,7 +2783,7 @@ def _generate_retrospective(meeting_id: int) -> dict:
     notes = r["conductor_notes"] or ""
     transcript = (r["transcript"] or "")[:8000]
 
-    # Need SOME substance to analyse — timing, transcript, notes, or actions.
+    # Need SOME substance to analyse - timing, transcript, notes, or actions.
     if not timings and not transcript.strip() and not notes.strip() and not acts:
         return {}
 
@@ -2887,7 +2887,7 @@ async def make_retrospective(meeting_id: int, request: Request):
         raise _HE(status_code=403, detail="Admin only")
     data = _generate_retrospective(meeting_id)
     if not data:
-        raise _HE(status_code=422, detail="Couldn't generate a review — this meeting has no transcript, notes, timing, or actions to analyse yet. Process its minutes first.")
+        raise _HE(status_code=422, detail="Couldn't generate a review - this meeting has no transcript, notes, timing, or actions to analyse yet. Process its minutes first.")
     return {"ok": True, "retrospective": data}
 
 
@@ -2996,7 +2996,7 @@ async def append_meeting_recording_chunk(meeting_id: int, request: Request):
 
 @app.post("/api/meetings/{meeting_id}/conductor/start")
 async def conductor_start(meeting_id: int, request: Request):
-    """Start the meeting — sets item 0, records start time."""
+    """Start the meeting - sets item 0, records start time."""
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _dbq
     token = _get_tok(request)
@@ -3098,7 +3098,7 @@ async def conductor_goto(meeting_id: int, request: Request):
 
 @app.post("/api/meetings/{meeting_id}/conductor/end")
 async def conductor_end(meeting_id: int, request: Request):
-    """End the meeting — sets ended timestamp."""
+    """End the meeting - sets ended timestamp."""
     from fastapi import HTTPException as _HE
     from db import execute as _exec, query as _dbq
     import datetime as _dt
@@ -3214,7 +3214,7 @@ def _react_index() -> HTMLResponse:
     if os.path.isfile(root_index):
         return HTMLResponse(open(root_index).read())
     from fastapi import HTTPException
-    raise HTTPException(status_code=503, detail="App not deployed yet — dist/index.html missing")
+    raise HTTPException(status_code=503, detail="App not deployed yet - dist/index.html missing")
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -3273,7 +3273,7 @@ def get_all_projects():
         hc_dt   = _parse_hardcoded_date(hardcoded_update.get("date",""))
         if db_dt and hc_dt:
             db_date = db_dt.date() if hasattr(db_dt, "date") else db_dt
-            # DB only wins if strictly newer — same date keeps hardcoded (richer media)
+            # DB only wins if strictly newer - same date keeps hardcoded (richer media)
             if db_date > hc_dt:
                 return db
             # Same date: prefer whichever has more media
@@ -3288,26 +3288,26 @@ def get_all_projects():
         {"id":"chicken","name":"Free Range Chicken","icon":"🐔","category":"Farming & Agriculture","status":"Operational","lead":"Solomon Ariho","headline":"60% production rate","live":True,"data":[
             {"label":"Current Flock","value":"51 active hens"},{"label":"Production Rate","value":"60% consistently"},
             {"label":"Feed","value":"Commercial (silver fish protein)"},{"label":"Deaths (last 2 months)","value":"~19 since last count (flock down from 70); 1 additional young bird died 6 Jun 2026"},
-            {"label":"Phase 2 Trigger","value":"August 2026 — scale up if performance holds"},{"label":"Latest Update","value":"6-Jun-2026: Solomon confirmed 52 hens present; 1 has reproductive failure (not treatable, to be slaughtered). Active count: 51. Dad also reported 1 young bird dead from existing flock. Chick order (good brown breeds) still pending — seller target end-June 2026."}
+            {"label":"Phase 2 Trigger","value":"August 2026 - scale up if performance holds"},{"label":"Latest Update","value":"6-Jun-2026: Solomon confirmed 52 hens present; 1 has reproductive failure (not treatable, to be slaughtered). Active count: 51. Dad also reported 1 young bird dead from existing flock. Chick order (good brown breeds) still pending - seller target end-June 2026."}
         ]},
         {"id":"washing_bay","name":"Washing Bay","icon":"🚗","category":"Business Ventures","status":"Operational","lead":"Alex + Dad","headline":"UGX 580K/month revenue","data":[
             {"label":"Lead Investor","value":"Alex Tuhimbise"},{"label":"Total CapEx","value":"UGX 25,900,000"},
             {"label":"Monthly Revenue","value":"UGX ~580,000"},{"label":"Revenue (5 months)","value":"UGX 2,923,000"},
             {"label":"Infrastructure","value":"Electricity, well, pump, jet spray machine"},
-            {"label":"Sanitation Plan","value":"Septic tank required (pit cannot serve as septic — fills too fast). Pit to be used for solid waste only. Viola confirmed."},
+            {"label":"Sanitation Plan","value":"Septic tank required (pit cannot serve as septic - fills too fast). Pit to be used for solid waste only. Viola confirmed."},
             {"label":"Septic Tank Estimate","value":"UGX 5,473,000 (Eng. Julius Kato, Invoice 110, 29 May 2026)"},
             {"label":"Plumbing Estimate","value":"UGX 2,162,500 (materials 1,612,500 + labour 550,000)"},
             {"label":"Total Sanitation Budget","value":"UGX 7,635,500"},
             {"label":"Open Issues","value":"Latrine/sanitation works to be approved and funded. Eli occupancy agreement pending. Town Council removed temporary structures."}
-        ],"update":{"date":"3 Jun 2026","author":"Dad","text":"Dad shared formal estimates for the sanitation upgrade: a septic tank (UGX 5,473,000 from Eng. Julius Kato Services) and full plumbing works (UGX 2,162,500). Viola confirmed a proper septic tank is required — the existing pit cannot serve that purpose but can hold solid waste such as pads. Total sanitation budget: UGX 7,635,500.","images":["/static/project-pics/washing-bay/septic_tank_estimate_2026-06-03.jpg","/static/project-pics/washing-bay/plumbing_quote_p1_2026-06-03.jpg","/static/project-pics/washing-bay/plumbing_quote_p2_2026-06-03.jpg"],"videos":["/static/project-pics/washing-bay/washing_bay_vision.mp4"]}},
+        ],"update":{"date":"3 Jun 2026","author":"Dad","text":"Dad shared formal estimates for the sanitation upgrade: a septic tank (UGX 5,473,000 from Eng. Julius Kato Services) and full plumbing works (UGX 2,162,500). Viola confirmed a proper septic tank is required - the existing pit cannot serve that purpose but can hold solid waste such as pads. Total sanitation budget: UGX 7,635,500.","images":["/static/project-pics/washing-bay/septic_tank_estimate_2026-06-03.jpg","/static/project-pics/washing-bay/plumbing_quote_p1_2026-06-03.jpg","/static/project-pics/washing-bay/plumbing_quote_p2_2026-06-03.jpg"],"videos":["/static/project-pics/washing-bay/washing_bay_vision.mp4"]}},
         {"id":"sheep","name":"Sheep (Dorper)","icon":"🐑","category":"Farming & Agriculture","status":"Active","lead":"Dad + Solomon","headline":"~40 sheep, 17 Dorper offspring","data":[
             {"label":"Total Flock","value":"~40 sheep"},{"label":"Dorper Offspring","value":"17 identified"},
             {"label":"Club Holds","value":"2 Dorper sheep directly (1 young sold at UGX 200K to fund ear-tagging)"},
             {"label":"Capital Invested","value":"UGX 1,710,000 (Aug 2024 receipt on file)"},
             {"label":"Sale Target","value":"~30kg at 6 months, UGX 100K-150K per Dorper"},
-            {"label":"Latest Update","value":"19-May-2026: 10 young + 12 old sheep ear-tagged for project identification. Looking for an additional ram — current ram cannot breed with its own offspring. Next: plough two padocks and broadcast pasture seeds."}
-        ],"update":{"date":"31 May 2026","author":"Dad","text":"Pasture ploughing complete. 5.751 acres ploughed at UGX 230,000/acre (subtotal UGX 1,583,000), plus UGX 60,000 for shrub clearing and UGX 210,000 for tractor fuel — total UGX 1,853,000. Hellen processing reimbursement (KIM/07/26-3) along with the outstanding UGX 10,000 from ear-tagging. September 2026: replough, place more topsoil, sow grass seed, then harrow to smooth the area for sheep grazing. Earlier in the month (19 May), 10 young + 12 old sheep were ear-tagged for project identification — Mum confirmed flat pricing of UGX 200,000 per sheep; payment for 12 old ewes (UGX 2,400,000) is being processed under KIM/07/26-4.","images":["/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.53.29.jpeg","/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.54.45.jpeg","/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.55.09.jpeg"],"videos":["/static/project-pics/sheep/ploughing_2026-05-31_1.mp4","/static/project-pics/sheep/ploughing_2026-05-31_2.mp4","/static/project-pics/sheep/ploughing_2026-05-31_3.mp4"]}},
-        {"id":"goats","name":"Goats","icon":"🐐","category":"Farming & Agriculture","status":"Under Review","lead":"Individual owners + Solomon","headline":"~55 goats — difficult to manage","data":[
+            {"label":"Latest Update","value":"19-May-2026: 10 young + 12 old sheep ear-tagged for project identification. Looking for an additional ram - current ram cannot breed with its own offspring. Next: plough two padocks and broadcast pasture seeds."}
+        ],"update":{"date":"31 May 2026","author":"Dad","text":"Pasture ploughing complete. 5.751 acres ploughed at UGX 230,000/acre (subtotal UGX 1,583,000), plus UGX 60,000 for shrub clearing and UGX 210,000 for tractor fuel - total UGX 1,853,000. Hellen processing reimbursement (KIM/07/26-3) along with the outstanding UGX 10,000 from ear-tagging. September 2026: replough, place more topsoil, sow grass seed, then harrow to smooth the area for sheep grazing. Earlier in the month (19 May), 10 young + 12 old sheep were ear-tagged for project identification - Mum confirmed flat pricing of UGX 200,000 per sheep; payment for 12 old ewes (UGX 2,400,000) is being processed under KIM/07/26-4.","images":["/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.53.29.jpeg","/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.54.45.jpeg","/static/project-pics/sheep/WhatsApp Image 2026-05-19 at 20.55.09.jpeg"],"videos":["/static/project-pics/sheep/ploughing_2026-05-31_1.mp4","/static/project-pics/sheep/ploughing_2026-05-31_2.mp4","/static/project-pics/sheep/ploughing_2026-05-31_3.mp4"]}},
+        {"id":"goats","name":"Goats","icon":"🐐","category":"Farming & Agriculture","status":"Under Review","lead":"Individual owners + Solomon","headline":"~55 goats - difficult to manage","data":[
             {"label":"Count","value":"~55 goats across family owners"},{"label":"Ownership","value":"All members except Solomon and Hellen"},
             {"label":"Grazing","value":"Valley and upper plot (limited, not sustainable long-term)"},
             {"label":"Decision","value":"Time given until August 2026 to find workable approach. No immediate sale."}
@@ -3323,7 +3323,7 @@ def get_all_projects():
         ],"update":{"date":"25 May 2026","author":"Dad","text":"Dad visited a working shed-based dairy farm to study the model we plan to build. Key findings: cows are fully confined, never go outdoors, and are kept on a deep litter system. Each cow completes 4 to 6 lactation cycles before being sold for beef. The shed uses wooden stall dividers, a concrete feed trough, and a piped water supply. Farms running this model are still rare in the area. This is the system KimFam is targeting.","images":["/static/project-pics/dairy/dairy_img_3.jpg","/static/project-pics/dairy/dairy_img_5.jpg","/static/project-pics/dairy/dairy_img_4.jpg","/static/project-pics/dairy/dairy_img_1.jpg","/static/project-pics/dairy/dairy_img_2.jpg"],"videos":["/static/project-pics/dairy/dairy_vid_herd.mp4","/static/project-pics/dairy/dairy_vid_stalls.mp4","/static/project-pics/dairy/dairy_vid_exterior.mp4","/static/project-pics/dairy/dairy_vid_feeding.mp4"]}},
         {"id":"mango","name":"Mango & Oranges","icon":"🥭","category":"Farming & Agriculture","status":"Active","lead":"Dad + Solomon","headline":"Plantation at Nyabugando","data":[
             {"label":"Location","value":"Nyabugando farm"},
-            {"label":"Integration","value":"Free-range chickens patrol the mango trees, eating fruit fly larvae — natural pest control"},
+            {"label":"Integration","value":"Free-range chickens patrol the mango trees, eating fruit fly larvae - natural pest control"},
             {"label":"Note","value":"Mango harvest season temporarily reduces egg production. This is planned for in projections."}
         ]},
         {"id":"trees","name":"Tree Planting (Eucalyptus)","icon":"🌲","category":"Farming & Agriculture","status":"Active","lead":"Dad + Solomon","headline":"3.38 acres at Busisi Land","data":[
@@ -3340,12 +3340,12 @@ def get_all_projects():
         ]},
         {"id":"rabbits","name":"Rabbits","icon":"🐇","category":"Farming & Agriculture","status":"Research","lead":"Arunga family","headline":"High demand, outgrowers engaged","data":[
             {"label":"Lead","value":"Arunga family"},{"label":"Market Price","value":"UGX 15,000/kg"},
-            {"label":"Demand","value":"High — limited only by housing capacity"},
+            {"label":"Demand","value":"High - limited only by housing capacity"},
             {"label":"Status","value":"Outgrowers engaged to increase supply. Housing expansion planned."},
             {"label":"Key Risks","value":"Cats and rats"}
         ]},
-        {"id":"fortune_credit","name":"Fortune Credit","icon":"📈","category":"Unit Trusts","status":"Due Diligence","lead":"Alex (due diligence) + Lawi (introduced)","headline":"2% monthly return — pending verification","data":[
-            {"label":"Type","value":"Silent investor model — finances startup businesses"},{"label":"Location","value":"Nairobi, Kenya (Busega branch in Kampala)"},
+        {"id":"fortune_credit","name":"Fortune Credit","icon":"📈","category":"Unit Trusts","status":"Due Diligence","lead":"Alex (due diligence) + Lawi (introduced)","headline":"2% monthly return - pending verification","data":[
+            {"label":"Type","value":"Silent investor model - finances startup businesses"},{"label":"Location","value":"Nairobi, Kenya (Busega branch in Kampala)"},
             {"label":"Monthly Return","value":"2% per month (24% annualised)"},
             {"label":"Minimum Investment","value":"UGX 29M-34M (KES-denominated)"},
             {"label":"Investment Period","value":"3 or 6 months"},
@@ -3359,11 +3359,11 @@ def get_all_projects():
             {"label":"Current Banana Area","value":"~2 acres"},{"label":"Expansion Plan","value":"4 acres (double current)"},
             {"label":"System","value":"Overhead sprinkler irrigation"},{"label":"Water Sources","value":"Rainwater harvesting + farm ponds"},
             {"label":"Additional","value":"Vegetable garden to be added alongside banana expansion"},
-            {"label":"Phase 1","value":"Design complete"},{"label":"Phase 2","value":"Procurement and installation — pending approval and funding"},
+            {"label":"Phase 1","value":"Design complete"},{"label":"Phase 2","value":"Procurement and installation - pending approval and funding"},
             {"label":"Reason","value":"~80 banana bunches lost to heat stress (premature ripening) without irrigation"}
         ]}
     ]
-    # Overlay live DB updates — newer DB entry wins over hardcoded update
+    # Overlay live DB updates - newer DB entry wins over hardcoded update
     for p in projects:
         hc = p.get("update")
         p["update"]  = _best_update(p["id"], hc)       # backward-compat (may differ from updates[0] on a same-date media tiebreak)
@@ -3378,7 +3378,7 @@ def get_project_projection(project_id: str, request: Request,
                            term: int = None, own: int = None):
     """Illustrative investment viability matrix for an investment-category project
     (e.g. Fortune Credit). Auth-gated because it exposes club money. Pure projection
-    computed in investment.py — no funds are committed by calling this. See ADR-024."""
+    computed in investment.py - no funds are committed by calling this. See ADR-024."""
     from fastapi import HTTPException as _HE
     from datetime import date as _date, datetime as _dt
     import investment
@@ -3389,7 +3389,7 @@ def get_project_projection(project_id: str, request: Request,
     if not terms:
         raise _HE(status_code=404, detail="No projection model for this project")
     # live bank balance (confirmed ABSA figure preferred, else computed). Never project
-    # from a silent 0 — that would show confidently-wrong money figures on a family board.
+    # from a silent 0 - that would show confidently-wrong money figures on a family board.
     try:
         from contributions import get_summary as _gs
         _summ = _gs()
@@ -3397,7 +3397,7 @@ def get_project_projection(project_id: str, request: Request,
     except Exception:
         bank_now = 0
     if bank_now <= 0:
-        raise _HE(status_code=503, detail="Bank balance unavailable — cannot compute projection right now")
+        raise _HE(status_code=503, detail="Bank balance unavailable - cannot compute projection right now")
     # resolve inputs with safe defaults
     term_v = int(term) if term else terms["default_term_months"]
     if term_v not in terms["term_months_options"]:
@@ -3837,7 +3837,7 @@ def search_docs_semantic(request: Request, query: str = ""):
 
 
 # ── Proposals: AI scoring against the KimFam project-proposal template ──────────
-# Criteria mirror EXACTLY the "Project Proposal Template — Key Areas to Address"
+# Criteria mirror EXACTLY the "Project Proposal Template - Key Areas to Address"
 # in Hillary's Project Management deck: Background, Objective, Scope, Stakeholders,
 # Resources, Timeline, Risk Management, Financial Appraisal, Benefits.
 PROPOSAL_CRITERIA = [
@@ -4252,7 +4252,7 @@ def proposal_areas(request: Request):
     if not _auth_verify(_get_tok(request)):
         raise _HE(status_code=401, detail="Login required")
     paths = set()
-    # The legacy "Proposals" bucket is being deprecated — don't offer it (or _versions)
+    # The legacy "Proposals" bucket is being deprecated - don't offer it (or _versions)
     # as a filing destination; proposals belong under their real project area.
     def _skip(segs):
         return (not segs) or segs[0].lower() == "proposals" or "_versions" in segs
@@ -4341,7 +4341,7 @@ async def create_proposal(request: Request):
                        AND is_current=TRUE ORDER BY id DESC LIMIT 1""", (owner, title))
         prior = rows[0] if rows else None
     # Where the document is filed in the Documents repo: under its real project area
-    # (e.g. "Real estates/kakoba land/Boys quarters"), mirroring the folder tree — NOT a
+    # (e.g. "Real estates/kakoba land/Boys quarters"), mirroring the folder tree - NOT a
     # generic Proposals bucket. Sanitize each path segment; keep the slashes.
     file_under = (form.get("file_under") or "").strip()
     area = "/".join(_re_docs_safe(p) for p in file_under.split("/") if p.strip()) or "Proposals"
@@ -5480,7 +5480,7 @@ async def upload_avatar(request: Request, file: UploadFile = FastAPIFile(...)):
         img.thumbnail((400, 400), Image.LANCZOS)
         img.save(str(dest), "JPEG", quality=88)
     except Exception as _img_err:
-        # Don't silently save broken bytes — return a clear error so the UI shows
+        # Don't silently save broken bytes - return a clear error so the UI shows
         # "unsupported format" instead of saving a broken file and claiming success.
         import logging as _lg
         _lg.getLogger("main").warning("avatar convert failed: %s", _img_err)
@@ -5520,7 +5520,7 @@ def _store_document_bytes(contents: bytes, category: str, filename: str, subgrou
     if suffix not in _ALLOWED_DOC_SUFFIXES:
         raise _HE(status_code=400, detail=f"File type not allowed: {suffix}")
     safe_filename = ("".join(c for c in (filename or "upload") if c.isalnum() or c in "._- ")).strip() or "upload"
-    # Sub-group is a single folder one level deep — no path traversal, no slashes.
+    # Sub-group is a single folder one level deep - no path traversal, no slashes.
     safe_subgroup = ("".join(c for c in (subgroup or "") if c.isalnum() or c in "._- &")).strip()
     # Reject traversal (.. / .) and reserved/hidden names (leading "." or "_", e.g. _versions).
     if safe_subgroup.startswith((".", "_")) or safe_subgroup in {".", ".."}:
@@ -5577,7 +5577,7 @@ async def admin_upload_doc(
 @app.post("/api/agent/classify-doc")
 async def agent_classify_doc(request: Request):
     """Internal (agent): classify an inbound document BY CONTENT into the Documents taxonomy and
-    propose a filing + summary + matching action. Advisory only — the agent asks Hillary to approve."""
+    propose a filing + summary + matching action. Advisory only - the agent asks Hillary to approve."""
     from fastapi import HTTPException as _HE
     from db import query as _dbq
     if not _internal_key_ok(request):
@@ -5736,7 +5736,7 @@ def _build_dad_approval_msg(member: str, project_id: str, role: str, modes: list
     role_label = _ROLE_LABELS.get(role, role)
     modes_text = ", ".join(_MODE_LABELS.get(m, m) for m in (modes or [])) if modes else ""
     msg = (
-        f"KimFam Projects — Participation Request\n\n"
+        f"KimFam Projects - Participation Request\n\n"
         f"{member} wants to join the *{project_id}* project.\n"
         f"Role: {role_label}"
     )
@@ -5786,7 +5786,7 @@ async def submit_interest(request: Request):
     if preferred_role == "team_member" and not contribution_modes:
         raise _HE(status_code=400, detail="Contributors must select at least one contribution mode")
 
-    # Dad (Israel) is chairman — his submissions auto-confirm, no review needed
+    # Dad (Israel) is chairman - his submissions auto-confirm, no review needed
     if member == _chairman_name():
         existing = _q("SELECT id, status FROM project_participation WHERE project_id=%s AND member_name=%s",
                       (project_id, member))
@@ -6277,7 +6277,7 @@ def _fetch_family_equity():
     for _, fid, amt in all_pmts:
         total_contribs[fid] += amt
 
-    # Running balances for A and B — start with opening credit, grow with contributions,
+    # Running balances for A and B - start with opening credit, grow with contributions,
     # shrink with each expense allocation.
     # Model C does NOT use running balances: equity = total_club_equity × fixed_weight.
     # We still compute per-expense aC for the expense log display, but final equity
@@ -6304,7 +6304,7 @@ def _fetch_family_equity():
         tot = sum(bal_B.values())
         for fid in fids:
             bal_B[fid] += (bal_B[fid] / tot * repay_amt) if tot else repay_amt / len(fids)
-        # Model C: no running balance — equity computed from total pool at the end
+        # Model C: no running balance - equity computed from total pool at the end
 
     for r in exp_rows:
         txn_date = r["txn_date"]; desc = r["description"]
@@ -6401,7 +6401,7 @@ def _fetch_family_equity():
         loan_idx += 1
 
     # Model C equity: total club equity × fixed weight.
-    # Does not depend on when/how much individual families contributed —
+    # Does not depend on when/how much individual families contributed -
     # only on what's currently in the pool and each family's headcount weight.
     total_pool_C = sum(bal_A.values())  # same total as A (pool is shared)
     eq_C_by_fid = {fid: total_pool_C * weight_C[fid] for fid in fids}
@@ -6603,7 +6603,7 @@ def _fetch_chicken_data():
             continue
         financials_raw[r[1].strip().lower()] = _parse_num(r[2])
 
-    # 6. Company expenses tab — OPEX/CapEx breakdown by category
+    # 6. Company expenses tab - OPEX/CapEx breakdown by category
     def _cat(item_name):
         it = item_name.lower()
         if any(k in it for k in ['chicken','hen','cock','bird','pullet']):
@@ -6752,7 +6752,7 @@ async def chicken_detail(request: Request):
             "cocks_sold":             int(cocks.get("sold", 0)),
             "hens_deaths":            int(hens.get("deaths", 0)),
             "cocks_deaths":           int(cocks.get("deaths", 0)),
-            "new_batch_note":         "New batch (chicks/pullets) — not yet laying. Recorded as separate product in AppSheet." if active_chicks else "",
+            "new_batch_note":         "New batch (chicks/pullets) - not yet laying. Recorded as separate product in AppSheet." if active_chicks else "",
             "deaths_detail":          data["deaths_detail"],
             "batches":                data["batches"],
             "whatsapp_only":          whatsapp_only,
@@ -7580,9 +7580,9 @@ async def trees_detail(request: Request):
         {"label": "Seedlings Purchased",  "date": "Aug 2024", "year": 0,  "done": True,  "note": "3,600 seedlings at UGX 200 each"},
         {"label": "Year 1 Maintenance",   "date": "Aug 2025", "year": 1,  "done": months_old >= 12, "note": "Spot hoeing, slashing x2, security"},
         {"label": "Year 2 Maintenance",   "date": "Aug 2026", "year": 2,  "done": months_old >= 24, "note": "Herbicide, slashing x2, security"},
-        {"label": "First Selective Harvest","date": "Aug 2029","year": 5, "done": False, "note": "Thinnings — used for farm fencing"},
+        {"label": "First Selective Harvest","date": "Aug 2029","year": 5, "done": False, "note": "Thinnings - used for farm fencing"},
         {"label": "Electric Poles Harvest","date": "Aug 2036", "year": 12, "done": False, "note": "811 trees × UGX 100,000 = UGX 81.1M"},
-        {"label": "Timber Harvest",       "date": "Aug 2039", "year": 15, "done": False, "note": "Full timber grade — same yield, premium market"},
+        {"label": "Timber Harvest",       "date": "Aug 2039", "year": 15, "done": False, "note": "Full timber grade - same yield, premium market"},
     ]
 
     return {
@@ -7649,11 +7649,11 @@ async def sheep_detail(request: Request):
     # Live from the sheep_* Postgres tables (in-app entry, not a spreadsheet). See ADR-026.
     import sheep as _sheep
     if not _sheep.ready():
-        raise _HE(status_code=503, detail="Sheep tracker is initialising — please retry shortly")
+        raise _HE(status_code=503, detail="Sheep tracker is initialising - please retry shortly")
     return _sheep.sheep_detail_data()
 
 
-# ── Livestock tracker (sheep, goats, …) — ADR-026, generalised in ADR-029 ─────
+# ── Livestock tracker (sheep, goats, …) - ADR-026, generalised in ADR-029 ─────
 from sheep import SheepEventIn as _SheepEventIn, SheepExpenseIn as _SheepExpenseIn  # noqa: E402
 
 
@@ -7689,7 +7689,7 @@ def _livestock_ready():
     from fastapi import HTTPException as _HE
     import livestock as _ls
     if not _ls.ready():
-        raise _HE(status_code=503, detail="The livestock tracker is initialising — please retry shortly")
+        raise _HE(status_code=503, detail="The livestock tracker is initialising - please retry shortly")
 
 
 def _livestock_add_event(project_id, body, request):
@@ -7833,7 +7833,7 @@ async def washing_bay_detail(request: Request):
     annual_profit = annual_rev * 0.35  # rough margin for car wash
     roi_pct       = round((annual_rev * (payback_mo / 12)) / capex * 100, 1)
 
-    # Capital accountability — how much of the reported CapEx actually has a
+    # Capital accountability - how much of the reported CapEx actually has a
     # documented contributor + source behind it.
     try:
         _cc = _wb_conn()
@@ -7870,7 +7870,7 @@ async def washing_bay_detail(request: Request):
             "breakdown": [
                 {"item": "Electricity infrastructure",  "amount": 0, "note": "Included in total"},
                 {"item": "Well + pump + jet spray",      "amount": 0, "note": "Included in total"},
-                {"item": "Total initial investment",     "amount": capex, "note": "Confirmed — Alex Tuhimbise"},
+                {"item": "Total initial investment",     "amount": capex, "note": "Confirmed - Alex Tuhimbise"},
                 {"item": "Sanitation upgrade (pending)", "amount": sanitation, "note": "Septic UGX 5.47M + Plumbing UGX 2.16M"},
             ],
         },
@@ -7907,7 +7907,7 @@ async def washing_bay_detail(request: Request):
         "open_issues": [
             {"issue": "Sanitation upgrade approval", "priority": "High", "amount": sanitation},
             {"issue": "Eli occupancy agreement", "priority": "High", "amount": 0},
-            {"issue": "Town Council — temp structures removed", "priority": "Medium", "amount": 0},
+            {"issue": "Town Council - temp structures removed", "priority": "Medium", "amount": 0},
         ],
     }
 
@@ -7933,7 +7933,7 @@ async def irrigation_detail(request: Request):
             "crop": "Bananas (+ vegetable garden)", "area_acres": 2,
             "expansion_acres": 4, "system": "Overhead sprinkler irrigation",
             "water_sources": "Rainwater harvesting + farm ponds",
-            "status": "Planning — Phase 1 design complete",
+            "status": "Planning - Phase 1 design complete",
             "phase2": "Procurement and installation pending approval and funding",
             "reason": "~80 banana bunches lost to heat stress without irrigation",
         },
@@ -7957,7 +7957,7 @@ async def irrigation_detail(request: Request):
             "annual_roi_on_ops": round(annual_profit / annual_costs * 100, 1),
             "8yr_cumulative_profit": annual_profit * 8,
             "8yr_club_earnings": club_cut * 8,
-            "note": "Irrigation CapEx (phase 2) not yet quantified — will reduce early-year returns",
+            "note": "Irrigation CapEx (phase 2) not yet quantified - will reduce early-year returns",
             "irr_approx": "TBD after phase 2 cost confirmed",
         },
         "risks": [
@@ -8016,10 +8016,10 @@ async def dairy_detail(request: Request):
         },
         "model_logic": {
             "why_shed": "Tick-borne diseases kill quality breeds outdoors. Shed eliminates tick exposure entirely.",
-            "feed": "Cut forage only — zero grazing. Cows never leave the shed.",
+            "feed": "Cut forage only - zero grazing. Cows never leave the shed.",
             "litter": "Deep litter system, easy manure management (manure also sold as fertiliser).",
             "water": "Piped water supply required. High daily water consumption.",
-            "after_productive_life": "Sold for beef at end of 4-6 lactations — residual value recovery.",
+            "after_productive_life": "Sold for beef at end of 4-6 lactations - residual value recovery.",
         },
         "chart_data": {
             "labels": proj_labels,
@@ -8073,16 +8073,16 @@ async def bees_detail(request: Request):
             "irr_approx": "~60-80%",
             "irr_note": "Very low capital base; high return if yield targets met.",
             "npv_note": "Breakeven within 2 years at conservative yield. Low-risk capital profile.",
-            "scale_note": "Year 3+ adds wild hive splits — 10 hives can become 20-30 organically.",
+            "scale_note": "Year 3+ adds wild hive splits - 10 hives can become 20-30 organically.",
         },
         "chart_data": {
             "labels": labels_3yr,
             "revenue": proj_rev, "profit": proj_profit,
         },
         "other_products": [
-            {"product": "Beeswax",   "note": "Candles, lip balm, polish — premium niche market"},
-            {"product": "Propolis",  "note": "Medicinal extract — UGX 50K+/gram"},
-            {"product": "Pollination services", "note": "Contract pollination for local farms — zero cost to produce"},
+            {"product": "Beeswax",   "note": "Candles, lip balm, polish - premium niche market"},
+            {"product": "Propolis",  "note": "Medicinal extract - UGX 50K+/gram"},
+            {"product": "Pollination services", "note": "Contract pollination for local farms - zero cost to produce"},
         ],
         "risks": [
             {"risk": "Colony collapse / theft",  "probability": "Medium", "impact": "High",   "note": "Vandalism and theft historically a risk for hives in the area."},
@@ -8139,14 +8139,14 @@ def _build_audit_data(project_id: str):
                  "note": "Based on flat-rate assumption. Real revenue may vary with car wash volume."},
             ],
             "data_gaps": [
-                "Daily/weekly throughput (cars washed) not tracked — prevents revenue forecasting",
-                "Operating costs (labour, water, electricity) not reported — net margin unknown",
+                "Daily/weekly throughput (cars washed) not tracked - prevents revenue forecasting",
+                "Operating costs (labour, water, electricity) not reported - net margin unknown",
                 "Sanitation board resolution not yet recorded in system",
             ],
             "what_would_change": [
                 {"scenario": "Revenue increases to UGX 800K/month", "impact": f"Payback shortens to {round(capex/800000,1)} months"},
                 {"scenario": "Sanitation approved", "impact": f"Total CapEx rises to UGX {capex+sanitation:,}; payback extends to {round((capex+sanitation)/monthly_rev,1)} months"},
-                {"scenario": "Revenue drops to UGX 400K/month", "impact": f"Payback extends to {round(capex/400000,1)} months — still acceptable"},
+                {"scenario": "Revenue drops to UGX 400K/month", "impact": f"Payback extends to {round(capex/400000,1)} months - still acceptable"},
             ],
         }
 
@@ -8202,14 +8202,14 @@ def _build_audit_data(project_id: str):
             ],
             "data_gaps": [
                 "Annual tree survival count not yet entered into system",
-                "Current tree height/growth rate not tracked — critical for harvest date estimate",
+                "Current tree height/growth rate not tracked - critical for harvest date estimate",
                 "Land tenure / legal ownership documentation status unknown",
                 "Market price data for poles should be updated annually",
             ],
             "what_would_change": [
                 {"scenario": "Survival rate drops to 60%", "impact": f"Revenue drops to UGX {int(3600*0.6*pole_price):,}; ROI falls to {round((int(3600*0.6*pole_price)-total_capex)/total_capex*100,1)}%"},
                 {"scenario": "Pole price rises to UGX 12,000", "impact": f"Revenue rises to UGX {int(3600*0.8*12000):,}; ROI jumps to {round((int(3600*0.8*12000)-total_capex)/total_capex*100,1)}%"},
-                {"scenario": "Harvest moved to year 10", "impact": "IRR improves; same revenue, 2 fewer years waiting — NPV increases significantly"},
+                {"scenario": "Harvest moved to year 10", "impact": "IRR improves; same revenue, 2 fewer years waiting - NPV increases significantly"},
             ],
         }
 
@@ -8252,7 +8252,7 @@ def _build_audit_data(project_id: str):
             ],
             "data_gaps": [
                 "Breeding record (rams, ewes, lambing dates) not entered in system",
-                "Veterinary/feed cost tracking not in place — net margin unknown",
+                "Veterinary/feed cost tracking not in place - net margin unknown",
                 "Pipeline sale (KIM/07/26-4) status: delivery date and payment date not confirmed",
             ],
             "what_would_change": [
@@ -8299,7 +8299,7 @@ def _build_audit_data(project_id: str):
                  "note": "Highly sensitive to milk yield. At 15L/day: {round(capex/(15*cows*price*30 - annual_opex/12),1)} months. At 50L/day: {round(capex/(50*cows*price*30 - annual_opex/12),1)} months."},
             ],
             "data_gaps": [
-                "Capital not committed — UGX 16M not yet approved or sourced",
+                "Capital not committed - UGX 16M not yet approved or sourced",
                 "Shed construction/conversion cost not estimated",
                 "Specific breed and supplier not identified",
                 "Offtake arrangement (who buys the milk) not in place",
@@ -8346,7 +8346,7 @@ def _build_audit_data(project_id: str):
                  "note": "Does NOT include irrigation system depreciation/amortisation (CapEx unknown)."},
                 {"metric": "Payback Period", "formula": "Irrigation CapEx ÷ Annual Profit",
                  "substitution": "UNKNOWN ÷ UGX 1,040,000",
-                 "result": "CANNOT CALCULATE — CapEx unknown",
+                 "result": "CANNOT CALCULATE - CapEx unknown",
                  "note": "This is the most important missing number. Get Phase 2 quote ASAP."},
             ],
             "data_gaps": [
@@ -8357,7 +8357,7 @@ def _build_audit_data(project_id: str):
             ],
             "what_would_change": [
                 {"scenario": "Irrigation CapEx = UGX 5M", "impact": f"Payback = {round(5000000/profit,1)} years. Very viable."},
-                {"scenario": "Irrigation CapEx = UGX 15M", "impact": f"Payback = {round(15000000/profit,1)} years. Marginal — needs higher yield or price."},
+                {"scenario": "Irrigation CapEx = UGX 15M", "impact": f"Payback = {round(15000000/profit,1)} years. Marginal - needs higher yield or price."},
                 {"scenario": "Expand to 6 acres (3x output)", "impact": f"Revenue = UGX {rev*3:,}, Profit = UGX {profit*3:,}/yr. Transforms the project economics."},
             ],
         }
@@ -8402,8 +8402,8 @@ def _build_audit_data(project_id: str):
                  "note": "Excludes colony purchase cost if buying packaged bees vs. catching wild swarms."},
             ],
             "data_gaps": [
-                "No capital committed — project has not started",
-                "Forage assessment not done — what trees/flowers on and near the farm?",
+                "No capital committed - project has not started",
+                "Forage assessment not done - what trees/flowers on and near the farm?",
                 "Training/expertise confirmed: Dad joined beekeeper groups but formal training status unknown",
                 "Branded distribution channel not designed (KIM FAM Honey Farm brand registered?)",
             ],
@@ -8429,7 +8429,7 @@ def _build_audit_data(project_id: str):
                  "result": "Dynamic",
                  "note": "Chicken is the most data-rich project. All numbers are actuals from Solomon's records."},
             ],
-            "data_gaps": ["None critical — AppSheet integration provides real-time data"],
+            "data_gaps": ["None critical - AppSheet integration provides real-time data"],
             "what_would_change": [],
         }
     return {"project": project_id, "assumptions": [], "formula_derivations": [], "data_gaps": [], "what_would_change": []}
@@ -8528,7 +8528,7 @@ async def project_audit(project_id: str, request: Request):
 # default below is the fallback if the file is missing. (#5)
 _ME_FRAMEWORK_DEFAULT = (
     "MONITORING & EVALUATION FRAMEWORK (the family's own standard, from the Project "
-    "Management deck — evaluate this project AGAINST it):\n"
+    "Management deck - evaluate this project AGAINST it):\n"
     "- KPI categories to track: Project Progress (percentage of completion; milestone "
     "achievement); Budget Management (cost variance: planned vs actual; budget utilization: "
     "spent vs remaining); Quality (adherence to project requirements; stakeholder "
@@ -8615,9 +8615,9 @@ KEY STRENGTHS (3 bullet points max)
 
 KEY RISKS (3 bullet points max, most critical first)
 
-M&E ALIGNMENT (assess the project against the Monitoring & Evaluation framework above. For each KPI category — Progress, Budget, Quality, Risk — say in one line whether it is being tracked and on course, or is a gap. Then note any prescribed tracking tool not yet in use. 4-5 bullet points.)
+M&E ALIGNMENT (assess the project against the Monitoring & Evaluation framework above. For each KPI category - Progress, Budget, Quality, Risk - say in one line whether it is being tracked and on course, or is a gap. Then note any prescribed tracking tool not yet in use. 4-5 bullet points.)
 
-PROPOSAL ALIGNMENT (only if an approved proposal is provided above: is the live project delivering what the proposal promised? Compare promised vs actual on the things the proposal committed to — budget, returns/payback, timeline, scope. 2-4 bullet points. If no proposal was provided, write one line: "No approved proposal is linked to this project yet.")
+PROPOSAL ALIGNMENT (only if an approved proposal is provided above: is the live project delivering what the proposal promised? Compare promised vs actual on the things the proposal committed to - budget, returns/payback, timeline, scope. 2-4 bullet points. If no proposal was provided, write one line: "No approved proposal is linked to this project yet.")
 
 REWARD COMPLIANCE (using the Investment & Reward Guidelines above: is this project's participation and reward-sharing in line with the guidelines, and what should be checked or corrected? 2-3 bullet points.)
 
@@ -8704,7 +8704,7 @@ async def portfolio_ranking_stream(request: Request):
         import asyncio as _aio, queue as _q, threading as _t
 
         try:
-            yield _sse({"type":"step","step":1,"total":5,"msg":"Access granted — fetching live data from all projects..."})
+            yield _sse({"type":"step","step":1,"total":5,"msg":"Access granted - fetching live data from all projects..."})
 
             # ── Step 2: Parallel-fetch all 7 project detail endpoints ──────────
             import urllib.request as _ur
@@ -8727,9 +8727,9 @@ async def portfolio_ranking_stream(request: Request):
             pairs = await _aio.gather(*[_fetch_one(p) for p in PIDS])
             live = {pid: d for pid, d in pairs}
             ok_count = sum(1 for d in live.values() if d)
-            yield _sse({"type":"step","step":2,"total":5,"msg":f"Got live data from {ok_count}/7 projects — Claude Haiku ranking..."})
+            yield _sse({"type":"step","step":2,"total":5,"msg":f"Got live data from {ok_count}/7 projects - Claude Haiku ranking..."})
 
-            # ── Step 3: Claude Haiku — fast structured ranking (JSON only) ─────
+            # ── Step 3: Claude Haiku - fast structured ranking (JSON only) ─────
             def _compact(pid, d):
                 ov = d.get("overview", {}); fm = d.get("financial_metrics", {}); inv = d.get("investment", {})
                 flat = {k: v for k, v in {**ov, **fm, **inv}.items() if not isinstance(v, (dict, list))}
@@ -8740,7 +8740,7 @@ async def portfolio_ranking_stream(request: Request):
             haiku_prompt = (
                 "Rank these 7 KimFam Uganda farm investment projects.\n"
                 f"LIVE DATA:\n{_json.dumps(summary, indent=2)[:5500]}\n\n"
-                "Return ONLY valid JSON — no markdown, no explanation:\n"
+                "Return ONLY valid JSON - no markdown, no explanation:\n"
                 '{"ranked":[{"rank":1,"project_id":"...","tier":"MOVE NOW|BUILD CAREFULLY|LET COMPOUND",'
                 '"score_out_of_10":8,"score_rationale":"2 sentences with numbers","time_frame":"short|medium|long",'
                 '"strategic_note":"Specific 90-day action for the family"}]}'
@@ -8752,7 +8752,7 @@ async def portfolio_ranking_stream(request: Request):
                 m = _re.search(r"\{.*\}", _hr, _re.DOTALL)
                 if m: ranked = _json.loads(m.group())
             except: pass
-            # Haiku CLI intermittently returns nothing/unparseable — fall back so the
+            # Haiku CLI intermittently returns nothing/unparseable - fall back so the
             # ranking is never empty: Gemini Flash, then Groq.
             if not ranked.get("ranked"):
                 _gk = _os.environ.get("GEMINI_API_KEY", "")
@@ -8792,23 +8792,23 @@ async def portfolio_ranking_stream(request: Request):
                 _bn = _names.get(_b.get("project_id",""), _b.get("project_id","?"))
                 yield _sse({"type":"step","step":3,"total":5,"msg":f"Most patience needed: {_bn} ({_b.get('tier','')}). Now weighing portfolio-wide synergies..."})
 
-            # ── Step 4: Gemini 2.5 Flash — token streaming for narrative ───────
+            # ── Step 4: Gemini 2.5 Flash - token streaming for narrative ───────
             insight_prompt = (
                 "Senior portfolio advisor, KimFam Investment Club, Western Uganda.\n\n"
                 f"RANKINGS (from Haiku):\n{_json.dumps(ranked.get('ranked',[]), indent=2)}\n\n"
                 f"LIVE DATA SUMMARY:\n{_json.dumps(summary, indent=2)[:3000]}\n\n"
                 "Return ONLY valid JSON (no markdown fences):\n"
-                '{"portfolio_insight":"2-3 sentences — what do the numbers reveal the family has not noticed?",'
+                '{"portfolio_insight":"2-3 sentences - what do the numbers reveal the family has not noticed?",'
                 '"biggest_opportunity":"Single biggest untapped opportunity, cite numbers",'
                 '"biggest_risk":"Single risk that hurts multiple projects simultaneously",'
-                '"compounding_play":"Project or combo that creates flywheel — cite specific synergies"}'
+                '"compounding_play":"Project or combo that creates flywheel - cite specific synergies"}'
             )
 
             insights = {}
             yield _sse({"type":"step","step":4,"total":5,"msg":"Claude Sonnet generating strategic insights..."})
 
             # Run the (slow) insight call as a task and emit "thinking" heartbeats
-            # while it runs — keeps the SSE alive past nginx's idle timeout AND
+            # while it runs - keeps the SSE alive past nginx's idle timeout AND
             # lets the user watch the reasoning unfold.
             _think = ["Cross-referencing capital against live cash flow...",
                       "Hunting for the flywheel between projects...",
@@ -8843,7 +8843,7 @@ async def portfolio_ranking_stream(request: Request):
                 insights = {"portfolio_insight": sonnet_raw[:600] if sonnet_raw else "Analysis unavailable"}
 
             # ── Step 5: Merge and emit ─────────────────────────────────────────
-            yield _sse({"type":"step","step":5,"total":5,"msg":"Analysis complete — loading results..."})
+            yield _sse({"type":"step","step":5,"total":5,"msg":"Analysis complete - loading results..."})
             yield _sse({"type":"result","data":{**ranked, **insights}})
 
         except Exception as e:
@@ -8879,10 +8879,10 @@ async def new_ventures_stream(request: Request):
                          "members":13,"focus":"Agricultural and agri-business investments",
                          "land_assets":["Nyabugando Farm (main)","Busisi Land (3.38 acres, eucalyptus)"]},
                 "current_portfolio": {
-                    "operational":["Chicken broilers — AppSheet tracked","Washing Bay — 5+ months revenue"],
-                    "active":["Sheep Dorper — 17 head","Trees Eucalyptus — 3,600 seedlings"],
-                    "planning":["Dairy zero-grazing — UGX 16M needed","Irrigation+Bananas — Phase 2 TBD"],
-                    "research":["Bees — 10 hives planned"]
+                    "operational":["Chicken broilers - AppSheet tracked","Washing Bay - 5+ months revenue"],
+                    "active":["Sheep Dorper - 17 head","Trees Eucalyptus - 3,600 seedlings"],
+                    "planning":["Dairy zero-grazing - UGX 16M needed","Irrigation+Bananas - Phase 2 TBD"],
+                    "research":["Bees - 10 hives planned"]
                 },
                 "resources":{"land":"Multi-acre Mbarara","water":"Borehole + ponds",
                              "labour":"Family + casual","markets":"Mbarara city, Kampala road",
@@ -8892,7 +8892,7 @@ async def new_ventures_stream(request: Request):
                 "focus_area": focus_area
             }
 
-            yield _sse({"type":"step","step":2,"total":4,"msg":f"Context ready ({focus_area}) — Claude Sonnet researching venture opportunities..."})
+            yield _sse({"type":"step","step":2,"total":4,"msg":f"Context ready ({focus_area}) - Claude Sonnet researching venture opportunities..."})
 
             prompt = (
                 "Venture advisor for KimFam Investment Club, Uganda.\n\n"
@@ -8943,7 +8943,7 @@ async def new_ventures_stream(request: Request):
                         full_text = resp.choices[0].message.content
                     except: pass
 
-            yield _sse({"type":"step","step":4,"total":4,"msg":"Proposals ready — parsing results..."})
+            yield _sse({"type":"step","step":4,"total":4,"msg":"Proposals ready - parsing results..."})
 
             result = {}
             try:
@@ -8956,7 +8956,7 @@ async def new_ventures_stream(request: Request):
             _vs = result.get("ventures", []) if isinstance(result, dict) else []
             if _vs:
                 _v0 = _vs[0]
-                yield _sse({"type":"step","step":4,"total":4,"msg":f"Top idea: {_v0.get('name','?')} — {(_v0.get('headline','') or '')[:80]}"})
+                yield _sse({"type":"step","step":4,"total":4,"msg":f"Top idea: {_v0.get('name','?')} - {(_v0.get('headline','') or '')[:80]}"})
                 yield _sse({"type":"step","step":4,"total":4,"msg":f"{len(_vs)} fresh ventures mapped to your land, water and markets. Compiling..."})
 
             yield _sse({"type":"result","data":result})
@@ -9008,10 +9008,10 @@ Respond in strict JSON format:
       "score_out_of_10": 8,
       "score_rationale": "2 sentences: what earns this score",
       "time_frame": "short/medium/long",
-      "strategic_note": "one paragraph — what specific action should the family take on this project in the next 90 days"
+      "strategic_note": "one paragraph - what specific action should the family take on this project in the next 90 days"
     }}
   ],
-  "portfolio_insight": "2-3 sentences on the portfolio as a whole — what the numbers tell you about the family's investment strategy that they might not have noticed",
+  "portfolio_insight": "2-3 sentences on the portfolio as a whole - what the numbers tell you about the family's investment strategy that they might not have noticed",
   "biggest_opportunity": "The single biggest untapped opportunity across the whole portfolio",
   "biggest_risk": "The single biggest risk that could hurt multiple projects simultaneously",
   "compounding_play": "The one project or combination of projects that, if executed well, creates a compounding flywheel effect (e.g., manure from dairy feeds bananas, eucalyptus shade reduces cow heat stress, etc.)"
@@ -9082,15 +9082,15 @@ async def new_ventures_engine(request: Request):
                 "All projects must align with sustainable agriculture and family values",
             ],
             "existing_land_assets": [
-                "Nyabugando Farm (main farm, Mbarara area) — multiple active projects",
+                "Nyabugando Farm (main farm, Mbarara area) - multiple active projects",
                 "Busisi Land (3.38 acres, eucalyptus planted)",
             ]
         },
         "current_portfolio": {
-            "operational": ["Chicken (broilers) — Solomon AppSheet, most data-rich", "Washing Bay (car wash) — 5 months revenue confirmed"],
-            "active_growing": ["Sheep (Dorper) — 17 head, UGX 1.71M invested", "Trees (Eucalyptus) — 3,600 seedlings, 2024 planted"],
-            "planning": ["Dairy (zero-grazing shed) — UGX 16M needed", "Irrigation + Bananas — Phase 2 CapEx unknown"],
-            "research": ["Bees — 10 hives planned, no capital committed"],
+            "operational": ["Chicken (broilers) - Solomon AppSheet, most data-rich", "Washing Bay (car wash) - 5 months revenue confirmed"],
+            "active_growing": ["Sheep (Dorper) - 17 head, UGX 1.71M invested", "Trees (Eucalyptus) - 3,600 seedlings, 2024 planted"],
+            "planning": ["Dairy (zero-grazing shed) - UGX 16M needed", "Irrigation + Bananas - Phase 2 CapEx unknown"],
+            "research": ["Bees - 10 hives planned, no capital committed"],
         },
         "known_farm_resources": {
             "land": "Multi-acre, mix of flat and hilly terrain, Mbarara western Uganda",
@@ -9152,14 +9152,14 @@ Respond in strict JSON:
     }}
   ],
   "strategic_commentary": "2-3 sentences on how these 5 ventures together create a more resilient and compounding portfolio",
-  "compounding_sequence": "What to start first, second, third and why — the optimal sequencing to build wealth fastest"
+  "compounding_sequence": "What to start first, second, third and why - the optimal sequencing to build wealth fastest"
 }}
 
 Use real Ugandan numbers. Be bold but realistic. The family wants to build generational wealth, not just pocket money."""
 
     import os as _os
 
-    # Try Claude first — best for structured research + JSON output
+    # Try Claude first - best for structured research + JSON output
     raw = _ask_claude(prompt + "\n\nRespond ONLY with valid JSON. No markdown fences, no explanation outside the JSON.", model="sonnet", timeout=180)
 
     # Fallback chain
@@ -9286,7 +9286,7 @@ def _equity_vote_state(member_name: str | None):
     my_family = _MEMBER_TO_FAMILY.get(member_name) if member_name else None
     my_vote = next((r["model"] for r in rows if r["family_id"] == my_family), None)
     decision = _equity_decision()
-    # Leading model (for the "Close vote & adopt" suggestion) — None on a tie.
+    # Leading model (for the "Close vote & adopt" suggestion) - None on a tie.
     leader = None
     if any(tally.values()):
         mx = max(tally.values())
@@ -9332,7 +9332,7 @@ async def cast_equity_vote(request: Request):
         raise _HE(status_code=400, detail="Model must be A, B or C.")
     _ensure_equity_votes_table()
     if _equity_decision() is not None:
-        raise _HE(status_code=409, detail="The equity model has already been decided — voting is closed.")
+        raise _HE(status_code=409, detail="The equity model has already been decided - voting is closed.")
     # Upsert: one row per family; re-voting updates the family's choice.
     _ex("""INSERT INTO equity_votes (family_id, model, voter, voted_at)
            VALUES (%s, %s, %s, now())
@@ -9361,7 +9361,7 @@ async def finalize_equity_vote(request: Request):
     if not model:
         model = state["leader"]   # default to the clear leader
     if model not in _VALID_MODELS:
-        raise _HE(status_code=400, detail="Vote is tied — choose the model to adopt explicitly (A, B or C).")
+        raise _HE(status_code=400, detail="Vote is tied - choose the model to adopt explicitly (A, B or C).")
     # Deactivate any prior decision, then record the new one.
     _ex("UPDATE equity_decision SET active = FALSE WHERE active = TRUE")
     _ex("""INSERT INTO equity_decision (adopted_model, decided_by, meeting_ref, tally, active)
@@ -9452,11 +9452,11 @@ async def assign_officer(role_slug: str, request: Request):
 
 # ── Member Engagement Score ───────────────────────────────────────────────────
 # Weekly engagement scoring across 5 dimensions:
-#   1. Payment timeliness (40 pts max) — paid before the 5th of the month = full marks
-#   2. Action point completion (25 pts max) — % of owned actions completed by deadline
-#   3. Project participation (20 pts max) — confirmed interests + active contributions
-#   4. Meetings proxy (10 pts max) — attendance derived from meeting register (future)
-#   5. App engagement (5 pts max) — has uploaded profile photo + submitted payments via app
+#   1. Payment timeliness (40 pts max) - paid before the 5th of the month = full marks
+#   2. Action point completion (25 pts max) - % of owned actions completed by deadline
+#   3. Project participation (20 pts max) - confirmed interests + active contributions
+#   4. Meetings proxy (10 pts max) - attendance derived from meeting register (future)
+#   5. App engagement (5 pts max) - has uploaded profile photo + submitted payments via app
 # Score is per-family (both spouses count as one unit).
 # Ranking shows top performers; bottom performers are NOT ranked (club culture).
 
@@ -9470,7 +9470,7 @@ async def engagement_scores(request: Request):
 
     today = _date.today()
 
-    # 1. Payment scores — families that have paid current month by the 5th get full marks
+    # 1. Payment scores - families that have paid current month by the 5th get full marks
     ledger_data = []
     try:
         from contributions import compute_family_balance as _cfb
@@ -9624,12 +9624,12 @@ async def engagement_scores(request: Request):
         "as_at": today.isoformat(),
         "scores": scores,
         "max_score": 90,
-        "note": "Scores reset weekly. Bottom performers are not ranked — only top 5 shown.",
+        "note": "Scores reset weekly. Bottom performers are not ranked - only top 5 shown.",
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KlaFam Module — rotating savings group (tanda / merry-go-round)
+# KlaFam Module - rotating savings group (tanda / merry-go-round)
 # Members: The Arindas, The Turamyes, Priscilla, Alex  (Boaz: historical only)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -9667,7 +9667,7 @@ _KLAFAM_COLS_READY = False
 
 
 def _ensure_klafam_cols():
-    """Idempotent — add the `recorded_by` attribution column. The klafam_* tables are owned by
+    """Idempotent - add the `recorded_by` attribution column. The klafam_* tables are owned by
     the app role, so this ALTER succeeds (unlike the postgres-owned legacy tables). Never raises."""
     global _KLAFAM_COLS_READY
     if _KLAFAM_COLS_READY:
@@ -9884,7 +9884,7 @@ def _klafam_cycle_detail(cycle_id: int):
                 "paid_date":  ct["paid_date"].isoformat() if ct.get("paid_date") else None,
                 "offset_reason": ct.get("offset_reason"),
                 "notes":      ct.get("notes"),
-                # who logged it — set when the beneficiary/admin records on a member's behalf
+                # who logged it - set when the beneficiary/admin records on a member's behalf
                 "recorded_by": ct.get("recorded_by"),
             }
             for ct in contribs
@@ -9904,7 +9904,7 @@ def klafam_overview(request: Request):
     # A cycle's contributions are due on the 28th of the PREVIOUS month (_klafam_due_date).
     # BEFORE the 28th we are still collecting for THIS month's payout; from the 28th onward
     # collection for next month's payout opens, so roll forward then. (Rolling forward
-    # unconditionally — the earlier off-by-one fix — pointed at a not-yet-created cycle
+    # unconditionally - the earlier off-by-one fix - pointed at a not-yet-created cycle
     # mid-month, e.g. Oct on 3 Sep, and blanked the current-month card.) The cycle before the
     # current one stays open for late payers until the 14th of the current month (ADR-031).
     from klafam_window import cycle_window
@@ -10110,7 +10110,7 @@ async def klafam_record_for_member(request: Request):
     """Record a contribution RECEIVED FROM another member.
 
     In a Tanda the beneficiary physically holds the money, so they are the authoritative
-    witness that a member paid — same trust model the cycle-acknowledge route already uses.
+    witness that a member paid - same trust model the cycle-acknowledge route already uses.
     Only this cycle's beneficiary (or an admin) may do it, and every entry is ATTRIBUTED via
     recorded_by, so it is never posted as if the member had recorded it themselves."""
     from fastapi import HTTPException as _HE
@@ -10146,7 +10146,7 @@ async def klafam_record_for_member(request: Request):
     except (TypeError, ValueError):
         raise _HE(status_code=422, detail="amount must be a number")
     if amount <= 0 or amount > 10_000_000:
-        raise _HE(status_code=422, detail="amount looks wrong — check the entry")
+        raise _HE(status_code=422, detail="amount looks wrong - check the entry")
     paid_date = str(body.get("paid_date") or date.today().isoformat())
     try:
         date.fromisoformat(paid_date)
@@ -10163,7 +10163,7 @@ async def klafam_record_for_member(request: Request):
         raise _HE(status_code=403,
                   detail="Only this cycle's beneficiary (who received the money) or an admin can record for another member")
 
-    # Active members only — inactive/historical members are not seeded into cycles, and
+    # Active members only - inactive/historical members are not seeded into cycles, and
     # inventing a row for them would inflate total_collected for someone not in the round.
     mem = dbq("SELECT id FROM klafam_members WHERE slug=%s AND is_active=TRUE", (member_slug,))
     if not mem:
@@ -10171,7 +10171,7 @@ async def klafam_record_for_member(request: Request):
     member_id = mem[0]["id"]
 
     if not _ensure_klafam_cols():
-        raise _HE(status_code=503, detail="Attribution column unavailable — check klafam table ownership")
+        raise _HE(status_code=503, detail="Attribution column unavailable - check klafam table ownership")
 
     # Never create a ledger row, and never silently overwrite one the member already owns:
     # an existing paid/offset entry (with its own attribution) must be resolved deliberately.
@@ -10181,7 +10181,7 @@ async def klafam_record_for_member(request: Request):
         raise _HE(status_code=404, detail="That member has no row in this cycle")
     if existing[0]["status"] in ("paid", "offset") and not overwrite:
         raise _HE(status_code=409,
-                  detail="Already recorded as %s — ask the member or an admin to change it" % existing[0]["status"])
+                  detail="Already recorded as %s - ask the member or an admin to change it" % existing[0]["status"])
     _exec("UPDATE klafam_contributions SET amount=%s, status='paid', paid_date=%s, notes=%s, "
           "offset_reason=NULL, recorded_by=%s WHERE id=%s",
           (amount, paid_date, notes, actor_label, existing[0]["id"]))
@@ -10281,7 +10281,7 @@ def klafam_me(request: Request):
     return {"slug": slug, "is_klafam": slug is not None}
 
 
-# ── SPA fallback — MUST be last; catches all non-API routes for React Router ──
+# ── SPA fallback - MUST be last; catches all non-API routes for React Router ──
 @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
 def spa_fallback(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("assets/"):

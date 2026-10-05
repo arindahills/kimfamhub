@@ -1,4 +1,4 @@
-# ADR-034: Decision trace — a register of decisions with quotes, linked to actions and money
+# ADR-034: Decision trace - a register of decisions with quotes, linked to actions and money
 
 ## Status: Accepted
 
@@ -67,6 +67,31 @@ Accepted 2 Oct 2026. Phases 0-3 are built (register, extraction, link suggestion
    Entries rows, Reconciliation open items and drill-down lines and opens a timeline panel (bottom sheet on a phone)
    with "unreviewed" and "suggested" badges and an admin confirm or correct control; a Decisions tab lists the
    register grouped by meeting.
+
+8. **Smart report (phase 4).** `report.py` writes a cited narrative; code, not the model, decides what may be said.
+   `build_evidence_pack` (pure) assembles ordered items with stable ids from data passed in: decisions `[D12]`
+   (statement, rationale, status, review state, meeting ref and date, speaker or "unattributed", amount), actions
+   `[A KIM/17/26-4]` (owner, deadline, overdue flag, dated updates), ledger rows `[L expense 283]`, club payments `[T 35]`,
+   scorecard KPIs and findings `[S revenue]`, and unexplained reconciliation items `[O gps:missing]`. Only confirmed or
+   suggested links are used, each suggested link is marked as such in the pack and the prompt, and private meetings are
+   excluded by the readers that feed it. `build_prompt` asks an injected `model_fn` (prompt to text; Claude through the
+   Hub's `_ask_claude`, a fake in tests) for six sections: Summary, Timeline of decisions, What it cost and what it earned,
+   Where reality departed from the plan and why, Unexplained, Questions for the next meeting.
+   `verify_report` splits the text into sentences and **removes** (never softens) any sentence with no citation or with a
+   citation not in the pack; it also removes a sentence that names a speaker, or attributes speech, for a decision whose
+   speaker is not set. The result is the cleaned sections plus the list of what was stripped. `pack_hash` is a stable
+   SHA-256 of the pack.
+   Reports are stored in the app-owned `decision_reports` table (project, pack hash, body JSONB, stripped JSONB, creator,
+   time), created under an advisory lock like the register; writes use `db.execute` (committed), never `db.query`.
+   `GET /api/trace/{project}/report` (any member) returns the cached report when its hash matches the current data, or
+   `stale: true` with the last one, and never generates. `POST` (admin JWT only, not the internal key) builds the pack,
+   calls Claude, verifies, stores and returns; a failed model call is a 503 and stores nothing. Both routes are registered
+   before the ledger routes and the SPA catch-all. Everyone sees the count of stripped sentences; their text is admin only.
+   The Report tab in `LedgerPage.tsx` shows each section with tappable citation chips (Why? panel for D, A, T, O, L; the
+   Scorecard tab for S), the generated time, a stale badge, a Generate or Refresh button for admins and a print stylesheet.
+   The trace API gained a `decision` target so a `[D12]` chip can open that decision with its quote.
+   **Ask KimFam** has a `decision_trace` tool: it reads the register through the internal key and answers "why" questions
+   only from matching decisions, with `[D..]` citations and linked items, and says plainly when nothing is recorded.
 
 ## Consequences
 - Every quote in the register is provably present in the stored transcript; a model that hallucinates

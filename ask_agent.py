@@ -1,5 +1,5 @@
 """
-KimFam Ask — Agentic RAG (AskImmigrate 2.0 pattern)
+KimFam Ask - Agentic RAG (AskImmigrate 2.0 pattern)
 Manager node routes to Sheet tool or RAG tool (or both).
 Synthesizer node builds the final answer.
 Session memory: SQLite conversation history.
@@ -56,7 +56,7 @@ To include a photo in your answer: ![description](URL)
 To include a video in your answer: [video: description](URL)
 CRITICAL: No spaces inside the parentheses. Wrong: ]( /url ) Correct: ](/url)
 Only include media when it genuinely adds value (e.g. member asks to see the dairy shed).
-Include 1-2 items maximum — do not dump all media at once.
+Include 1-2 items maximum - do not dump all media at once.
 """
 
 # ── State ──────────────────────────────────────────────────────────────────────
@@ -340,7 +340,7 @@ def rag_tool(question: str, doc_type_filter: str | None = None) -> str:
 
 # ── Data tools (live app endpoints) ────────────────────────────────────────────
 # These call the same PostgreSQL-backed functions the app's Finances tab uses, so
-# the AI answers from live structured data — not stale RAG or a sheet snapshot.
+# the AI answers from live structured data - not stale RAG or a sheet snapshot.
 import contributions as _contrib
 
 def _ugx(n):
@@ -447,7 +447,7 @@ def tool_expenditure(year: str | None = None, category: str | None = None) -> st
     lines = [f"EXPENDITURE RECORDS (showing {len(rows)}, total {_ugx(total)}):"]
     for r in rows:
         proj = f" [{r['project']}]" if r.get("project") else ""
-        lines.append(f"  {r.get('txn_date','')}: {r.get('description','')} — {_ugx(r.get('amount_ugx',0))} ({r.get('category','')}){proj}")
+        lines.append(f"  {r.get('txn_date','')}: {r.get('description','')} - {_ugx(r.get('amount_ugx',0))} ({r.get('category','')}){proj}")
     return "\n".join(lines)
 
 def tool_my_payments(member_name: str) -> str:
@@ -468,7 +468,7 @@ def tool_my_payments(member_name: str) -> str:
     for r in rows:
         when = str(r.get("submitted_at", ""))[:10]
         lines.append(f"  {when}: {_ugx(r.get('amount_ugx',0))} for {r.get('family_name','')} "
-                     f"({r.get('period_month','')}) — {r.get('status','')}")
+                     f"({r.get('period_month','')}) - {r.get('status','')}")
     return "\n".join(lines)
 
 
@@ -587,7 +587,7 @@ def tool_equity_models(member_name: str | None = None) -> str:
     while staying neutral and NOT telling anyone how to vote."""
     # Call the equity computation directly (lazy import avoids a circular import at
     # module load, and dodges the internal-key / port fragility of an HTTP round-trip
-    # to ourselves — works identically on staging :8001 and prod :8000).
+    # to ourselves - works identically on staging :8001 and prod :8000).
     try:
         import main as _main
         data = _main._fetch_family_equity()
@@ -608,12 +608,12 @@ def tool_equity_models(member_name: str | None = None) -> str:
             my_family = None
 
     lines = [
-        "EQUITY MODELS — neutral per-family comparison (live). The three models are three ways to "
+        "EQUITY MODELS - neutral per-family comparison (live). The three models are three ways to "
         "split ALL club expenses; a family's stake % = its claim on future profits.",
         "  Model A = Equal Share (protects low-balance families).",
         "  Model B = Proportional (tracks who actually funded what).",
         "  Model C = Solomon's (fixed weight by family size/obligation).",
-        f"  Totals — A: {_ugx(data.get('total_eq_A',0))}, B: {_ugx(data.get('total_eq_B',0))}, C: {_ugx(data.get('total_eq_C',0))}.",
+        f"  Totals - A: {_ugx(data.get('total_eq_A',0))}, B: {_ugx(data.get('total_eq_B',0))}, C: {_ugx(data.get('total_eq_C',0))}.",
         "  PER FAMILY (equity UGX and % stake under each model):",
     ]
     for f in fams:
@@ -626,7 +626,7 @@ def tool_equity_models(member_name: str | None = None) -> str:
         )
     lines.append(
         "  GUIDANCE RULE: explain the tradeoffs and show the family's own numbers, but DO NOT tell them "
-        "which model to vote for — the choice is theirs. Note that if every family just picks whatever "
+        "which model to vote for - the choice is theirs. Note that if every family just picks whatever "
         "maximizes its own stake the vote can deadlock; the decision is meant to be a family consensus."
     )
     return "\n".join(lines)
@@ -711,7 +711,7 @@ def run_data_tools(tool_names: list, member_name: str, family_arg: str | None, p
 
 
 # ── Manager node ───────────────────────────────────────────────────────────────
-_ROUTING_PROMPT = """You are the routing manager for KimFam Hub AI — an assistant for a Ugandan family investment club.
+_ROUTING_PROMPT = """You are the routing manager for KimFam Hub AI - an assistant for a Ugandan family investment club.
 
 You decide which DATA TOOLS to call (live app data) and whether to query the document store (RAG).
 
@@ -740,7 +740,7 @@ DATA TOOLS available (pick any that help answer; live PostgreSQL data):
                          when known). Use for "why did we bring in a second batch", "why was the refund paid", "who decided X".
                          Set "project_id" (default chicken). Answer only from its lines; if it says nothing is recorded, say so.
 
-RAG (document store) — set use_rag=true for:
+RAG (document store) - set use_rag=true for:
 - meetings (when/what decided/actions/latest) → doc_type_filter="minutes"
 - constitution / rules / governance → doc_type_filter="constitution"
 - project proposals / business plans → doc_type_filter="proposal"
@@ -837,14 +837,14 @@ def _get_app_guide() -> str:
     except Exception:
         return "(app guide not available)"
 
-_SYNTH_PROMPT_TEMPLATE = """You are KimFam Hub AI, the assistant for the KIM Investment Club — a Ugandan family investment club founded by the Arinda/Kikangi family.
+_SYNTH_PROMPT_TEMPLATE = """You are KimFam Hub AI, the assistant for the KIM Investment Club - a Ugandan family investment club founded by the Arinda/Kikangi family.
 
 MEMBER QUESTION (answer this): {question}
 
 The live data block includes today's date, the recent meetings in full (with a one-line index of older ones; their full minutes are in the club documents) and the action items. Use it to answer questions about the latest or most recent anything.
 Be helpful, warm, and concise. Cite your source (e.g., "from the KIM 016 minutes" or "live data from the Hub"). If you don't have the information, say so honestly rather than guessing.
 
-APP GUIDE (use this to answer ANY questions about how to use KimFam Hub — how to log in, submit payments, record washing bay income, use the calculator, reset a password, navigate to any tab, etc.):
+APP GUIDE (use this to answer ANY questions about how to use KimFam Hub - how to log in, submit payments, record washing bay income, use the calculator, reset a password, navigate to any tab, etc.):
 {app_guide}
 --- END APP GUIDE ---
 {history_block}
@@ -878,7 +878,7 @@ def synthesizer_node(state: KimFamState) -> KimFamState:
 
     if not sheet_block and not rag_block and not tool_block:
         if state["is_followup"] and state["conversation_history"]:
-            # Follow-up question — answer purely from conversation history
+            # Follow-up question - answer purely from conversation history
             pass  # fall through to synthesizer with history_block only
         else:
             state["answer"] = (
