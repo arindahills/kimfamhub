@@ -11,7 +11,7 @@ checkable register that joins them. The standing rules are strict: never invent 
 generated claim without a citation, money links are confirmed by people, private meetings are never used.
 
 ## Decision
-Accepted 2 Oct 2026. Phases 0-2 are built (register, extraction, link suggestions, admin review). Phases 3-5 (trace API and UI, report, WhatsApp hand-off) are separate issues (#101, #102).
+Accepted 2 Oct 2026. Phases 0-3 are built (register, extraction, link suggestions, admin review, trace API and Why? UI, issue #101). Phases 4-5 (report, Ask KimFam tool, WhatsApp hand-off) are separate (#102).
 
 1. **Three new tables**, created on demand under a Postgres advisory lock like `ledger.ready()`:
    `decisions` (statement, rationale, verbatim quote and its character offset, speaker or NULL, amount,
@@ -50,6 +50,23 @@ Accepted 2 Oct 2026. Phases 0-2 are built (register, extraction, link suggestion
    fractions, no text) so the maintainer can see how many meetings can be attributed to a speaker.
 6. Claude is the engine (the Hub's existing `_ask_claude` helper wired in by the caller that runs
    extraction on the server); Gemini only as fallback. This change does not call a model itself.
+
+7. **Trace API and Why? panel (phase 3).** `GET /api/trace/{project_id}?target_type=&target_ref=` returns the chain
+   for a target (`ledger_expense|sale|stock|loss`, `treasury_payment`, `open_item`, `action`): the linked decisions
+   (confirmed links as confirmed, suggested ones flagged `suggested`, rejected hidden; never from a private meeting),
+   each with statement, rationale, status, review state, speaker or null (shown as "unattributed"), meeting ref and
+   date and the verbatim quote with up to 2 transcript lines of context either side, cut from the stored transcript
+   at `quote_start` by the pure `quote_context()` (the transcript itself is never returned; no offset or an offset
+   outside the text means no quote, nothing is guessed); the linked actions with owner, deadline, status and dated
+   updates; and the outcome rows (ledger or treasury rows the decisions link to, with a total).
+   `GET /api/trace/{project_id}/decisions` lists the register for members (non-rejected links, non-private meetings).
+   Both need a login (any member); the internal key may read. Admins review through
+   `POST /api/decision-register/decisions/{id}/review` with `{state: confirmed|corrected, statement?}`, which sets
+   `review_state`, `reviewed_by`, `reviewed_at` (and the corrected statement) with a committed write; admin JWT only.
+   All routes are registered before the ledger routes and the SPA catch-all. In `LedgerPage.tsx` a Why? button sits on
+   Entries rows, Reconciliation open items and drill-down lines and opens a timeline panel (bottom sheet on a phone)
+   with "unreviewed" and "suggested" badges and an admin confirm or correct control; a Decisions tab lists the
+   register grouped by meeting.
 
 ## Consequences
 - Every quote in the register is provably present in the stored transcript; a model that hallucinates

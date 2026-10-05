@@ -721,3 +721,166 @@ def add_link(decision_id, target_type, target_ref, relation, who, note=""):
        (decision_id, target_type, str(target_ref).strip(), relation, (note or "")[:300], who))
     return _q("SELECT * FROM decision_links WHERE decision_id=%s AND target_type=%s AND target_ref=%s AND relation=%s",
               (decision_id, target_type, str(target_ref).strip(), relation))[0]
+
+
+# ── trace chain (phase 3): the read side behind the Why? panel ─────────────────────────────────
+CONTEXT_LINES = 2
+MAX_LINE = 400
+REVIEW_STATES = ("confirmed", "corrected")
+TRACE_TARGETS = ("ledger_expense", "ledger_sale", "ledger_stock", "ledger_loss", "treasury_payment", "open_item", "action")
+_OUTCOME_TABLES = {   # target_type -> (table, date column, amount column, label column)
+    "ledger_expense": ("ledger_expenses", "expense_date", "total", "item"),
+    "ledger_sale": ("ledger_sales", "sale_date", "total", "product_id"),
+    "ledger_stock": ("ledger_stock", "event_date", "total_cost", "supplier"),
+    "ledger_loss": ("ledger_losses", "loss_date", "total", "reason"),
+}
+
+
+def quote_context(transcript, quote_start, quote, lines=CONTEXT_LINES):
+    """The quote with up to `lines` transcript lines either side, taken at quote_start. Pure. Returns None
+    when there is no transcript, no offset or the offset is outside the text (nothing is guessed). The whole
+    transcript is never returned: only the quote's own lines plus the context, each capped in length."""
+    if not transcript or quote_start is None or not quote or not (0 <= quote_start < len(transcript)):
+        return None
+    parts = transcript.split("\n")
+    pos = 0
+    spans = []
+    for i, p in enumerate(parts):
+        spans.append((pos, pos + len(p)))
+        pos += len(p) + 1
+    end = min(quote_start + len(quote), len(transcript))
+    first = next((i for i, (a, b) in enumerate(spans) if a <= quote_start <= b), None)
+    if first is None:
+        return None
+    last = next((i for i, (a, b) in enumerate(spans) if a <= max(end - 1, quote_start) <= b), first)
+    clip = lambda s: s.strip()[:MAX_LINE]
+    keep = lambda seq: [clip(x) for x in seq if x.strip()]
+    return {"before": keep(parts[max(0, first - lines):first]), "quote": quote,
+            "after": keep(parts[last + 1:last + 1 + lines])}
+
+
+def visible_links(links):
+    """Rejected links are hidden everywhere in the trace; the rest keep their state (confirmed or suggested)."""
+    return [l for l in links if l.get("state") != "rejected"]
+
+
+def review_args(state, statement=None):
+    """Validate an admin review. -> (state, statement or None). 'corrected' needs a bounded new statement;
+    'confirmed' keeps the stored one. Raises ValueError."""
+    if state not in REVIEW_STATES:
+        raise ValueError("state")
+    if state == "confirmed":
+        return state, None
+    s = " ".join(str(statement or "").split())
+    if not s or len(s) > MAX_STATEMENT:
+        raise ValueError("statement")
+    return state, s
+
+
+def review_decision(decision_id, state, statement, who):
+    """Admin review: sets review_state, reviewed_by/at and (when corrected) the statement. -> row or None."""
+    state, statement = review_args(state, statement)
+    from db import execute_returning as _xr
+    rows = _xr("UPDATE decisions SET review_state=%s, statement=COALESCE(%s, statement), reviewed_by=%s, reviewed_at=now() "
+               "WHERE id=%s AND deleted_at IS NULL AND " + private_clause("decisions.meeting_id") + " RETURNING *",
+               (state, statement, who, decision_id))
+    return rows[0] if rows else None
+
+
+def _iso(v):
+    import datetime as _d
+    return v.isoformat() if isinstance(v, (_d.date, _d.datetime)) else v
+
+
+def _outcome_rows(project_id, links):
+    """Ledger and treasury rows the links point at, with a total. Missing rows are skipped."""
+    from db import query as _q
+    out, seen = [], set()
+    for l in links:
+        key = (l["target_type"], l["target_ref"])
+        if key in seen or not str(l["target_ref"]).isdigit():
+            continue
+        seen.add(key)
+        rid = int(l["target_ref"])
+        if l["target_type"] in _OUTCOME_TABLES:
+            t, d, a, lab = _OUTCOME_TABLES[l["target_type"]]
+            rows = _q("SELECT id, %s AS d, %s AS a, %s AS label FROM %s WHERE id=%%s AND project_id=%%s AND deleted_at IS NULL"
+                      % (d, a, lab, t), (rid, project_id))
+        elif l["target_type"] == "treasury_payment":
+            rows = _q("SELECT id, txn_date AS d, amount_ugx AS a, description AS label FROM expenditure_records "
+                      "WHERE id=%s AND project=%s", (rid, project_id))
+        else:
+            continue
+        if rows:
+            r = rows[0]
+            out.append({"target_type": l["target_type"], "target_ref": str(r["id"]), "date": _iso(r["d"]),
+                        "label": r["label"], "amount": r["a"], "state": l["state"]})
+    return {"rows": out, "total": sum(int(r["amount"] or 0) for r in out)}
+
+
+def _action_rows(refs, project_id):
+    from db import query as _q
+    out = []
+    for ref in refs:
+        a = _q("SELECT id, ref, description, assignee, assignees, deadline, status FROM actions WHERE ref=%s", (ref,))
+        if not a:
+            continue
+        a = a[0]
+        ups = _q("SELECT created_at, author, type, text FROM action_updates WHERE action_id=%s "
+                 "ORDER BY created_at, id", (a["id"],))
+        out.append({"ref": a["ref"], "description": a["description"],
+                    "assignees": a["assignees"] or a["assignee"], "deadline": _iso(a["deadline"]), "status": a["status"],
+                    "updates": [{"at": _iso(u["created_at"]), "author": u["author"], "type": u["type"], "text": u["text"]}
+                                for u in ups]})
+    return out
+
+
+def trace(project_id, target_type, target_ref):
+    """The chain for one target: decisions (confirmed or suggested links only, private meetings skipped, quote
+    with context from the stored transcript), linked actions and outcome rows. Reads only."""
+    from db import query as _q
+    if target_type not in TRACE_TARGETS:
+        raise ValueError("target_type")
+    target_ref = str(target_ref).strip()
+    if not target_ref:
+        raise ValueError("target_ref")
+    rows = _q("SELECT d.*, m.date AS meeting_date, m.transcript AS _transcript, l.state AS link_state, l.relation AS link_relation "
+              "FROM decision_links l JOIN decisions d ON d.id=l.decision_id JOIN meetings m ON m.id=d.meeting_id "
+              "WHERE l.target_type=%s AND l.target_ref=%s AND l.state<>'rejected' AND d.project_id=%s AND d.deleted_at IS NULL AND "
+              + private_clause("d.meeting_id") + " ORDER BY m.date, d.quote_start NULLS LAST, d.id",
+              (target_type, target_ref, project_id))
+    decisions, ids = [], []
+    for d in rows:
+        ids.append(d["id"])
+        decisions.append({
+            "id": d["id"], "statement": d["statement"], "rationale": d["rationale"], "status": d["status"],
+            "review_state": d["review_state"], "reviewed_by": d["reviewed_by"], "reviewed_at": _iso(d["reviewed_at"]),
+            "speaker": d["speaker"] or None, "unattributed": not d["speaker"], "source": d["source"],
+            "meeting_id": d["meeting_id"], "meeting_ref": d["meeting_ref"], "meeting_date": _iso(d["meeting_date"]),
+            "amount_ugx": d["amount_ugx"], "link_state": d["link_state"], "link_relation": d["link_relation"],
+            "suggested": d["link_state"] == "suggested",
+            "quote": quote_context(d["_transcript"], d["quote_start"], d["quote"]) if d["quote"] else None})
+    links = _q("SELECT l.target_type, l.target_ref, l.state FROM decision_links l WHERE l.decision_id = ANY(%s) AND l.state<>'rejected'",
+               (ids,)) if ids else []
+    own = [{"target_type": target_type, "target_ref": target_ref, "state": "confirmed"}] if target_type != "action" else []
+    refs = sorted({l["target_ref"] for l in links if l["target_type"] == "action"} | ({target_ref} if target_type == "action" else set()))
+    return {"target": {"type": target_type, "ref": target_ref}, "decisions": decisions,
+            "actions": _action_rows(refs, project_id),
+            "outcome": _outcome_rows(project_id, [l for l in links if l["target_type"] != "action"] + own),
+            "found": bool(decisions)}
+
+
+def register(project_id):
+    """The register for members: non-rejected links, non-private meetings, with the meeting date. Reads only."""
+    from db import query as _q
+    ds = _q("SELECT d.id, d.project_id, d.meeting_id, d.meeting_ref, m.date AS meeting_date, d.statement, d.rationale, d.quote, "
+            "d.speaker, d.amount_ugx, d.effective_date, d.status, d.review_state, d.source, d.confidence "
+            "FROM decisions d JOIN meetings m ON m.id=d.meeting_id WHERE d.project_id=%s AND d.deleted_at IS NULL AND "
+            + private_clause("d.meeting_id") + " ORDER BY m.date, d.meeting_id, d.quote_start NULLS LAST, d.id", (project_id,))
+    ls = _q("SELECT l.id, l.decision_id, l.target_type, l.target_ref, l.relation, l.state FROM decision_links l "
+            "JOIN decisions d ON d.id=l.decision_id WHERE d.project_id=%s AND d.deleted_at IS NULL AND l.state<>'rejected' AND "
+            + private_clause("d.meeting_id") + " ORDER BY l.id", (project_id,))
+    by = {}
+    for l in ls:
+        by.setdefault(l["decision_id"], []).append(l)
+    return [dict({k: _iso(v) for k, v in d.items()}, unattributed=not d["speaker"], links=by.get(d["id"], [])) for d in ds]

@@ -1,5 +1,6 @@
 // LedgerPage — the project ledger that replaces Solomon's AppSheet (ADR-032).
 // APIs: GET /api/ledger/{pid}, /entries, /reconciliation · POST /api/ledger/{pid}/{expense|sale|loss|stock}
+//       GET /api/trace/{pid}, /api/trace/{pid}/decisions (Why? panel, Decisions tab); POST /api/decision-register/decisions/{id}/review (admin)
 //       POST .../{kind}/{id}/receipt · DELETE .../{kind}/{id} · POST .../notes, /reimbursements (admin)
 // Everyone logged in can read (incl. the reconciliation); recorders (Solomon + admins) can record.
 import { useEffect, useRef, useState } from 'react'
@@ -100,6 +101,177 @@ function Stat({ l, v, tone, onClick }: { l: string; v: number; tone?: 'good' | '
     : <div className="rounded-[10px] bg-[var(--card-inset)] p-3 text-center">{body}</div>
 }
 
+// ---- Why? panel (ADR-034): the chain behind a figure, from the decision to the outcome ----
+interface TraceTarget { type: string; ref: string; title: string }
+interface TraceQuote { before: string[]; quote: string; after: string[] }
+interface TraceDecision {
+  id: number; statement: string; rationale: string | null; status: string; review_state: 'unreviewed' | 'confirmed' | 'corrected'
+  speaker: string | null; unattributed: boolean; source: string; meeting_ref: string | null; meeting_date: string | null
+  amount_ugx: number | null; suggested: boolean; quote: TraceQuote | null
+}
+interface TraceUpdate { at: string | null; author: string | null; type: string | null; text: string | null }
+interface TraceAction { ref: string; description: string | null; assignees: string | null; deadline: string | null; status: string | null; updates: TraceUpdate[] }
+interface TraceOutcomeRow { target_type: string; target_ref: string; date: string | null; label: string | null; amount: number | null; state: string }
+interface Trace { decisions: TraceDecision[]; actions: TraceAction[]; outcome: { rows: TraceOutcomeRow[]; total: number }; found: boolean }
+interface RegisterDecision {
+  id: number; meeting_id: number; meeting_ref: string | null; meeting_date: string | null; statement: string; rationale: string | null
+  speaker: string | null; unattributed: boolean; amount_ugx: number | null; status: string; review_state: 'unreviewed' | 'confirmed' | 'corrected'
+  source: string; links: { id: number; target_type: string; target_ref: string; relation: string; state: string }[]
+}
+const traceType: Record<string, string> = { expense: 'ledger_expense', sale: 'ledger_sale', stock: 'ledger_stock', loss: 'ledger_loss' }
+const OUTCOME_LABEL: Record<string, string> = { ledger_expense: 'Spending', ledger_sale: 'Sale', ledger_stock: 'Stock', ledger_loss: 'Loss', treasury_payment: 'Club payment' }
+
+function Badge({ text, tone }: { text: string; tone: 'amber' | 'green' | 'blue' }) {
+  const c = tone === 'amber' ? '#fbbf24' : tone === 'green' ? '#4ade80' : '#60a5fa'
+  return <span className="rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase" style={{ borderColor: c, color: c }}>{text}</span>
+}
+
+function WhyButton({ onClick }: { onClick: () => void }) {
+  return <button onClick={onClick} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[#60a5fa]">Why?</button>
+}
+
+function ReviewControl({ d, onDone }: { d: { id: number; statement: string; review_state: string }; onDone: () => void }) {
+  const [edit, setEdit] = useState(false)
+  const [text, setText] = useState(d.statement)
+  const [err, setErr] = useState('')
+  const send = async (state: 'confirmed' | 'corrected') => {
+    try { await call(`/api/decision-register/decisions/${d.id}/review`, 'POST', state === 'corrected' ? { state, statement: text } : { state }); setErr(''); setEdit(false); onDone() }
+    catch (e) { setErr(errMsg(e)) }
+  }
+  return (
+    <div className="mt-2 space-y-2 text-xs">
+      {err && <div className="rounded-lg bg-[#450a0a] p-2 text-[#fca5a5]">{err}</div>}
+      {edit ? (
+        <>
+          <textarea className={input} rows={2} value={text} onChange={e => setText(e.target.value)} />
+          <div className="flex gap-3"><button className={btn + ' !h-9 !px-4'} onClick={() => send('corrected')}>Save correction</button>
+            <button className="text-[var(--muted-2)]" onClick={() => setEdit(false)}>Cancel</button></div>
+        </>
+      ) : (
+        <div className="flex gap-4">
+          {d.review_state !== 'confirmed' && <button className="font-semibold text-[#4ade80]" onClick={() => send('confirmed')}>Confirm</button>}
+          <button className="font-semibold text-[#60a5fa]" onClick={() => { setText(d.statement); setEdit(true) }}>Correct the wording</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onClose: () => void }) {
+  const qc = useQueryClient()
+  const q = useQuery<Trace>({ queryKey: ['trace', target.type, target.ref], queryFn: () => call<Trace>(`/api/trace/${PID}?target_type=${encodeURIComponent(target.type)}&target_ref=${encodeURIComponent(target.ref)}`) })
+  const reviewed = () => { qc.invalidateQueries({ queryKey: ['trace'] }); qc.invalidateQueries({ queryKey: ['trace-decisions'] }) }
+  const t = q.data
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center" onClick={onClose}>
+      <div role="dialog" aria-label="Why" className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-[var(--border)] bg-[var(--background)] p-4 pb-8 sm:rounded-2xl" onClick={e => e.stopPropagation()}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div><div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">Why?</div><div className="text-sm font-semibold">{target.title}</div></div>
+          <button onClick={onClose} aria-label="Close" className="text-[var(--muted-2)]">✕</button>
+        </div>
+        {q.error && <div className="rounded-lg bg-[#450a0a] p-2.5 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>}
+        {!t && !q.error && <div className="text-sm text-[var(--muted-2)]">Loading…</div>}
+        {t && !t.found && t.actions.length === 0 && <div className="rounded-lg bg-[var(--card-inset)] p-3 text-sm text-[var(--muted-2)]">No decision has been linked to this yet.</div>}
+        {t && (
+          <ol className="space-y-3 border-l border-[var(--border)] pl-4">
+            {t.decisions.map(d => (
+              <li key={d.id} className="relative">
+                <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
+                <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] font-bold uppercase text-[var(--muted-2)]">Decision</span>
+                  {d.suggested && <Badge text="suggested" tone="amber" />}
+                  {d.review_state === 'unreviewed' && <Badge text="unreviewed" tone="amber" />}
+                  {d.review_state !== 'unreviewed' && <Badge text={d.review_state} tone="green" />}
+                  {d.status !== 'agreed' && <Badge text={d.status} tone="blue" />}
+                </div>
+                <div className="text-sm font-semibold">{d.statement}</div>
+                {d.rationale && <div className="mt-0.5 text-xs text-[var(--muted-2)]">Why: {d.rationale}</div>}
+                <div className="mt-1 text-xs text-[var(--muted-2)]">
+                  {d.unattributed ? 'unattributed' : <>said by <b className="text-[var(--foreground)]">{nice(d.speaker)}</b></>}
+                  {d.meeting_ref ? ` · ${d.meeting_ref}` : ''}{d.meeting_date ? ` · ${d.meeting_date}` : ''}{d.amount_ugx != null ? ` · UGX ${ugx(d.amount_ugx)}` : ''}
+                </div>
+                {d.quote && (
+                  <div className="mt-2 rounded-lg bg-[var(--card-inset)] p-2.5 text-xs">
+                    {d.quote.before.map((l, i) => <div key={'b' + i} className="text-[var(--muted-2)]">{l}</div>)}
+                    <div className="my-1 border-l-2 border-[#22c55e] pl-2 font-medium">“{d.quote.quote}”</div>
+                    {d.quote.after.map((l, i) => <div key={'a' + i} className="text-[var(--muted-2)]">{l}</div>)}
+                  </div>
+                )}
+                {!d.quote && <div className="mt-1 text-xs text-[var(--muted-2)]">{d.source === 'minutes' ? 'From the minutes (no transcript quote).' : 'Quote not available.'}</div>}
+                {s.is_admin && <ReviewControl d={d} onDone={reviewed} />}
+              </li>
+            ))}
+            {t.actions.map(a => (
+              <li key={a.ref} className="relative">
+                <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-[#60a5fa]" />
+                <div className="text-[10px] font-bold uppercase text-[var(--muted-2)]">Action {a.ref}</div>
+                <div className="text-sm font-semibold">{a.description}</div>
+                <div className="text-xs text-[var(--muted-2)]">{a.assignees ? nice(a.assignees) : 'no owner'}{a.deadline ? ` · due ${a.deadline}` : ''}{a.status ? ` · ${a.status}` : ''}</div>
+                {a.updates.map((u, i) => (
+                  <div key={i} className="mt-1 rounded-lg bg-[var(--card-inset)] p-2 text-xs"><div>{u.text}</div><div className="text-[var(--muted-2)]">{u.author} · {String(u.at ?? '').slice(0, 10)}</div></div>
+                ))}
+              </li>
+            ))}
+            {t.outcome.rows.length > 0 && (
+              <li className="relative">
+                <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-[#fbbf24]" />
+                <div className="text-[10px] font-bold uppercase text-[var(--muted-2)]">Outcome</div>
+                {t.outcome.rows.map(r => (
+                  <div key={r.target_type + r.target_ref} className="flex justify-between gap-3 py-0.5 text-xs" style={{ opacity: r.state === 'suggested' ? 0.7 : 1 }}>
+                    <span>{OUTCOME_LABEL[r.target_type] ?? r.target_type} · {r.date} · {r.label}{r.state === 'suggested' ? ' (suggested)' : ''}</span>
+                    <span className="tabular-nums">{ugx(r.amount)}</span>
+                  </div>
+                ))}
+                <div className="mt-1 flex justify-between border-t border-[var(--border)] pt-1 text-xs font-semibold"><span>Total</span><span className="tabular-nums">{ugx(t.outcome.total)}</span></div>
+              </li>
+            )}
+          </ol>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DecisionsTab({ s }: { s: Summary }) {
+  const qc = useQueryClient()
+  const q = useQuery({ queryKey: ['trace-decisions'], queryFn: () => call<{ decisions: RegisterDecision[] }>(`/api/trace/${PID}/decisions`) })
+  if (q.error) return <div className="p-4 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
+  if (!q.data) return <div className="p-4 text-sm text-[var(--muted-2)]">Loading…</div>
+  const groups: { id: number; ref: string; date: string; rows: RegisterDecision[] }[] = []
+  for (const d of q.data.decisions) {
+    let g = groups.find(x => x.id === d.meeting_id)
+    if (!g) { g = { id: d.meeting_id, ref: d.meeting_ref ?? 'Meeting', date: d.meeting_date ?? '', rows: [] }; groups.push(g) }
+    g.rows.push(d)
+  }
+  const done = () => { qc.invalidateQueries({ queryKey: ['trace-decisions'] }); qc.invalidateQueries({ queryKey: ['trace'] }) }
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-[var(--muted-2)]">What the family agreed in meetings, with who said it. Unreviewed items have not been checked by an admin yet.</p>
+      {groups.length === 0 && <div className={card + ' text-sm text-[var(--muted-2)]'}>No decisions in the register yet.</div>}
+      {groups.map(g => (
+        <div key={g.id} className={card}>
+          <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{g.ref}{g.date ? ` · ${g.date}` : ''}</div>
+          <div className="divide-y divide-[var(--border)]">
+            {g.rows.map(d => (
+              <div key={d.id} className="py-2">
+                <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                  {d.review_state === 'unreviewed' ? <Badge text="unreviewed" tone="amber" /> : <Badge text={d.review_state} tone="green" />}
+                  {d.links.some(l => l.state === 'suggested') && <Badge text="suggested links" tone="amber" />}
+                  {d.status !== 'agreed' && <Badge text={d.status} tone="blue" />}
+                </div>
+                <div className="text-sm font-semibold">{d.statement}</div>
+                {d.rationale && <div className="text-xs text-[var(--muted-2)]">Why: {d.rationale}</div>}
+                <div className="text-xs text-[var(--muted-2)]">{d.unattributed ? 'unattributed' : 'said by ' + nice(d.speaker)}{d.amount_ugx != null ? ` · UGX ${ugx(d.amount_ugx)}` : ''}</div>
+                {s.is_admin && <ReviewControl d={d} onDone={done} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 interface UnitAvg { unit: string; qty: number; amount: number; avg: number | null }
 interface DrillRow { key: string; label: string; count: number; amount: number; share: number; note?: string; qty?: number | null; avg?: number | null; units?: UnitAvg[] }
 interface DrillLine { date: string; title: string; detail: string; amount: number; balance?: number; unit?: string; id?: number | null; receipt_url?: string | null }
@@ -109,7 +281,9 @@ interface Drill {
   rows: DrillRow[]; lines: DrillLine[]; qty_available?: number; qty?: number | null; avg?: number | null; units?: UnitAvg[]
 }
 
-function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
+const drillTarget: Record<string, string> = { sales: 'ledger_sale', spoilt: 'ledger_loss', opex: 'ledger_expense', capex: 'ledger_expense' }
+
+function DrillView({ which, onBack, onWhy }: { which: string; onBack: () => void; onWhy: (t: TraceTarget) => void }) {
   const [p, setP] = useState<{ group?: string; year?: number; month?: number }>({})
   const qs = new URLSearchParams()
   if (p.group) qs.set('group', p.group)
@@ -190,6 +364,7 @@ function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
                     <div style={{ color: isQty ? (l.amount < 0 ? '#f87171' : '#4ade80') : undefined }}>{isQty ? (l.amount > 0 ? '+' : '') + l.amount : ugx(l.amount)}</div>
                     {l.balance != null && <div className="text-[10px] text-[var(--muted-2)]">balance {l.balance}</div>}
                   </div>
+                  {l.id != null && drillTarget[which] && <WhyButton onClick={() => onWhy({ type: drillTarget[which], ref: String(l.id), title: `${l.title}, ${l.date}` })} />}
                 </div>
               ))}
               {d.lines.length === 0 && <div className="p-4 text-sm text-[var(--muted-2)]">Nothing here.</div>}
@@ -202,10 +377,10 @@ function DrillView({ which, onBack }: { which: string; onBack: () => void }) {
   )
 }
 
-function SummaryTab({ s }: { s: Summary }) {
+function SummaryTab({ s, onWhy }: { s: Summary; onWhy: (t: TraceTarget) => void }) {
   const st = s.statement
   const [open, setCard] = useState<string | null>(null)
-  if (open) return <DrillView which={open} onBack={() => setCard(null)} />
+  if (open) return <DrillView which={open} onBack={() => setCard(null)} onWhy={onWhy} />
   return (
     <div className="space-y-3">
       <div className={card}>
@@ -509,7 +684,7 @@ function RecordTab({ s, onSaved }: { s: Summary; onSaved: () => void }) {
 
 const KINDS: [Kind, string][] = [['expense', 'Spending'], ['sale', 'Sales'], ['stock', 'Stock'], ['loss', 'Losses']]
 
-function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
+function EntriesTab({ s, onChanged, onWhy }: { s: Summary; onChanged: () => void; onWhy: (t: TraceTarget) => void }) {
   const [kind, setKind] = useState<Kind>('expense')
   const q = useQuery({ queryKey: ['ledger-entries', kind, s.statement.sales], queryFn: () => call<{ rows: Row[] }>(api('/entries?kind=' + kind)) })
   const [err, setErr] = useState('')
@@ -559,6 +734,7 @@ function EntriesTab({ s, onChanged }: { s: Summary; onChanged: () => void }) {
                 <div className="flex gap-3"><button className={btn + ' !h-9 !px-4'} onClick={() => savePay(r)}>Save</button><button className="text-xs text-[var(--muted-2)]" onClick={() => setPayRow(null)}>Cancel</button></div>
               </div>
             )}
+            <WhyButton onClick={() => onWhy({ type: traceType[kind], ref: String(r.id), title: `${label(r)}, ${dateOf(r)}, UGX ${ugx(amt(r))}` })} />
             {s.can_write && kind === 'sale' && r.payment === 'Credit' && (r.paid_amount ?? 0) < (r.total ?? 0) && (
               <button onClick={() => pay(r)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[#60a5fa]">Got paid</button>
             )}
@@ -945,7 +1121,7 @@ function CashTab() {
   )
 }
 
-function ReconTab({ s }: { s: Summary }) {
+function ReconTab({ s, onWhy }: { s: Summary; onWhy: (t: TraceTarget) => void }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['ledger-recon'], queryFn: () => call<Recon>(api('/reconciliation')) })
   const [open, setOpen] = useState<string | null>(null)
@@ -1027,6 +1203,7 @@ function ReconTab({ s }: { s: Summary }) {
               <div>{n.body}</div><div className="mt-1 text-[var(--muted-2)]">{n.author} · {String(n.at).slice(0, 10)}{n.explained ? ' · marked explained' : ''}</div>
             </div>
           ))}
+          <div className="mt-2"><WhyButton onClick={() => onWhy({ type: 'open_item', ref: i.key, title: i.title })} /></div>
           {s.is_admin && (open === i.key ? (
             <div className="mt-2 space-y-2">
               <textarea className={input} rows={2} value={text} onChange={e => setText(e.target.value)} placeholder="What explains this?" />
@@ -1060,14 +1237,15 @@ function ReconTab({ s }: { s: Summary }) {
 export default function LedgerPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon'>('summary')
+  const [tab, setTab] = useState<'summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions'>('summary')
+  const [why, setWhy] = useState<TraceTarget | null>(null)
   const [sumKey, setSumKey] = useState(0)          // tapping Summary always returns from a drill-down to the cards
   const q = useQuery<Summary>({ queryKey: ['ledger'], queryFn: () => call<Summary>(api('')), enabled: !!user })
   const refresh = () => { qc.invalidateQueries({ queryKey: ['ledger'] }); qc.invalidateQueries({ queryKey: ['ledger-recon'] }); qc.invalidateQueries({ queryKey: ['ledger-entries'] }) }
   if (q.error) return <div className="p-6 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-6 text-sm text-[var(--muted-2)]">Loading the chicken ledger…</div>
   const s = q.data
-  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['cash', 'Cash'], ['lists', 'Lists'], ['recon', 'Reconciliation']]
+  const tabs: ['summary' | 'score' | 'record' | 'entries' | 'cash' | 'lists' | 'recon' | 'decisions', string][] = [['summary', 'Summary'], ['score', 'Scorecard'], ...(s.can_write ? [['record', 'Record'] as ['record', string]] : []), ['entries', 'Entries'], ['cash', 'Cash'], ['lists', 'Lists'], ['recon', 'Reconciliation'], ['decisions', 'Decisions']]
   return (
     <div className="mx-auto max-w-2xl space-y-3 px-4 pb-24 pt-4">
       <div>
@@ -1080,13 +1258,15 @@ export default function LedgerPage() {
             style={{ borderColor: tab === k ? '#22c55e' : 'var(--border)', color: tab === k ? '#4ade80' : 'var(--muted-2)' }}>{l}</button>
         ))}
       </div>
-      {tab === 'summary' && <SummaryTab key={sumKey} s={s} />}
+      {tab === 'summary' && <SummaryTab key={sumKey} s={s} onWhy={setWhy} />}
       {tab === 'score' && <ScorecardTab />}
       {tab === 'record' && s.can_write && <RecordTab s={s} onSaved={refresh} />}
-      {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} />}
+      {tab === 'entries' && <EntriesTab s={s} onChanged={refresh} onWhy={setWhy} />}
       {tab === 'cash' && <CashTab />}
       {tab === 'lists' && <ListsTab s={s} />}
-      {tab === 'recon' && <ReconTab s={s} />}
+      {tab === 'recon' && <ReconTab s={s} onWhy={setWhy} />}
+      {tab === 'decisions' && <DecisionsTab s={s} />}
+      {why && <WhyPanel target={why} s={s} onClose={() => setWhy(null)} />}
     </div>
   )
 }
