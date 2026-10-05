@@ -7260,8 +7260,9 @@ def ledger_cash_withdraw(project_id: str, move_id: int, request: Request):
         raise _HE(status_code=404, detail="Not found")
     if row[0]["created_by"] != who and payload.get("role") != "admin":
         raise _HE(status_code=403, detail="Only who submitted it can withdraw it")
-    done = _q("UPDATE ledger_cash_moves SET deleted_at=now(), deleted_by=%s WHERE id=%s AND project_id=%s AND status='pending' AND deleted_at IS NULL RETURNING id",
-              (who, move_id, project_id))
+    from db import execute_returning as _xr
+    done = _xr("UPDATE ledger_cash_moves SET deleted_at=now(), deleted_by=%s WHERE id=%s AND project_id=%s AND status='pending' AND deleted_at IS NULL RETURNING id",
+               (who, move_id, project_id))
     if not done:
         raise _HE(status_code=409, detail="Only a pending move can be withdrawn")
     return {"ok": True}

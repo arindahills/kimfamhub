@@ -46,3 +46,21 @@ def execute(sql, params=None):
         raise
     finally:
         release_conn(conn)
+
+
+
+def execute_returning(sql, params=None):
+    """Run a write that has RETURNING and COMMIT it; -> list of rows. (query() never commits: a write through it is
+    silently rolled back, which hid two bugs in October 2026.)"""
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall() if cur.description else []
+        conn.commit()
+        return rows
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)

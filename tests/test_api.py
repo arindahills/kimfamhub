@@ -1522,13 +1522,16 @@ class TestDecisionTrace:
         def fq(sql, args=()):
             if "FROM meetings" in sql:
                 return [{"id": 1}]
-            if "SET deleted_at=NULL" in sql and "RETURNING id" in sql:
-                order.append("restore")
-                assert "decision_private_meetings" in sql and "set_at" in sql          # only rows purged by this flag
-                return [{"id": 7}, {"id": 8}]
             return []
+
+        def fxr(sql, args=()):
+            assert "SET deleted_at=NULL" in sql and "RETURNING id" in sql
+            order.append("restore")
+            assert "decision_private_meetings" in sql and "set_at" in sql              # only rows purged by this flag
+            return [{"id": 7}, {"id": 8}]
         fake = types.ModuleType("db")
         fake.query = fq
+        fake.execute_returning = fxr                                                   # the committing helper, not the read helper
         fake.execute = lambda sql, args=(): order.append("delete_override") if sql.startswith("DELETE FROM decision_private_meetings") else None
         monkeypatch.setitem(sys.modules, "db", fake)
         assert dt.set_private(5, False, "admin") == {"private": False, "purged": 0, "restored": 2}
@@ -2176,3 +2179,23 @@ class TestClubBalanceIncludesBankedProjectCash:
     def test_summary_adds_it_to_the_expected_balance(self):
         src = open(os.path.join(_APP_ROOT, "contributions.py")).read()
         assert "total_loan_payments + banked_projects - total_expenditure" in src and '"project_cash_banked"' in src
+
+
+
+class TestWritesAreCommitted:
+    """db.query() never commits; a write through it is silently rolled back (it hid two bugs). Writes use execute,
+    execute_returning or the db() transaction."""
+
+    def test_no_write_statement_goes_through_the_read_helper(self):
+        import re
+        bad = []
+        for f in ("ledger.py", "decision_trace.py", "main.py", "projection.py", "contributions.py"):
+            src = open(os.path.join(_APP_ROOT, f)).read()
+            for m in re.finditer(r"\b(?:_q|_dbq|query)\(\s*[\"'](UPDATE|INSERT|DELETE)\b", src):
+                bad.append((f, src.count("\n", 0, m.start()) + 1))
+        assert bad == [], bad
+
+    def test_execute_returning_commits_and_returns_rows(self):
+        src = open(os.path.join(_APP_ROOT, "db.py")).read()
+        body = src[src.index("def execute_returning("):]
+        assert "conn.commit()" in body and "conn.rollback()" in body and "fetchall()" in body

@@ -689,8 +689,9 @@ def set_private(meeting_id, private, who):
            "ON CONFLICT (meeting_id) DO UPDATE SET set_by=EXCLUDED.set_by, set_at=now()", (meeting_id, who))
         return {"private": True, "purged": purge_meeting(meeting_id)}
     # a mistaken flag must be reversible: bring back what the flag purged (deleted at or after it was set)
-    restored = len(_q("UPDATE decisions SET deleted_at=NULL WHERE meeting_id=%s AND deleted_at IS NOT NULL AND deleted_at >= "
-                      "(SELECT set_at FROM decision_private_meetings WHERE meeting_id=%s) RETURNING id", (meeting_id, meeting_id)))
+    from db import execute_returning as _xr
+    restored = len(_xr("UPDATE decisions SET deleted_at=NULL WHERE meeting_id=%s AND deleted_at IS NOT NULL AND deleted_at >= "
+                       "(SELECT set_at FROM decision_private_meetings WHERE meeting_id=%s) RETURNING id", (meeting_id, meeting_id)))
     _x("DELETE FROM decision_private_meetings WHERE meeting_id=%s", (meeting_id,))
     return {"private": False, "purged": 0, "restored": restored}
 
