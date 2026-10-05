@@ -272,3 +272,23 @@ def notify_proposal_comment(title, owner, commenter, body, link):
         return
     for p in _proposal_owner_phones(owner):
         _send(p, msg)
+
+
+# ── KlaFam (tanda) acknowledgements ──────────────────────────────────────────────────────────────
+GROUP_KLAFAM = "256782022899-1613666068@g.us"       # prod: Kla famly team(tanda)
+KLAFAM_SIGNOFF = "\n\n_(KlaFam Hub AI)_"
+
+
+def notify_klafam(message: str):
+    """Tell the KlaFam group that something was recorded. Staging goes to Hillary and the test group only. Silent when
+    KIMFAM_NOTIFY_OFF is set (tests). Never raises."""
+    if os.environ.get("KIMFAM_NOTIFY_OFF"):
+        return
+    try:
+        if IS_STAGING:
+            _send(HILLARY_PHONE, "[STAGING] " + message + KLAFAM_SIGNOFF)
+            _send(GROUP_KIMFAMTEST, "[STAGING] " + message + KLAFAM_SIGNOFF)
+        else:
+            _send(GROUP_KLAFAM, message + KLAFAM_SIGNOFF)
+    except Exception as e:
+        log.warning("KlaFam notify failed: %s", e)

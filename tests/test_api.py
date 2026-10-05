@@ -11,6 +11,7 @@ os.environ["JWT_SECRET"]      = "test-secret-for-pytest-32-chars!!"
 os.environ["WASHING_BAY_PIN"] = "99999"
 os.environ["INTERNAL_API_KEY"]= "test-internal-key"
 os.environ["SCHEDULER_ENABLED"] = "0"  # never start APScheduler in tests
+os.environ["KIMFAM_NOTIFY_OFF"] = "1"   # tests never send WhatsApp messages (KlaFam acknowledgements)
 
 # Support running from Hetzner prod dir, staging dir, or local Mac checkout.
 # KIMFAM_APP_ROOT can be set explicitly; otherwise derive from this file's location.
@@ -2088,3 +2089,67 @@ class TestCashRoutes:
         self._stub(monkeypatch)
         r = self._anon().post("/api/ledger/chicken/sale/1/payment", headers={"X-Internal-Key": "k"}, json={"reported_by": "Solomon", "amount": 1000, "received_by": "Israel"})
         assert r.status_code == 422 and "Hub" in r.text
+
+
+
+class TestKlaFamAcknowledgements:
+    """Recording a KlaFam payment in the Hub is acknowledged in the KlaFam group, from the Hub's own state."""
+
+    def _fake_db(self, monkeypatch, sent):
+        import sys, types
+        import notifications
+        fake = types.ModuleType("db")
+
+        def q(sql, args=()):
+            if "FROM klafam_cycles" in sql:
+                return [{"month_label": "Oct 2026", "bene": "The Turamyes"}]
+            if "FROM klafam_members WHERE slug" in sql:
+                return [{"display_name": "Priscilla"}]
+            return [{"display_name": "The Arindas", "status": "paid"}, {"display_name": "Priscilla", "status": "paid"}, {"display_name": "Alex", "status": None}]
+        fake.query = q
+        monkeypatch.setitem(sys.modules, "db", fake)
+        monkeypatch.setattr(notifications, "notify_klafam", lambda m: sent.append(m))
+
+    def test_each_kind_says_what_was_recorded_and_who_is_pending(self, monkeypatch):
+        import main as m
+        sent = []
+        self._fake_db(monkeypatch, sent)
+        m._klafam_notify(5, "priscilla", "paid", 300000)
+        m._klafam_notify(5, "priscilla", "received", 300000, "Hellen")
+        m._klafam_notify(5, "priscilla", "offset", 0, "", "owed by Max")
+        m._klafam_notify(5, "priscilla", "acknowledged", 0, "Max")
+        assert "Priscilla paid UGX 300,000 for the Oct 2026 cycle (The Turamyes's)" in sent[0]
+        assert "received and acknowledged by Hellen" in sent[1]
+        assert "share is offset (owed by Max)" in sent[2]
+        assert "Max acknowledged receipt of the Oct 2026 payout" in sent[3]
+        assert all("Oct 2026: The Arindas paid, Priscilla paid, Alex pending" in x for x in sent)      # who is still pending
+
+    def test_a_failure_to_notify_never_breaks_the_request(self, monkeypatch):
+        import main as m, notifications
+        monkeypatch.setattr(notifications, "notify_klafam", lambda msg: (_ for _ in ()).throw(RuntimeError("bridge down")))
+        self._fake_db(monkeypatch, [])
+        monkeypatch.setattr(notifications, "notify_klafam", lambda msg: (_ for _ in ()).throw(RuntimeError("bridge down")))
+        m._klafam_notify(5, "priscilla", "paid", 1)                  # must not raise
+
+    def test_the_agent_path_is_not_announced_twice_and_every_app_path_is(self):
+        src = open(os.path.join(_APP_ROOT, "main.py")).read()
+        rf = src[src.index("async def klafam_record_for_member("):src.index('@app.post("/api/klafam/contributions/offset")')]
+        assert '"via WhatsApp" not in actor_label' in rf and '_klafam_notify(cycle_id, member_slug, "received"' in rf
+        pay = src[src.index("async def klafam_record_payment("):src.index("def _klafam_notify(") if False else src.index("# JUSTIFICATION-A3: net-new endpoint letting the payout recipient")]
+        assert '_klafam_notify(cycle_id, slug, "paid"' in pay
+        assert '_klafam_notify(cycle_id, slug, "offset"' in src and '_klafam_notify(cycle_id, slug, "acknowledged"' in src
+
+    def test_notifications_are_silent_under_test_and_route_staging_safely(self, monkeypatch):
+        import notifications
+        calls = []
+        monkeypatch.setattr(notifications, "_send", lambda r, m: calls.append(r))
+        notifications.notify_klafam("x")
+        assert calls == []                                            # KIMFAM_NOTIFY_OFF is set for the whole test run
+        monkeypatch.delenv("KIMFAM_NOTIFY_OFF")
+        monkeypatch.setattr(notifications, "IS_STAGING", True)
+        notifications.notify_klafam("x")
+        assert calls == [notifications.HILLARY_PHONE, notifications.GROUP_KIMFAMTEST]      # staging never reaches the real group
+        calls.clear()
+        monkeypatch.setattr(notifications, "IS_STAGING", False)
+        notifications.notify_klafam("x")
+        assert calls == [notifications.GROUP_KLAFAM]

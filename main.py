@@ -9921,6 +9921,36 @@ def klafam_cycle_get(cycle_id: int, request: Request):
     return detail
 
 
+def _klafam_notify(cycle_id, slug, kind, amount=0, actor="", reason=""):
+    """Acknowledge in the KlaFam group that something was recorded in the Hub, from the Hub's own state afterwards.
+    kind: paid (member recorded their own) | received (beneficiary/admin recorded it) | offset | acknowledged.
+    Never breaks the request."""
+    try:
+        from db import query as _dbq
+        import notifications as _ntf
+        cyc = _dbq("SELECT kc.month_label, km.display_name AS bene FROM klafam_cycles kc LEFT JOIN klafam_members km ON km.id=kc.beneficiary_id WHERE kc.id=%s", (int(cycle_id),))
+        if not cyc:
+            return
+        mem = _dbq("SELECT display_name FROM klafam_members WHERE slug=%s", (slug,)) if slug else []
+        who = mem[0]["display_name"] if mem else (slug or "A member")
+        rows = _dbq("SELECT km.display_name, kcon.status FROM klafam_members km LEFT JOIN klafam_contributions kcon ON kcon.member_id=km.id AND kcon.cycle_id=%s "
+                    "WHERE km.is_active=TRUE ORDER BY km.id", (int(cycle_id),))
+        line = "%s: %s" % (cyc[0]["month_label"], ", ".join("%s %s" % (r["display_name"], ("paid" if r["status"] in ("paid", "offset") else "pending")) for r in rows))
+        lab, bene = cyc[0]["month_label"], cyc[0]["bene"]
+        amt = "{:,}".format(int(amount or 0))
+        if kind == "paid":
+            head = "Recorded on the KlaFam Hub: %s paid UGX %s for the %s cycle (%s's)." % (who, amt, lab, bene)
+        elif kind == "received":
+            head = "Recorded on the KlaFam Hub: %s's UGX %s for the %s cycle (%s's) is received and acknowledged%s." % (who, amt, lab, bene, (" by " + actor) if actor else "")
+        elif kind == "offset":
+            head = "Recorded on the KlaFam Hub: %s's %s share is offset%s." % (who, lab, (" (" + reason + ")") if reason else "")
+        else:
+            head = "Recorded on the KlaFam Hub: %s acknowledged receipt of the %s payout." % (actor or bene, lab)
+        _ntf.notify_klafam(head + "\n" + line)
+    except Exception as e:
+        log.warning("klafam notify failed: %s", e)
+
+
 @app.post("/api/klafam/contributions/pay")
 async def klafam_record_payment(request: Request):
     """Record own contribution for a cycle. No admin confirmation needed."""
@@ -9971,6 +10001,7 @@ async def klafam_record_payment(request: Request):
     _exec("UPDATE klafam_cycles SET total_collected=%s WHERE id=%s",
           (int(tot[0]["t"]), cycle_id))
 
+    _klafam_notify(cycle_id, slug, "paid", amount)
     return {"ok": True, "cycle_id": cycle_id, "member_slug": slug, "amount": amount}
 
 
@@ -10060,6 +10091,8 @@ async def klafam_record_for_member(request: Request):
     tot = dbq("SELECT COALESCE(SUM(amount),0) AS t FROM klafam_contributions "
               "WHERE cycle_id=%s AND status='paid'", (cycle_id,))
     _exec("UPDATE klafam_cycles SET total_collected=%s WHERE id=%s", (int(tot[0]["t"]), cycle_id))
+    if "via WhatsApp" not in actor_label:          # the WhatsApp agent acknowledges its own confirmations
+        _klafam_notify(cycle_id, member_slug, "received", amount, actor_label)
     return {"ok": True, "cycle_id": cycle_id, "member_slug": member_slug,
             "amount": amount, "recorded_by": actor_label}
 
@@ -10100,6 +10133,7 @@ async def klafam_record_offset(request: Request):
             (cycle_id, member_id, reason)
         )
 
+    _klafam_notify(cycle_id, slug, "offset", 0, "", reason)
     return {"ok": True, "cycle_id": cycle_id, "member_slug": slug}
 
 
@@ -10138,6 +10172,7 @@ async def klafam_acknowledge(cycle_id: int, request: Request):
         "UPDATE klafam_cycles SET acknowledged_at=%s, acknowledged_by=%s WHERE id=%s",
         (now, member_name, cycle_id)
     )
+    _klafam_notify(cycle_id, slug, "acknowledged", 0, member_name)
     return {"ok": True, "acknowledged_at": now.isoformat()}
 
 
