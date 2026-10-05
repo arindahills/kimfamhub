@@ -2539,3 +2539,9 @@ class TestReportVerifierHardening:
         assert "LIMIT 10" in src and "DELETE FROM decision_reports WHERE project_id=%s" in src
         m = open(os.path.join(_APP_ROOT, "main.py")).read()
         assert 'ref.replace("Sheet import \\u2014 ","").replace("Sheet import - ","")' in m           # both the stored and the swept spelling
+
+
+    def test_collect_still_works_before_the_ledger_is_live(self):
+        src = open(os.path.join(_APP_ROOT, "report.py")).read()
+        body = src[src.index("def collect("):src.index("def latest(")]
+        assert "not live for this project yet" in body and "FROM expenditure_records WHERE project=%s" in body and "rows is not None" in body

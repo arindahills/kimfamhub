@@ -410,11 +410,19 @@ def collect(project_id, today=None):
     decisions = dt.register(project_id)
     refs = [r["ref"] for r in q("SELECT ref FROM actions WHERE project_id=%s AND " + dt.private_clause("meeting_id") + " ORDER BY ref", (project_id,)) if r["ref"]]
     actions = dt._action_rows(refs, project_id)
-    ledger, treasury, open_items, score = [], [], [], None
+    ledger, treasury, open_items, score, rows = [], [], [], None, None
     if project_id in lg.LEDGER_PROJECTS:
-        rec = lg.reconciliation(project_id)
-        rows = lg.load(project_id)
-        ledger, treasury, open_items = ledger_items(rows), rec["treasury"], rec["open_items"]
+        try:
+            rec = lg.reconciliation(project_id)
+            rows = lg.load(project_id)
+            ledger, treasury, open_items = ledger_items(rows), rec["treasury"], rec["open_items"]
+        except Exception:
+            # the ledger is not live for this project yet (before cut-over): report from decisions, actions and the club's own payments
+            rows = None
+            treasury = [{"id": r["id"], "date": _day(r["txn_date"]), "description": r["description"], "amount": r["amount_ugx"], "kind": "payment",
+                         "recorded_by": r.get("recorded_by")}
+                        for r in q("SELECT id, txn_date, description, amount_ugx, recorded_by FROM expenditure_records WHERE project=%s ORDER BY txn_date, id", (project_id,))]
+    if project_id in lg.LEDGER_PROJECTS and rows is not None:
         try:
             import projection as pj
             got = pj.load_model(project_id)
