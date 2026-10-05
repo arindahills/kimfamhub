@@ -105,3 +105,14 @@ Accepted 2 Oct 2026. Phases 0-3 are built (register, extraction, link suggestion
 - Later phases read the same tables: the trace API and Why? panel, the cited report, and (phase 5) the
   WhatsApp agent asking "who decided this?" through the same API.
 - Flagging a meeting private is reversible: unflagging restores the decisions that flag purged (deleted at or after it was set). The audit script honours the override table.
+
+### Amendment (5 Oct 2026): what the report verifier guarantees, and what it does not
+After independent review the verifier removes a sentence when: it has no citation or an unknown one; it contains a number
+that the cited evidence items do not contain (so an invented amount cannot ride on a real citation); it attributes speech
+(said, proposed by, ...) with no recorded speaker on a cited decision; or it names a member or an office (Chairman,
+Treasurer, manager, Dad, ...) and credits them with an act or statement the cited decision does not attribute to them.
+A citation proves that the item exists and that the numbers agree. It does not prove the sentence means what the item
+says, so the report is a reading aid with links to the evidence, and anything important is checked through the chips.
+Evidence text is untrusted: brackets and heading marks are removed from it and it is fenced in the prompt as data. Only
+the newest 10 stored reports per project are kept.
+

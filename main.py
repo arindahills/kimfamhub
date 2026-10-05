@@ -2444,7 +2444,7 @@ def get_loans():
     payments = []
     for p in prows:
         ref = p.get("reference","")
-        month = ref.replace("Sheet import - ","") if "Sheet import" in (ref or "") else ref
+        month = ref.replace("Sheet import \u2014 ","").replace("Sheet import - ","") if "Sheet import" in (ref or "") else ref
         notes = p.get("notes","") or ""
         interest_paid = ""
         balance_val = ""
@@ -7028,7 +7028,9 @@ def trace_report_generate(project_id: str, request: Request):
     import report as _rp
     pack = _rp.collect(project_id)
     try:
-        verified = _rp.generate(pack, lambda p: _ask_claude(p, model="sonnet", timeout=240))
+        import auth as _auth_mod
+        verified = _rp.generate(pack, lambda p: _ask_claude(p, model="sonnet", timeout=240),
+                                names=[x["name"] for x in _auth_mod.MEMBERS] + [x["display"] for x in _auth_mod.MEMBERS])
     except RuntimeError:
         raise _HE(status_code=503, detail="The report could not be written just now because the AI service did not answer. Nothing was saved. Please try again in a few minutes.")
     h = _rp.pack_hash(pack)
