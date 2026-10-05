@@ -1507,6 +1507,7 @@ class TestDecisionTrace:
         fake = types.ModuleType("db")
         fake.query = lambda sql, args=(): ([{"id": 1}] if ("FROM meetings" in sql or "FROM decisions" in sql) else [])
         fake.execute = lambda sql, args=(): calls.append((sql, args))
+        fake.execute_returning = lambda sql, args=(): []
         monkeypatch.setitem(sys.modules, "db", fake)
         assert dt.set_private(5, True, "admin") == {"private": True, "purged": 1}
         assert any("decision_private_meetings" in c[0] and c[0].startswith("INSERT") for c in calls)
