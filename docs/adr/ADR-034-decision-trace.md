@@ -146,3 +146,6 @@ never fired. The decision keeps the raw label (`decisions.speaker_label`); the m
 - Display names such as a club or family login are exactly the shared-device case: one name over several voices. They are shown as shared, never as a person.
 - Name labels from a pasted transcript can be confirmed, marked shared or marked unknown in the same review panel as Speaker N labels. Meetings whose audio was transcribed without speaker labels have only name labels to review.
 - Flagging a meeting private deletes its speaker map rows, which hold sample lines.
+- Unflagging a private meeting restores its decisions but NOT its speaker confirmations: the map rows and their history are deleted on flag and must be confirmed again.
+- When a meeting has no attendance list, any logged-in member may confirm a label and the picker offers every member; with a list, only an admin or an attendee may, and only attendees can be picked.
+- A name line is a header only when it is Title or UPPER case over two to four words, or begins with a member's name. A phrase that merely mentions a member (a greeting or thanks) is speech. Greeting words never start a name.

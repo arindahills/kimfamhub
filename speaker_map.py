@@ -91,6 +91,7 @@ def split_sources(transcript):
 
 _NAME_PUNCT = re.compile(r"[.,?!:;()\"\[\]{}]")
 _NOT_NAMES = {"callout", "action items", "summary", "key points", "transcript", "notes"}
+_NOT_FIRST = {"thanks", "thank", "hello", "hi", "hey", "good", "okay", "ok", "yes", "no", "please", "welcome", "sorry", "well", "so"}
 NAME_MIN_COUNT = 3        # a display name line recurs: once per turn the person takes
 
 
@@ -117,12 +118,18 @@ def tactiq_names(text, members=None):
         if n < NAME_MIN_COUNT or l.lower() in _NOT_NAMES:
             continue
         toks = l.split()
-        if len(toks) > 4:
+        if len(toks) > 4 or toks[0].lower() in _NOT_FIRST:
             continue
         titled = len(toks) >= 2 and all(t[0].isupper() for t in toks)
-        if titled or (members and _canonical(l, members)):
+        # a member's name is the FIRST word (a display name such as "<member> <surname>"); a phrase that merely
+        # mentions a member ("Thanks <member>") is speech, not a name line
+        first_is_member = any(m.strip().lower() == toks[0].lower() for m in members or [])
+        if titled or first_is_member:
             names.add(l)
-    return names
+    # two name candidates on consecutive lines cannot both be headers: drop the pair rather than guess
+    lines = [" ".join(x.split()) for x in (text or "").split("\n") if x.strip()]
+    bad = {a for a, b in zip(lines, lines[1:]) if a in names and b in names and a != b} | {b for a, b in zip(lines, lines[1:]) if a in names and b in names and a != b}
+    return names - bad
 
 
 def tactiq_turns(part, members=None, per_line=False):
@@ -281,7 +288,7 @@ def suggest(labels, alignment, attendees, addressed=None, members=None, samples=
     matched = (alignment or {}).get("matched", {})
     covered = {}      # a name is shared when it is the leading name of two or more voices (stray lines do not count)
     for label, c in counts.items():
-        if not c or matched.get(label, 0) < MIN_ALIGNED:
+        if not c:
             continue
         name, n = max(c.items(), key=lambda kv: (kv[1], kv[0]))
         if n >= MIN_SHARE and n / matched[label] >= MIN_AGREE:

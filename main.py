@@ -7083,7 +7083,9 @@ def meeting_speaker_set(meeting_id: int, label: str, body: _SpeakerIn, request: 
         if not m:
             raise _HE(status_code=404, detail="No such meeting")
         mine = {str(x or "").strip().lower() for x in (payload.get("sub"), payload.get("display"))}
-        if not any(a.strip().lower() in mine for a in _sm.attendees_of(m.get("attendance"))):
+        present = _sm.attendees_of(m.get("attendance"))
+        # attendance unknown: any logged-in member may confirm (the picker offers every member then)
+        if present and not any(a.strip().lower() in mine for a in present):
             raise _HE(status_code=403, detail="Only an admin or a member present at this meeting can confirm speakers")
     try:
         return {"speaker": _sm.confirm_label(meeting_id, label, body.member, body.state, who, (body.note or "").strip()[:300] or None)}

@@ -687,8 +687,10 @@ def purge_meeting(meeting_id):
         _x("UPDATE decisions SET deleted_at=now() WHERE meeting_id=%s AND deleted_at IS NULL", (meeting_id,))
     try:  # the speaker map keeps transcript sample lines: a private meeting leaves nothing behind
         _x("DELETE FROM meeting_speakers WHERE meeting_id=%s", (meeting_id,))
-    except Exception:
-        pass
+        _x("DELETE FROM speaker_map_log WHERE meeting_id=%s", (meeting_id,))
+    except Exception as _e:
+        import logging
+        logging.getLogger("uvicorn.error").warning("speaker map rows not purged for meeting %s: %s", meeting_id, _e)
     return n
 
 

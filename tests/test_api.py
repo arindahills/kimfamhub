@@ -2757,6 +2757,7 @@ class TestSpeakerMap:
         a = src.index("def meeting_speaker_set")
         body = src[a:a + 2200]
         assert 'payload.get("role") != "admin"' in body and "status_code=403" in body
+        assert "if present and not any(" in body      # unknown attendance: any logged-in member may confirm
 
     # ---- Tactiq style export: name on its own line, speech below ----
     def _tactiq(self):
@@ -2794,3 +2795,19 @@ class TestSpeakerMap:
         # one stray vote for another name must not make a label shared
         pr = sm.suggest(["A", "B"], {"counts": {"A": {"X": 9, "Y": 2}, "B": {"Y": 8}}, "matched": {"A": 11, "B": 8}, "compared": {}}, [], None, ["X", "Y"])
         assert pr["A"]["state"] != "shared" and pr["B"]["state"] != "shared"
+
+    def test_tactiq_greetings_and_mentions_are_not_names(self):
+        import speaker_map as sm
+        body = []
+        for _ in range(4):
+            body += ["Thanks Alpha", "We should plan the feed purchase for the new batch", "Thank You", "Please confirm the delivery date soon",
+                     "Good Morning Everyone", "Alpha One", "Let us record the vaccination dates for every batch", "Bravo Two",
+                     "The shed roof still leaks near the east corner"]
+        names = sm.tactiq_names("\n".join(body), ["Alpha", "Bravo"])
+        assert names == {"Alpha One", "Bravo Two"}
+
+    def test_a_quiet_second_voice_still_makes_a_name_shared(self):
+        import speaker_map as sm
+        al = {"counts": {"A": {"X": 9, "Y": 2}, "B": {"X": 2}}, "matched": {"A": 11, "B": 2}, "compared": {}}
+        pr = sm.suggest(["A", "B"], al, [], None, ["X", "Y"])
+        assert pr["A"]["state"] == "shared"
