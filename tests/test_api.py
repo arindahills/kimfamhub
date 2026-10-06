@@ -2818,3 +2818,13 @@ class TestSpeakerMap:
         for _ in range(4):
             body += ["Alpha One", "Bravo Two", "We should plan the feed purchase for the new batch", "Alpha One", "Let us record the vaccination dates"]
         assert sm.tactiq_names("\n".join(body), []) == {"Alpha One", "Bravo Two"}
+
+    def test_alias_maps_a_display_name_to_an_attendee_only(self):
+        import speaker_map as sm
+        al = {"counts": {"A": {"Display Name": 9}}, "matched": {"A": 9}, "compared": {}}
+        ok = sm.suggest(["A"], al, ["Alpha", "Bravo"], None, [], None, {"display name": "Alpha"})
+        assert ok["A"]["state"] == "suggested" and ok["A"]["member"] == "Alpha"
+        no = sm.suggest(["A"], al, ["Bravo"], None, [], None, {"display name": "Alpha"})
+        assert no["A"]["member"] is None and no["A"]["state"] == "unknown"
+        none = sm.suggest(["A"], al, ["Alpha"], None, [], None, None)
+        assert none["A"]["member"] is None

@@ -256,11 +256,14 @@ def addressed_names(turns, names):
 
 
 # ── proposals ──────────────────────────────────────────────────────────────────────────────────
-def _canonical(name, pool):
-    """The member in `pool` a display name refers to (exact, or a whole-word match of the member's name), else None."""
+def _canonical(name, pool, aliases=None):
+    """The member in `pool` a display name refers to: a recorded alias first (a display name that is not the member's own
+    name, set by a person), then exact, then a whole-word match of the member's name. Else None."""
     low = (name or "").strip().lower()
     if not low:
         return None
+    if aliases and low in aliases:
+        return next((m for m in pool if m.strip().lower() == str(aliases[low]).strip().lower()), None)
     for m in pool:
         if m.strip().lower() == low:
             return m
@@ -273,7 +276,7 @@ def _short(line):
     return " ".join((line or "").split())[:SAMPLE_CHARS]
 
 
-def suggest(labels, alignment, attendees, addressed=None, members=None, samples=None):
+def suggest(labels, alignment, attendees, addressed=None, members=None, samples=None, aliases=None):
     """One proposal per label: {'member': name or None, 'state': 'suggested'|'shared'|'unknown', 'evidence': {...}}.
     `attendees` is the meeting's attendance list (empty = not known); with attendance known only an attendee may be
     proposed, otherwise `members` is the pool. `addressed` is {label: [names]} and `samples` {label: [lines]}.
@@ -312,7 +315,7 @@ def suggest(labels, alignment, attendees, addressed=None, members=None, samples=
             prop["state"] = "shared"
             ev["text"] += "; the same name also covers %d other voice(s), so this is a shared name or device" % (len(covered[name]) - 1)
             continue
-        member = _canonical(name, pool) if pool else None
+        member = _canonical(name, pool, aliases) if pool else None
         if not member:
             ev["text"] += "; that name is not on this meeting's %s" % ("attendance list" if attendees else "member list")
             continue
@@ -329,6 +332,8 @@ _DDL = [
         confirmed_by TEXT, confirmed_at TIMESTAMPTZ, note TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         UNIQUE (meeting_id, label))""",
+    """CREATE TABLE IF NOT EXISTS speaker_aliases (
+        display_name TEXT PRIMARY KEY, member TEXT NOT NULL, added_by TEXT, added_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
     """CREATE TABLE IF NOT EXISTS speaker_map_log (
         id SERIAL PRIMARY KEY, meeting_id INTEGER NOT NULL, label TEXT NOT NULL, old_state TEXT, old_member TEXT,
         new_state TEXT, new_member TEXT, changed_by TEXT, note TEXT, changed_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
@@ -372,7 +377,31 @@ def attendees_of(attendance):
             if isinstance(e, dict) and str(e.get("status") or "").strip().lower() in ("present", "attended", "here")]
 
 
-def proposals_for_transcript(transcript, attendees=(), members=()):
+def load_aliases():
+    """{display name (lower case): member} recorded by a person. Reads only; {} when unavailable."""
+    try:
+        from db import query as _q
+        return {r["display_name"].strip().lower(): r["member"] for r in _q("SELECT display_name, member FROM speaker_aliases")}
+    except Exception:
+        return {}
+
+
+def set_alias(display_name, member, who):
+    """Record that a display name (as it appears in a pasted transcript) is this member. Never used for a shared
+    login: do not alias a club or family account name. Written through db()."""
+    name = " ".join((display_name or "").split())
+    if not name or not (member or "").strip():
+        raise ValueError("alias")
+    from db import db as _db
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO speaker_aliases (display_name, member, added_by) VALUES (%s,%s,%s) "
+                        "ON CONFLICT (display_name) DO UPDATE SET member=EXCLUDED.member, added_by=EXCLUDED.added_by, added_at=now()",
+                        (name.lower(), member.strip(), who))
+    return {"display_name": name.lower(), "member": member.strip()}
+
+
+def proposals_for_transcript(transcript, attendees=(), members=(), aliases=None):
     """Everything suggest() needs, from one stored transcript. -> {label: proposal}; [] sources give {}."""
     parts = split_sources(transcript)
     dia = [t for p in parts if p["kind"] == "diarized" for t in _with_pos(p, turns_of(p))]
@@ -386,7 +415,9 @@ def proposals_for_transcript(transcript, attendees=(), members=()):
             samples[t["speaker"]].append(_LABEL_PREFIX.sub("", t["text"], count=1))
     pool = list(attendees) or list(members)
     names = pool + [n for n in {t["speaker"] for t in named if t["speaker"]}]
-    return suggest(labels, align(dia, named), list(attendees), addressed_names(dia + [], names), list(members), samples)
+    if aliases is None:
+        aliases = load_aliases()
+    return suggest(labels, align(dia, named), list(attendees), addressed_names(dia + [], names), list(members), samples, aliases)
 
 
 def _meeting(meeting_id):
