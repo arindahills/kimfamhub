@@ -2811,3 +2811,10 @@ class TestSpeakerMap:
         al = {"counts": {"A": {"X": 9, "Y": 2}, "B": {"X": 2}}, "matched": {"A": 11, "B": 2}, "compared": {}}
         pr = sm.suggest(["A", "B"], al, [], None, ["X", "Y"])
         assert pr["A"]["state"] == "shared"
+
+    def test_adjacent_name_lines_do_not_erase_names(self):
+        import speaker_map as sm
+        body = []
+        for _ in range(4):
+            body += ["Alpha One", "Bravo Two", "We should plan the feed purchase for the new batch", "Alpha One", "Let us record the vaccination dates"]
+        assert sm.tactiq_names("\n".join(body), []) == {"Alpha One", "Bravo Two"}

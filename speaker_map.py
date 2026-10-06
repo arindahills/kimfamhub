@@ -90,7 +90,7 @@ def split_sources(transcript):
 
 
 _NAME_PUNCT = re.compile(r"[.,?!:;()\"\[\]{}]")
-_NOT_NAMES = {"callout", "action items", "summary", "key points", "transcript", "notes"}
+_NOT_NAMES = {"callout", "action items", "action item", "summary", "key points", "transcript", "notes"}
 _NOT_FIRST = {"thanks", "thank", "hello", "hi", "hey", "good", "okay", "ok", "yes", "no", "please", "welcome", "sorry", "well", "so"}
 NAME_MIN_COUNT = 3        # a display name line recurs: once per turn the person takes
 
@@ -126,10 +126,7 @@ def tactiq_names(text, members=None):
         first_is_member = any(m.strip().lower() == toks[0].lower() for m in members or [])
         if titled or first_is_member:
             names.add(l)
-    # two name candidates on consecutive lines cannot both be headers: drop the pair rather than guess
-    lines = [" ".join(x.split()) for x in (text or "").split("\n") if x.strip()]
-    bad = {a for a, b in zip(lines, lines[1:]) if a in names and b in names and a != b} | {b for a, b in zip(lines, lines[1:]) if a in names and b in names and a != b}
-    return names - bad
+    return names
 
 
 def tactiq_turns(part, members=None, per_line=False):
