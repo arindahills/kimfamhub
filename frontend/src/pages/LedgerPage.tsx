@@ -242,10 +242,10 @@ function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onC
 // ---- Speakers review (ADR-034 amendment, #106): who is Speaker N in a meeting. Suggestions are NOT facts until a person confirms. ----
 interface SpeakerEvidence { text: string; samples: string[]; addressed: string[]; agree: number; total: number; name: string | null }
 interface SpeakerLabel { label: string; state: 'suggested' | 'confirmed' | 'shared' | 'unknown'; member: string | null; confirmed_by: string | null; note: string | null; evidence: SpeakerEvidence }
-interface SpeakersResp { meeting_id: number; ref: string | null; date: string | null; attendees: string[]; labels: SpeakerLabel[] }
+interface SpeakersResp { meeting_id: number; ref: string | null; date: string | null; attendees: string[]; pool: string[]; labels: SpeakerLabel[] }
 
-function SpeakerRow({ meetingId, attendees, l, onDone }: { meetingId: number; attendees: string[]; l: SpeakerLabel; onDone: () => void }) {
-  const [pick, setPick] = useState(l.member ?? '')
+function SpeakerRow({ meetingId, pool, l, onDone }: { meetingId: number; pool: string[]; l: SpeakerLabel; onDone: () => void }) {
+  const [pick, setPick] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const set = async (state: 'confirmed' | 'shared' | 'unknown') => {
@@ -271,8 +271,8 @@ function SpeakerRow({ meetingId, attendees, l, onDone }: { meetingId: number; at
       )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <select aria-label={`Who is ${l.label}`} className={input + ' !w-auto min-w-[10rem]'} value={pick} onChange={e => setPick(e.target.value)}>
-          <option value="">Pick who was present</option>
-          {attendees.map(a => <option key={a} value={a}>{nice(a)}</option>)}
+          <option value="">{l.state === 'suggested' && l.member ? `Suggested: ${nice(l.member)}. Pick to confirm` : 'Pick who was present'}</option>
+          {pool.map(a => <option key={a} value={a}>{nice(a)}</option>)}
         </select>
         <button disabled={busy || !pick} onClick={() => set('confirmed')} className={btn}>Confirm</button>
         <button disabled={busy} onClick={() => set('shared')} className="h-11 rounded-[10px] border border-[var(--border)] px-4 text-sm font-semibold disabled:opacity-40">Shared device (cannot tell)</button>
@@ -296,9 +296,9 @@ function SpeakersPanel({ meetingId, ref_, onClose }: { meetingId: number; ref_: 
       <p className="text-xs text-[var(--muted-2)]">A suggestion is only a hint from matching a pasted named transcript with the audio. It is not a fact until someone who was at the meeting confirms it. Never guess from who was logged in or which device was used.</p>
       {q.error && <div className="mt-2 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>}
       {!q.data && !q.error && <div className="mt-2 text-sm text-[var(--muted-2)]">Loading…</div>}
-      {q.data && q.data.labels.length === 0 && <div className="mt-2 text-sm text-[var(--muted-2)]">This meeting has no diarized speakers to identify.</div>}
+      {q.data && q.data.labels.length === 0 && <div className="mt-2 text-sm text-[var(--muted-2)]">This meeting has no speaker labels to identify.</div>}
       {q.data && q.data.attendees.length === 0 && q.data.labels.length > 0 && <div className="mt-2 text-xs text-[#fbbf24]">No attendance list is recorded for this meeting, so any member can be picked.</div>}
-      {q.data && <div className="divide-y divide-[var(--border)]">{q.data.labels.map(l => <SpeakerRow key={l.label} meetingId={meetingId} attendees={q.data.attendees} l={l} onDone={done} />)}</div>}
+      {q.data && <div className="divide-y divide-[var(--border)]">{q.data.labels.map(l => <SpeakerRow key={l.label} meetingId={meetingId} pool={q.data.pool} l={l} onDone={done} />)}</div>}
     </div>
   )
 }

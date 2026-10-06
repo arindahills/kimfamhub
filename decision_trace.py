@@ -431,20 +431,16 @@ def ready():
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
                 for ddl in _DDL:
                     cur.execute(ddl)
-        _READY = True
-    except Exception as _e:
-        import logging
-        logging.getLogger("uvicorn.error").warning("decision tables unavailable: %s", _e)
-        return False
-    try:
         with _db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
                 for ddl in _DDL_COLUMNS:
                     cur.execute(ddl)
+        _READY = True
     except Exception as _e:
         import logging
-        logging.getLogger("uvicorn.error").warning("decisions.speaker_label not added: %s", _e)
+        logging.getLogger("uvicorn.error").warning("decision tables unavailable: %s", _e)
+        return False
     try:
         _best_effort_owned_objects()
     except Exception:
@@ -689,6 +685,10 @@ def purge_meeting(meeting_id):
     n = len(_q("SELECT id FROM decisions WHERE meeting_id=%s AND deleted_at IS NULL", (meeting_id,)))
     if n:
         _x("UPDATE decisions SET deleted_at=now() WHERE meeting_id=%s AND deleted_at IS NULL", (meeting_id,))
+    try:  # the speaker map keeps transcript sample lines: a private meeting leaves nothing behind
+        _x("DELETE FROM meeting_speakers WHERE meeting_id=%s", (meeting_id,))
+    except Exception:
+        pass
     return n
 
 

@@ -2716,3 +2716,44 @@ class TestSpeakerMap:
         for col in ("meeting_speakers", "speaker_map_log", "suggested_by", "confirmed_at"):
             assert col in src
         assert "speaker_label" in open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+
+    # ---- review fixes (independent review of #106) ----
+    def test_crlf_marker_still_splits(self):
+        import speaker_map as sm
+        t = self._two_source().replace("\n", "\r\n")
+        assert [p["kind"] for p in sm.split_sources(t)] == ["diarized", "named"]
+
+    def test_named_labels_are_listed_and_confirmable(self):
+        import speaker_map as sm
+        dia, named = sm._labels_of(self._two_source())
+        assert {"Speaker 1", "Speaker 2"} <= dia and {"Alpha", "Bravo"} <= named
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        assert "dia | named" in src and "named - set(props)" in src
+
+    def test_private_flag_purges_speaker_rows(self):
+        src = open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+        a = src.index("def purge_meeting")
+        assert "DELETE FROM meeting_speakers" in src[a:a + 900]
+
+    def test_stale_unconfirmed_rows_are_dropped_and_provenance_honest(self):
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        assert "confirmed_by IS NULL AND NOT (label = ANY" in src
+        assert '"tactiq" if (p["evidence"].get("total") or 0) > 0 else who' in src
+
+    def test_picker_pool_covers_unknown_attendance_and_starts_empty(self):
+        sm = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        assert '"pool": att or members' in sm
+        ui = open(os.path.join(_APP_ROOT, "frontend", "src", "pages", "LedgerPage.tsx")).read()
+        assert "useState('')" in ui and "pool={q.data.pool}" in ui
+
+    def test_columns_are_added_before_ready(self):
+        src = open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+        a = src.index("def ready")
+        body = src[a:a + 1600]
+        assert body.index("_DDL_COLUMNS") < body.index("_READY = True")
+
+    def test_put_route_checks_attendance_for_non_admins(self):
+        src = open(os.path.join(_APP_ROOT, "main.py")).read()
+        a = src.index("def meeting_speaker_set")
+        body = src[a:a + 2200]
+        assert 'payload.get("role") != "admin"' in body and "status_code=403" in body

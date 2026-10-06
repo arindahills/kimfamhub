@@ -33,7 +33,7 @@ MIN_SHARE = 2             # a name aligned this often with a second label makes 
 SAMPLE_LINES = 3
 SAMPLE_CHARS = 120
 
-_MARKER = re.compile(r"^\[SOURCE:[ \t]*(?P<label>[^\]\n]*)\][ \t]*$", re.M)
+_MARKER = re.compile(r"^\[SOURCE:[ \t]*(?P<label>[^\]\n]*)\][ \t]*\r?$", re.M)
 _SPEAKER_N = re.compile(r"^Speaker[ _]*\d+$", re.I)
 _LABEL_PREFIX = re.compile(r"^(?:\[[^\]\n]{1,40}\]\s*:?\s*|[A-Z][A-Za-z.'-]*(?: [A-Za-z.'-]+){0,2}:[ \t]+)")
 _WORD = re.compile(r"[a-z0-9']+")
@@ -305,6 +305,16 @@ def _meeting(meeting_id):
     return rows[0] if rows else None
 
 
+def _labels_of(transcript):
+    """-> (diarized labels, named labels) present in the stored transcript. Pure."""
+    dia, named = set(), set()
+    for p in split_sources(transcript or ""):
+        for t in turns_of(p):
+            if t["speaker"]:
+                (dia if p["kind"] == "diarized" else named).add(t["speaker"])
+    return dia, named
+
+
 def store_suggestions(meeting_id, members=None, who="rules"):
     """Recompute and store suggestions for one non-private meeting. NEVER overwrites a confirmed row (nor a row a
     person set to shared or unknown), never writes 'confirmed'. -> {'status','labels','written'}."""
@@ -324,12 +334,16 @@ def store_suggestions(meeting_id, members=None, who="rules"):
         with conn.cursor() as cur:
             for label, p in props.items():
                 cur.execute(
-                    "INSERT INTO meeting_speakers (meeting_id, label, member, state, evidence, suggested_by) VALUES (%s,%s,%s,%s,%s,'tactiq') "
+                    "INSERT INTO meeting_speakers (meeting_id, label, member, state, evidence, suggested_by) VALUES (%s,%s,%s,%s,%s,%s) "
                     "ON CONFLICT (meeting_id, label) DO UPDATE SET member=EXCLUDED.member, state=EXCLUDED.state, "
                     "evidence=EXCLUDED.evidence, suggested_by=EXCLUDED.suggested_by, updated_at=now() "
                     "WHERE meeting_speakers.confirmed_by IS NULL AND meeting_speakers.state IN ('suggested','unknown')",
-                    (meeting_id, label, p["member"], p["state"], Json(p["evidence"])))
+                    (meeting_id, label, p["member"], p["state"], Json(p["evidence"]),
+                     "tactiq" if (p["evidence"].get("total") or 0) > 0 else who))
                 n += cur.rowcount
+            # a label that vanished (audio re-processed) must not linger as a live suggestion
+            cur.execute("DELETE FROM meeting_speakers WHERE meeting_id=%s AND confirmed_by IS NULL AND NOT (label = ANY(%s))",
+                        (meeting_id, list(props)))
     return {"status": "ok", "labels": len(props), "written": n}
 
 
@@ -342,8 +356,8 @@ def confirm_label(meeting_id, label, member, state, who, note=None):
     m = _meeting(meeting_id)
     if not m:
         raise ValueError("meeting")
-    labels = {t["speaker"] for p in split_sources(m.get("transcript") or "") if p["kind"] == "diarized" for t in turns_of(p) if t["speaker"]}
-    if label not in labels:
+    dia, named = _labels_of(m.get("transcript"))
+    if label not in dia | named:
         raise ValueError("label")
     member = (member or "").strip() or None
     if state == "confirmed":
@@ -381,6 +395,9 @@ def speakers_view(meeting_id):
     props = proposals_for_transcript(m.get("transcript") or "", attendees_of(m.get("attendance")), [])
     saved = {r["label"]: r for r in _q("SELECT * FROM meeting_speakers WHERE meeting_id=%s", (meeting_id,))}
     labels = []
+    _dia, named = _labels_of(m.get("transcript"))
+    import auth
+    members = [x["name"] for x in auth.MEMBERS]
     for label, live in props.items():
         row = saved.get(label)
         ev = (row["evidence"] if row and row["evidence"] else live["evidence"])
@@ -389,8 +406,17 @@ def speakers_view(meeting_id):
                        "confirmed_by": row["confirmed_by"] if row else None,
                        "confirmed_at": row["confirmed_at"].isoformat() if row and row["confirmed_at"] else None,
                        "note": row["note"] if row else None, "evidence": ev})
+    for label in sorted(named - set(props)):
+        row = saved.get(label)
+        labels.append({"label": label, "state": row["state"] if row else "unknown", "member": row["member"] if row else None,
+                       "confirmed_by": row["confirmed_by"] if row else None,
+                       "confirmed_at": row["confirmed_at"].isoformat() if row and row["confirmed_at"] else None,
+                       "note": row["note"] if row else None,
+                       "evidence": {"text": "Name taken from a pasted transcript. Not proof of who spoke: a shared device or login shows one name for several people.",
+                                    "samples": [], "addressed": [], "agree": 0, "total": 0, "name": label}})
+    att = attendees_of(m.get("attendance"))
     return {"meeting_id": meeting_id, "ref": m["ref"], "date": str(m["date"]) if m["date"] else None,
-            "attendees": attendees_of(m.get("attendance")), "labels": labels}
+            "attendees": att, "pool": att or members, "labels": labels}
 
 
 def confirmed_map(meeting_ids):
