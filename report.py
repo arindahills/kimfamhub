@@ -115,7 +115,7 @@ def build_evidence_pack(project_id, decisions, actions=(), ledger=(), treasury=(
         speaker = d.get("speaker") or None
         dec_items.append({"id": "D%s" % d["id"], "kind": "decision", "statement": _cut(d["statement"], 300), "rationale": _cut(d.get("rationale"), 300) or None,
                           "status": d.get("status"), "review_state": d.get("review_state"), "meeting_ref": d.get("meeting_ref"),
-                          "date": _day(d.get("meeting_date")), "speaker": speaker, "attribution": ("said by " + speaker) if speaker else "unattributed",
+                          "date": _day(d.get("meeting_date")), "speaker": speaker, "attribution": ("said by " + speaker) if speaker else ("shared device voice, no person named" if d.get("shared") else "unattributed"),
                           "amount": d.get("amount_ugx"), "links": links})
     for it in dec_items:
         add(it)
@@ -206,7 +206,7 @@ def build_prompt(pack):
         "1. Every sentence must end with at least one citation token copied exactly from the evidence list, such as [D12], [A KIM/17/26-4], "
         "[L expense 283], [T 35], [S revenue], [O gps:missing]. A sentence without a valid citation will be deleted.\n"
         "2. Use only facts in the evidence. Do not invent names, numbers, dates or reasons. Quote amounts as given.\n"
-        "3. Never say who said or proposed something unless the decision line says 'said by <name>'. If it says 'unattributed', do not name anyone as the speaker.\n"
+        "3. Never say who said or proposed something unless the decision line says 'said by <name>'. If it says 'unattributed' or 'shared device voice', do not name anyone as the speaker.\n"
         "4. A link marked SUGGESTED is not confirmed: say 'a suggested link' or 'possibly related', never state it as fact.\n"
         "5. Under 'Where reality departed from the plan and why', give a why only where a linked decision or action supports it; otherwise leave the why out.\n"
         "6. Under 'Unexplained' list spend with no linked decision, decisions with no action, actions marked OVERDUE and open items. If the evidence is silent say so plainly with a citation to the nearest item.\n"
@@ -364,7 +364,7 @@ def trace_answer_text(decisions, question):
         return head + "\n  Nothing is recorded in the decision register for this question. Say so plainly."
     out = [head]
     for _, _, _, d in sorted(scored)[:MAX_ASK]:
-        who = ("said by " + d["speaker"]) if d.get("speaker") else "unattributed"
+        who = ("said by " + d["speaker"]) if d.get("speaker") else ("shared device voice, no person named" if d.get("shared") else "unattributed")
         links = "; ".join("%s%s" % (c, " (suggested link, not confirmed)" if l.get("state") == "suggested" else "")
                           for l in d.get("links", []) if l.get("state") in LINK_STATES
                           for c in [cite_for(l["target_type"], l["target_ref"])] if c)

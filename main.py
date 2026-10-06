@@ -7039,6 +7039,74 @@ def trace_report_generate(project_id: str, request: Request):
     return {"report": _rp.public_view(row, h, True), "stale": False, "can_generate": True}
 
 
+# ── Speaker map (ADR-034 amendment, #106): which member is Speaker N, per meeting. Registered before the ledger routes and the SPA catch-all. ──
+def _speaker_ready():
+    from fastapi import HTTPException as _HE
+    import speaker_map as _sm
+    if not _sm.ready():
+        raise _HE(status_code=503, detail="The speaker map is initialising, please retry shortly")
+
+
+@app.get("/api/meetings/{meeting_id}/speakers")
+def meeting_speakers_get(meeting_id: int, request: Request):
+    """Any logged-in member. Labels with state, member (only when confirmed), evidence and sample lines. Private meetings: 404."""
+    from fastapi import HTTPException as _HE
+    if not _auth_verify(_get_tok(request)):
+        raise _HE(status_code=401, detail="Auth required")
+    _speaker_ready()
+    import speaker_map as _sm
+    out = _sm.speakers_view(meeting_id)
+    if out is None:
+        raise _HE(status_code=404, detail="No such meeting")
+    return out
+
+
+class _SpeakerIn(_BaseModel):
+    member: str | None = None
+    state: str
+    note: str | None = None
+
+
+@app.put("/api/meetings/{meeting_id}/speakers/{label}")
+def meeting_speaker_set(meeting_id: int, label: str, body: _SpeakerIn, request: Request):
+    """An admin, or a member on that meeting's attendance list, confirms who a label is (or marks it shared or unknown).
+    JWT only: the internal key is refused. The confirmer is recorded and the old value kept in speaker_map_log."""
+    from fastapi import HTTPException as _HE
+    payload = _auth_verify(_get_tok(request))
+    if not payload:
+        raise _HE(status_code=401, detail="Auth required")
+    _speaker_ready()
+    import speaker_map as _sm
+    who = payload.get("display") or payload.get("sub")
+    if payload.get("role") != "admin":
+        m = _sm._meeting(meeting_id)
+        if not m:
+            raise _HE(status_code=404, detail="No such meeting")
+        mine = {str(x or "").strip().lower() for x in (payload.get("sub"), payload.get("display"))}
+        if not any(a.strip().lower() in mine for a in _sm.attendees_of(m.get("attendance"))):
+            raise _HE(status_code=403, detail="Only an admin or a member present at this meeting can confirm speakers")
+    try:
+        return {"speaker": _sm.confirm_label(meeting_id, label, body.member, body.state, who, (body.note or "").strip()[:300] or None)}
+    except ValueError as e:
+        code = 404 if str(e) in ("meeting", "label") else 400
+        raise _HE(status_code=code, detail={"meeting": "No such meeting", "label": "No such speaker label in this meeting",
+                                            "member": "That member did not attend this meeting",
+                                            "state": "State must be confirmed, shared or unknown"}.get(str(e), "Bad request"))
+
+
+@app.post("/api/meetings/{meeting_id}/speakers/suggest")
+def meeting_speakers_suggest(meeting_id: int, request: Request):
+    """Admin (JWT). Recomputes suggestions from the transcript; never overwrites a row a person has set."""
+    from fastapi import HTTPException as _HE
+    _decision_admin(request)
+    _speaker_ready()
+    import speaker_map as _sm
+    out = _sm.store_suggestions(meeting_id)
+    if out["status"] == "missing":
+        raise _HE(status_code=404, detail="No such meeting")
+    return out
+
+
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)

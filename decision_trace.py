@@ -271,8 +271,10 @@ def check(raw, transcript, members=(), projects=(), turns=None, span=None):
         except (ValueError, TypeError, OverflowError):
             continue
         status = d.get("status") if d.get("status") in ("agreed", "proposed") else "proposed"
-        speaker = None
+        speaker, speaker_label = None, None
         turn = next((t for t in turns if t["start"] <= start < t["end"]), None)
+        if unique and turn and turn["speaker"] and not turn["speaker"].upper().startswith("SOURCE:"):
+            speaker_label = turn["speaker"].strip()
         if unique and turn and turn["speaker"]:
             label = by_label.get(turn["speaker"].strip().lower())
             claimed = str(d.get("speaker") or "").strip().lower()
@@ -286,6 +288,7 @@ def check(raw, transcript, members=(), projects=(), turns=None, span=None):
             "project_id": d["project_id"], "statement": statement,
             "rationale": " ".join(str(d.get("rationale") or "").split())[:MAX_RATIONALE],
             "quote": " ".join(transcript[start:qend].split()), "quote_start": start, "speaker": speaker,
+            "speaker_label": speaker_label,
             "amount_ugx": amount, "effective_date": eff, "status": status,
             "confidence": 0.8 if speaker else 0.6, "source": "transcript",
         })
@@ -342,6 +345,8 @@ _DDL = [
         reviewed_by TEXT, reviewed_at TIMESTAMPTZ,
         source TEXT NOT NULL DEFAULT 'transcript' CHECK (source IN ('transcript','minutes')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ)""",
+    # the raw transcript label of the quoted turn (Speaker 3, or a name); who it is comes from meeting_speakers at display time
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS speaker_label TEXT",
     # the spec's unique (meeting_id, quote_start, statement); minutes rows have no offset, so NULL -> -1
     "CREATE UNIQUE INDEX IF NOT EXISTS decisions_uq ON decisions(meeting_id, COALESCE(quote_start, -1), statement)",
     "CREATE INDEX IF NOT EXISTS decisions_project ON decisions(project_id)",
@@ -478,12 +483,12 @@ class DbStore:
                 for r in rows:
                     cur.execute(
                         "INSERT INTO decisions (project_id, meeting_id, meeting_ref, statement, rationale, quote, quote_start,"
-                        " speaker, amount_ugx, effective_date, status, confidence, source) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                        " speaker, amount_ugx, effective_date, status, confidence, source, speaker_label) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                         "ON CONFLICT (meeting_id, COALESCE(quote_start, -1), statement) DO NOTHING",
                         (r["project_id"], meeting["id"], meeting.get("ref"), r["statement"], r["rationale"], r["quote"],
                          r["quote_start"], r["speaker"], r["amount_ugx"], r["effective_date"], r["status"],
-                         r["confidence"], r["source"]))
+                         r["confidence"], r["source"], r.get("speaker_label")))
                     n += cur.rowcount
         return n
 
@@ -862,13 +867,17 @@ def trace(project_id, target_type, target_ref):
                   "WHERE l.target_type=%s AND l.target_ref=%s AND l.state<>'rejected' AND d.project_id=%s AND d.deleted_at IS NULL AND "
                   + private_clause("d.meeting_id") + " ORDER BY m.date, d.quote_start NULLS LAST, d.id",
                   (target_type, target_ref, project_id))
+    import speaker_map as _sm
+    mapping = _sm.confirmed_map([d["meeting_id"] for d in rows])
+    rows = _sm.attribute(rows, mapping)
     decisions, ids = [], []
     for d in rows:
         ids.append(d["id"])
         decisions.append({
             "id": d["id"], "statement": d["statement"], "rationale": d["rationale"], "status": d["status"],
             "review_state": d["review_state"], "reviewed_by": d["reviewed_by"], "reviewed_at": _iso(d["reviewed_at"]),
-            "speaker": d["speaker"] or None, "unattributed": not d["speaker"], "source": d["source"],
+            "speaker": d["speaker"], "speaker_label": d["speaker_label"], "attribution": d["attribution"],
+            "shared": d["shared"], "unattributed": d["unattributed"], "source": d["source"],
             "meeting_id": d["meeting_id"], "meeting_ref": d["meeting_ref"], "meeting_date": _iso(d["meeting_date"]),
             "amount_ugx": d["amount_ugx"], "link_state": d["link_state"], "link_relation": d["link_relation"],
             "suggested": d["link_state"] == "suggested",
@@ -887,7 +896,7 @@ def register(project_id):
     """The register for members: non-rejected links, non-private meetings, with the meeting date. Reads only."""
     from db import query as _q
     ds = _q("SELECT d.id, d.project_id, d.meeting_id, d.meeting_ref, m.date AS meeting_date, d.statement, d.rationale, d.quote, "
-            "d.speaker, d.amount_ugx, d.effective_date, d.status, d.review_state, d.source, d.confidence "
+            "d.speaker_label, d.amount_ugx, d.effective_date, d.status, d.review_state, d.source, d.confidence "
             "FROM decisions d JOIN meetings m ON m.id=d.meeting_id WHERE d.project_id=%s AND d.deleted_at IS NULL AND "
             + private_clause("d.meeting_id") + " ORDER BY m.date, d.meeting_id, d.quote_start NULLS LAST, d.id", (project_id,))
     ls = _q("SELECT l.id, l.decision_id, l.target_type, l.target_ref, l.relation, l.state FROM decision_links l "
@@ -896,4 +905,6 @@ def register(project_id):
     by = {}
     for l in ls:
         by.setdefault(l["decision_id"], []).append(l)
-    return [dict({k: _iso(v) for k, v in d.items()}, unattributed=not d["speaker"], links=by.get(d["id"], [])) for d in ds]
+    import speaker_map as _sm
+    ds = _sm.attribute(ds, _sm.confirmed_map([d["meeting_id"] for d in ds]))
+    return [dict({k: _iso(v) for k, v in d.items()}, links=by.get(d["id"], [])) for d in ds]
