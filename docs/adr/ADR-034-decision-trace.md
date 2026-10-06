@@ -138,3 +138,11 @@ never fired. The decision keeps the raw label (`decisions.speaker_label`); the m
    is added in its own transaction). Private meetings are excluded everywhere. Backfills (`scripts/speaker_backfill.py`) set
    labels on existing decisions and create suggested rows; both are idempotent and never confirm.
 7. **Follow-up, not built:** audio clips of each voice would help a person decide, but audio is not stored today, so none is offered.
+
+### Amendment: Tactiq export format and name labels (6 Oct 2026)
+- A pasted Tactiq export is not "Name: text". Each turn is the display name on a line of its own with the speech on the lines below. `speaker_map.tactiq_names` and `tactiq_turns` read that format (a name is a recurring short line in Title or UPPER case, or one that matches a member).
+- Alignment has a second pass for long diarized turns: each named line fully contained in the turn, at about the same relative place in the meeting, is one vote for that name.
+- A name is shared only when it is the leading name of two or more voices. A few stray votes for another name do not make a voice shared.
+- Display names such as a club or family login are exactly the shared-device case: one name over several voices. They are shown as shared, never as a person.
+- Name labels from a pasted transcript can be confirmed, marked shared or marked unknown in the same review panel as Speaker N labels. Meetings whose audio was transcribed without speaker labels have only name labels to review.
+- Flagging a meeting private deletes its speaker map rows, which hold sample lines.

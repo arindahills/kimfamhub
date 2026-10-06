@@ -30,6 +30,9 @@ BACK_SLACK = 5            # a later diarized turn may match at most this many na
 MIN_ALIGNED = 3           # evidence floor: aligned turns for a label before anything is proposed
 MIN_AGREE = 0.6           # and the top name must cover this share of them
 MIN_SHARE = 2             # a name aligned this often with a second label makes both labels 'shared'
+LINE_MIN_TOKENS = 6       # second pass: a named line must carry this many words to count as a vote
+LINE_CONTAIN = 0.8        # and this share of them must sit inside the diarized turn
+LINE_POS_WINDOW = 0.08    # and sit at about the same relative place in the meeting
 SAMPLE_LINES = 3
 SAMPLE_CHARS = 120
 
@@ -86,13 +89,82 @@ def split_sources(transcript):
     return parts
 
 
-def turns_of(part):
+_NAME_PUNCT = re.compile(r"[.,?!:;()\"\[\]{}]")
+_NOT_NAMES = {"callout", "action items", "summary", "key points", "transcript", "notes"}
+NAME_MIN_COUNT = 3        # a display name line recurs: once per turn the person takes
+
+
+def _member_names():
+    try:
+        import auth
+        return [x["name"] for x in auth.MEMBERS]
+    except Exception:
+        return []
+
+
+def tactiq_names(text, members=None):
+    """Display names in a Tactiq style export, where each turn is the speaker's name on a line of its own followed by
+    what was said on the lines below. A line is a name when it recurs, is short and punctuation free, and is either
+    Title Case or UPPER CASE over two to four words, or matches a member's name. Pure apart from the member list."""
+    members = _member_names() if members is None else members
+    counts = {}
+    for line in (text or "").split("\n"):
+        l = " ".join(line.split())
+        if l and len(l) <= 40 and not _NAME_PUNCT.search(l):
+            counts[l] = counts.get(l, 0) + 1
+    names = set()
+    for l, n in counts.items():
+        if n < NAME_MIN_COUNT or l.lower() in _NOT_NAMES:
+            continue
+        toks = l.split()
+        if len(toks) > 4:
+            continue
+        titled = len(toks) >= 2 and all(t[0].isupper() for t in toks)
+        if titled or (members and _canonical(l, members)):
+            names.add(l)
+    return names
+
+
+def tactiq_turns(part, members=None, per_line=False):
+    """Turns of a Tactiq style part: one turn per name line, its text the lines below until the next name line.
+    Offsets index the STORED transcript; text lines before the first name are not attributed to anyone."""
+    names = tactiq_names(part["text"], members)
+    out, cur, pos = [], None, 0
+    for raw in part["text"].split("\n"):
+        start, end = part["start"] + pos, part["start"] + pos + len(raw)
+        pos += len(raw) + 1
+        line = " ".join(raw.split())
+        if not line:
+            continue
+        if line in names:
+            cur = {"speaker": line, "text": "", "start": end, "end": end}
+            out.append(cur)
+        elif cur is not None:
+            if per_line:
+                out.append({"speaker": cur["speaker"], "text": line, "start": start, "end": end})
+            else:
+                cur["text"] = (cur["text"] + " " + line).strip()
+                cur["end"] = end
+    return [t for t in out if t["text"]]
+
+
+def turns_of(part, members=None, per_line=False):
     """The labelled turns of one part: [{'speaker','text','start','end'}], offsets into the STORED transcript."""
     out = []
     for t in chunk_transcript(part["text"]):
         out.append({"speaker": t["speaker"], "text": t["text"], "start": part["start"] + t["start"],
                     "end": part["start"] + t["end"]})
+    if part.get("kind") == "named" and not any(t["speaker"] for t in out):
+        tq = tactiq_turns(part, members, per_line)
+        if tq:
+            return tq
     return out
+
+
+def _with_pos(part, turns):
+    """Add 'pos', the turn's relative place in its own part (0 to 1), so two sources of different granularity can be lined up."""
+    n = max(len(part["text"]), 1)
+    return [dict(t, pos=(t["start"] - part["start"]) / n) for t in turns]
 
 
 def _tokens(text):
@@ -136,6 +208,19 @@ def align(diarized_turns, named_turns):
             counts.setdefault(label, {})
             counts[label][name] = counts[label].get(name, 0) + 1
             matched[label] = matched.get(label, 0) + 1
+        elif dt.get("pos") is not None:
+            # a long diarized turn that holds several short named lines: each fully contained line is one vote
+            for j, nt in enumerate(named_turns):
+                if j in used or not nt.get("speaker") or nt.get("pos") is None or len(n_tok[j]) < LINE_MIN_TOKENS:
+                    continue
+                if abs(nt["pos"] - dt["pos"]) > LINE_POS_WINDOW or len(n_tok[j]) > len(d_tok[i]):
+                    continue
+                if len(d_tok[i] & n_tok[j]) / len(n_tok[j]) >= LINE_CONTAIN:
+                    used.add(j)
+                    name = nt["speaker"].strip()
+                    counts.setdefault(label, {})
+                    counts[label][name] = counts[label].get(name, 0) + 1
+                    matched[label] = matched.get(label, 0) + 1
     top = {}
     for label, c in counts.items():
         name, n = max(c.items(), key=lambda kv: (kv[1], kv[0]))
@@ -194,11 +279,13 @@ def suggest(labels, alignment, attendees, addressed=None, members=None, samples=
     pool = attendees or [m for m in (members or []) if m]
     counts = (alignment or {}).get("counts", {})
     matched = (alignment or {}).get("matched", {})
-    covered = {}
+    covered = {}      # a name is shared when it is the leading name of two or more voices (stray lines do not count)
     for label, c in counts.items():
-        for name, n in c.items():
-            if n >= MIN_SHARE:
-                covered.setdefault(name, set()).add(label)
+        if not c or matched.get(label, 0) < MIN_ALIGNED:
+            continue
+        name, n = max(c.items(), key=lambda kv: (kv[1], kv[0]))
+        if n >= MIN_SHARE and n / matched[label] >= MIN_AGREE:
+            covered.setdefault(name, set()).add(label)
     out = {}
     for label in labels:
         c = counts.get(label, {})
@@ -284,8 +371,8 @@ def attendees_of(attendance):
 def proposals_for_transcript(transcript, attendees=(), members=()):
     """Everything suggest() needs, from one stored transcript. -> {label: proposal}; [] sources give {}."""
     parts = split_sources(transcript)
-    dia = [t for p in parts if p["kind"] == "diarized" for t in turns_of(p)]
-    named = [t for p in parts if p["kind"] == "named" for t in turns_of(p)]
+    dia = [t for p in parts if p["kind"] == "diarized" for t in _with_pos(p, turns_of(p))]
+    named = [t for p in parts if p["kind"] == "named" for t in _with_pos(p, turns_of(p, per_line=True))]
     labels = list(dict.fromkeys(t["speaker"] for t in dia if t["speaker"]))
     if not labels:
         return {}

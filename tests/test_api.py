@@ -2757,3 +2757,40 @@ class TestSpeakerMap:
         a = src.index("def meeting_speaker_set")
         body = src[a:a + 2200]
         assert 'payload.get("role") != "admin"' in body and "status_code=403" in body
+
+    # ---- Tactiq style export: name on its own line, speech below ----
+    def _tactiq(self):
+        out = []
+        for i, line in enumerate(self.LINES * 2):
+            out.append("Alpha One" if i % 2 == 0 else "Bravo Two")
+            out.append(line + " today")
+        return "\n".join(out)
+
+    def test_tactiq_names_and_turns_map_back_to_stored_text(self):
+        import speaker_map as sm
+        raw = "[SOURCE: Pasted text]\n" + self._tactiq()
+        part = sm.split_sources(raw)[0]
+        assert sm.tactiq_names(part["text"], []) == {"Alpha One", "Bravo Two"}
+        turns = sm.turns_of(part, [])
+        assert {t["speaker"] for t in turns} == {"Alpha One", "Bravo Two"}
+        for t in turns:
+            assert raw[t["start"]:t["end"]].replace("\n", " ").split()[:3] == t["text"].split()[:3]
+
+    def test_tactiq_ignores_recurring_ordinary_words(self):
+        import speaker_map as sm
+        text = "\n".join(["okay", "We should plan the feed purchase for the new batch", "okay", "Please confirm the delivery date soon", "okay", "yes"] * 2)
+        assert sm.tactiq_names(text, []) == set()
+
+    def test_tactiq_alignment_uses_line_votes_and_shared_needs_a_leading_name(self):
+        import speaker_map as sm
+        dia = ["[SOURCE: Audio (diarized by speaker): a.mp3]"]
+        for i, line in enumerate(self.LINES * 2):
+            dia.append("[Speaker %d] %s today and more words to make a longer turn" % (0 if i % 2 == 0 else 1, line))
+        raw = "\n".join(dia) + "\n\n[SOURCE: Pasted text]\n" + self._tactiq()
+        props = sm.proposals_for_transcript(raw, [], [])
+        assert set(props) == {"Speaker 0", "Speaker 1"}
+        assert all(p["state"] != "confirmed" for p in props.values())
+        assert props["Speaker 0"]["evidence"]["name"] == "Alpha One"
+        # one stray vote for another name must not make a label shared
+        pr = sm.suggest(["A", "B"], {"counts": {"A": {"X": 9, "Y": 2}, "B": {"Y": 8}}, "matched": {"A": 11, "B": 8}, "compared": {}}, [], None, ["X", "Y"])
+        assert pr["A"]["state"] != "shared" and pr["B"]["state"] != "shared"
