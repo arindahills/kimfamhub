@@ -116,3 +116,25 @@ says, so the report is a reading aid with links to the evidence, and anything im
 Evidence text is untrusted: brackets and heading marks are removed from it and it is fenced in the prompt as data. Only
 the newest 10 stored reports per project are kept.
 
+### Amendment (6 Oct 2026): who a speaker is, per meeting (issue #106)
+Audio transcripts are diarized ("Speaker 1", "Speaker 2") and carry no names, so attribution by label equals name almost
+never fired. The decision keeps the raw label (`decisions.speaker_label`); the member is resolved at display time from
+`meeting_speakers` rows whose state is `confirmed`. Rules:
+1. **Identity is never inferred from the logged-in account, the IP or the device.** Some members share one device and one
+   login, so none of those says who spoke. Code never reads them as evidence (they are used only to decide who may confirm).
+2. **The mapping is per meeting and confirmed by a person.** `PUT /api/meetings/{id}/speakers/{label}` is allowed for an
+   admin or a member on that meeting's attendance list, JWT only (the internal key is refused). The confirmer is recorded and
+   a change keeps the old value in `speaker_map_log`. The member must be an attendee when attendance is known.
+3. **Shared state.** A pasted named transcript (for example from Tactiq) carries the display name of the account that joined
+   the call, so one name can cover several voices. When a name aligns with two or more diarized labels, each is `shared`; a
+   person may also mark a label shared by hand. A shared label never names a person; the UI says "shared device".
+4. **Tactiq is corroboration, not proof.** `speaker_map.align` matches diarized and named turns by token overlap and rough
+   position and `suggest` turns the counts into a proposal ("14 of 15 overlapping lines say X") that is only ever
+   `suggested`, `shared` or `unknown`. Nothing automatic produces `confirmed`; below the evidence floor the answer is unknown.
+5. **Display.** `trace()` and `register()` return `speaker_label`, `speaker` (the confirmed member or null) and
+   `attribution` (`confirmed`, `shared`, `unattributed`). The report evidence pack uses the confirmed member only, so
+   `verify_report` still removes any sentence naming who said something unless the pack's speaker is set.
+6. **Storage** is app-owned (`meeting_speakers`, `speaker_map_log`, created under an advisory lock; the `speaker_label` column
+   is added in its own transaction). Private meetings are excluded everywhere. Backfills (`scripts/speaker_backfill.py`) set
+   labels on existing decisions and create suggested rows; both are idempotent and never confirm.
+7. **Follow-up, not built:** audio clips of each voice would help a person decide, but audio is not stored today, so none is offered.

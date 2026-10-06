@@ -102,11 +102,18 @@ function Stat({ l, v, tone, onClick }: { l: string; v: number; tone?: 'good' | '
 }
 
 // ---- Why? panel (ADR-034): the chain behind a figure, from the decision to the outcome ----
+type Attribution = 'confirmed' | 'shared' | 'unattributed'
+// who said it, in words: a confirmed member, a shared device voice, or the raw label that nobody has identified yet
+function said(d: { speaker: string | null; speaker_label: string | null; attribution: Attribution }): string {
+  if (d.attribution === 'confirmed' && d.speaker) return 'said by ' + nice(d.speaker) + ' (confirmed)'
+  if (d.attribution === 'shared') return (d.speaker_label ?? 'A voice') + ' (shared device, cannot tell who)'
+  return d.speaker_label ? d.speaker_label + ' (not yet identified)' : 'unattributed'
+}
 interface TraceTarget { type: string; ref: string; title: string }
 interface TraceQuote { before: string[]; quote: string; after: string[] }
 interface TraceDecision {
   id: number; statement: string; rationale: string | null; status: string; review_state: 'unreviewed' | 'confirmed' | 'corrected'
-  speaker: string | null; unattributed: boolean; source: string; meeting_ref: string | null; meeting_date: string | null
+  speaker: string | null; speaker_label: string | null; attribution: Attribution; unattributed: boolean; source: string; meeting_ref: string | null; meeting_date: string | null
   amount_ugx: number | null; suggested: boolean; quote: TraceQuote | null
 }
 interface TraceUpdate { at: string | null; author: string | null; type: string | null; text: string | null }
@@ -115,7 +122,7 @@ interface TraceOutcomeRow { target_type: string; target_ref: string; date: strin
 interface Trace { decisions: TraceDecision[]; actions: TraceAction[]; outcome: { rows: TraceOutcomeRow[]; total: number }; found: boolean }
 interface RegisterDecision {
   id: number; meeting_id: number; meeting_ref: string | null; meeting_date: string | null; statement: string; rationale: string | null
-  speaker: string | null; unattributed: boolean; amount_ugx: number | null; status: string; review_state: 'unreviewed' | 'confirmed' | 'corrected'
+  speaker: string | null; speaker_label: string | null; attribution: Attribution; unattributed: boolean; amount_ugx: number | null; status: string; review_state: 'unreviewed' | 'confirmed' | 'corrected'
   source: string; links: { id: number; target_type: string; target_ref: string; relation: string; state: string }[]
 }
 const traceType: Record<string, string> = { expense: 'ledger_expense', sale: 'ledger_sale', stock: 'ledger_stock', loss: 'ledger_loss' }
@@ -187,7 +194,7 @@ function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onC
                 <div className="text-sm font-semibold">{d.statement}</div>
                 {d.rationale && <div className="mt-0.5 text-xs text-[var(--muted-2)]">Why: {d.rationale}</div>}
                 <div className="mt-1 text-xs text-[var(--muted-2)]">
-                  {d.unattributed ? 'unattributed' : <>said by <b className="text-[var(--foreground)]">{nice(d.speaker)}</b></>}
+                  {said(d)}
                   {d.meeting_ref ? ` · ${d.meeting_ref}` : ''}{d.meeting_date ? ` · ${d.meeting_date}` : ''}{d.amount_ugx != null ? ` · UGX ${ugx(d.amount_ugx)}` : ''}
                 </div>
                 {d.quote && (
@@ -232,8 +239,73 @@ function WhyPanel({ target, s, onClose }: { target: TraceTarget; s: Summary; onC
   )
 }
 
+// ---- Speakers review (ADR-034 amendment, #106): who is Speaker N in a meeting. Suggestions are NOT facts until a person confirms. ----
+interface SpeakerEvidence { text: string; samples: string[]; addressed: string[]; agree: number; total: number; name: string | null }
+interface SpeakerLabel { label: string; state: 'suggested' | 'confirmed' | 'shared' | 'unknown'; member: string | null; confirmed_by: string | null; note: string | null; evidence: SpeakerEvidence }
+interface SpeakersResp { meeting_id: number; ref: string | null; date: string | null; attendees: string[]; labels: SpeakerLabel[] }
+
+function SpeakerRow({ meetingId, attendees, l, onDone }: { meetingId: number; attendees: string[]; l: SpeakerLabel; onDone: () => void }) {
+  const [pick, setPick] = useState(l.member ?? '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const set = async (state: 'confirmed' | 'shared' | 'unknown') => {
+    setBusy(true); setErr('')
+    try { await call(`/api/meetings/${meetingId}/speakers/${encodeURIComponent(l.label)}`, 'PUT', { state, member: state === 'confirmed' ? pick : null }); onDone() }
+    catch (e) { setErr(errMsg(e)) } finally { setBusy(false) }
+  }
+  const status = l.state === 'confirmed' ? `Confirmed: ${nice(l.member)}${l.confirmed_by ? ` (by ${nice(l.confirmed_by)})` : ''}`
+    : l.state === 'shared' ? 'Marked as a shared device: cannot tell who' : l.state === 'suggested' ? `Suggested only, not confirmed${l.member ? ': ' + nice(l.member) : ''}` : 'Not identified'
+  return (
+    <div className="py-3">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="text-sm font-semibold">{l.label}</span>
+        <Badge text={l.state === 'confirmed' ? 'confirmed' : l.state === 'shared' ? 'shared device' : l.state === 'suggested' ? 'suggestion, not a fact' : 'unknown'} tone={l.state === 'confirmed' ? 'green' : l.state === 'shared' ? 'blue' : 'amber'} />
+      </div>
+      <div className="text-xs text-[var(--muted-2)]">{status}</div>
+      {l.evidence.text && <div className="mt-1 text-xs">Named transcript: {l.evidence.text}</div>}
+      {l.evidence.addressed.length > 0 && <div className="text-xs text-[var(--muted-2)]">Names addressed nearby: {l.evidence.addressed.map(nice).join(', ')}</div>}
+      {l.evidence.samples.length > 0 && (
+        <div className="mt-1.5 rounded-lg bg-[var(--card-inset)] p-2.5 text-xs">
+          {l.evidence.samples.map((x, i) => <div key={i} className="py-0.5">“{x}”</div>)}
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select aria-label={`Who is ${l.label}`} className={input + ' !w-auto min-w-[10rem]'} value={pick} onChange={e => setPick(e.target.value)}>
+          <option value="">Pick who was present</option>
+          {attendees.map(a => <option key={a} value={a}>{nice(a)}</option>)}
+        </select>
+        <button disabled={busy || !pick} onClick={() => set('confirmed')} className={btn}>Confirm</button>
+        <button disabled={busy} onClick={() => set('shared')} className="h-11 rounded-[10px] border border-[var(--border)] px-4 text-sm font-semibold disabled:opacity-40">Shared device (cannot tell)</button>
+        <button disabled={busy} onClick={() => set('unknown')} className="h-11 rounded-[10px] border border-[var(--border)] px-4 text-sm font-semibold disabled:opacity-40">Unknown</button>
+      </div>
+      {err && <div className="mt-1 text-xs text-[#fca5a5]">{err}</div>}
+    </div>
+  )
+}
+
+function SpeakersPanel({ meetingId, ref_, onClose }: { meetingId: number; ref_: string; onClose: () => void }) {
+  const qc = useQueryClient()
+  const q = useQuery({ queryKey: ['speakers', meetingId], queryFn: () => call<SpeakersResp>(`/api/meetings/${meetingId}/speakers`) })
+  const done = () => { qc.invalidateQueries({ queryKey: ['speakers', meetingId] }); qc.invalidateQueries({ queryKey: ['trace-decisions'] }); qc.invalidateQueries({ queryKey: ['trace'] }) }
+  return (
+    <div className="mt-2 rounded-[10px] border border-[var(--border)] p-3">
+      <div className="mb-1 flex items-center justify-between">
+        <div className="text-sm font-bold">Who is who in {ref_}</div>
+        <button onClick={onClose} className="text-xs text-[var(--muted-2)]">Close</button>
+      </div>
+      <p className="text-xs text-[var(--muted-2)]">A suggestion is only a hint from matching a pasted named transcript with the audio. It is not a fact until someone who was at the meeting confirms it. Never guess from who was logged in or which device was used.</p>
+      {q.error && <div className="mt-2 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>}
+      {!q.data && !q.error && <div className="mt-2 text-sm text-[var(--muted-2)]">Loading…</div>}
+      {q.data && q.data.labels.length === 0 && <div className="mt-2 text-sm text-[var(--muted-2)]">This meeting has no diarized speakers to identify.</div>}
+      {q.data && q.data.attendees.length === 0 && q.data.labels.length > 0 && <div className="mt-2 text-xs text-[#fbbf24]">No attendance list is recorded for this meeting, so any member can be picked.</div>}
+      {q.data && <div className="divide-y divide-[var(--border)]">{q.data.labels.map(l => <SpeakerRow key={l.label} meetingId={meetingId} attendees={q.data.attendees} l={l} onDone={done} />)}</div>}
+    </div>
+  )
+}
+
 function DecisionsTab({ s }: { s: Summary }) {
   const qc = useQueryClient()
+  const [spk, setSpk] = useState<number | null>(null)
   const q = useQuery({ queryKey: ['trace-decisions'], queryFn: () => call<{ decisions: RegisterDecision[] }>(`/api/trace/${PID}/decisions`) })
   if (q.error) return <div className="p-4 text-sm text-[#fca5a5]">{(q.error as Error).message}</div>
   if (!q.data) return <div className="p-4 text-sm text-[var(--muted-2)]">Loading…</div>
@@ -250,7 +322,11 @@ function DecisionsTab({ s }: { s: Summary }) {
       {groups.length === 0 && <div className={card + ' text-sm text-[var(--muted-2)]'}>No decisions in the register yet.</div>}
       {groups.map(g => (
         <div key={g.id} className={card}>
-          <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{g.ref}{g.date ? ` · ${g.date}` : ''}</div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--muted-2)]">{g.ref}{g.date ? ` · ${g.date}` : ''}</div>
+            <button onClick={() => setSpk(spk === g.id ? null : g.id)} className="text-xs font-semibold text-[#60a5fa]">{spk === g.id ? 'Hide speakers' : 'Review speakers'}</button>
+          </div>
+          {spk === g.id && <SpeakersPanel meetingId={g.id} ref_={g.ref} onClose={() => setSpk(null)} />}
           <div className="divide-y divide-[var(--border)]">
             {g.rows.map(d => (
               <div key={d.id} className="py-2">
@@ -261,7 +337,7 @@ function DecisionsTab({ s }: { s: Summary }) {
                 </div>
                 <div className="text-sm font-semibold">{d.statement}</div>
                 {d.rationale && <div className="text-xs text-[var(--muted-2)]">Why: {d.rationale}</div>}
-                <div className="text-xs text-[var(--muted-2)]">{d.unattributed ? 'unattributed' : 'said by ' + nice(d.speaker)}{d.amount_ugx != null ? ` · UGX ${ugx(d.amount_ugx)}` : ''}</div>
+                <div className="text-xs text-[var(--muted-2)]">{said(d)}{d.amount_ugx != null ? ` · UGX ${ugx(d.amount_ugx)}` : ''}</div>
                 {s.is_admin && <ReviewControl d={d} onDone={done} />}
               </div>
             ))}
