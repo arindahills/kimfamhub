@@ -345,8 +345,6 @@ _DDL = [
         reviewed_by TEXT, reviewed_at TIMESTAMPTZ,
         source TEXT NOT NULL DEFAULT 'transcript' CHECK (source IN ('transcript','minutes')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ)""",
-    # the raw transcript label of the quoted turn (Speaker 3, or a name); who it is comes from meeting_speakers at display time
-    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS speaker_label TEXT",
     # the spec's unique (meeting_id, quote_start, statement); minutes rows have no offset, so NULL -> -1
     "CREATE UNIQUE INDEX IF NOT EXISTS decisions_uq ON decisions(meeting_id, COALESCE(quote_start, -1), statement)",
     "CREATE INDEX IF NOT EXISTS decisions_project ON decisions(project_id)",
@@ -363,6 +361,9 @@ _DDL = [
     """CREATE TABLE IF NOT EXISTS decision_private_meetings (
         meeting_id INTEGER PRIMARY KEY, set_by TEXT, set_at TIMESTAMPTZ NOT NULL DEFAULT now())""",
 ]
+# Column added to the app-owned decisions table, in its own transaction after the tables exist: the raw transcript label of
+# the quoted turn (Speaker 3, or a name). Who it is comes from meeting_speakers at display time (speaker_map.py).
+_DDL_COLUMNS = ["ALTER TABLE decisions ADD COLUMN IF NOT EXISTS speaker_label TEXT"]
 # `meetings` and `actions` are owned by the postgres role, not the app role: nothing below may be part of the
 # DDL transaction above (a failing ALTER would roll back the tables and keep the register at 503).
 _PRIVATE_COL = None     # cached probe: does meetings.is_private exist?
@@ -435,6 +436,15 @@ def ready():
         import logging
         logging.getLogger("uvicorn.error").warning("decision tables unavailable: %s", _e)
         return False
+    try:
+        with _db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
+                for ddl in _DDL_COLUMNS:
+                    cur.execute(ddl)
+    except Exception as _e:
+        import logging
+        logging.getLogger("uvicorn.error").warning("decisions.speaker_label not added: %s", _e)
     try:
         _best_effort_owned_objects()
     except Exception:

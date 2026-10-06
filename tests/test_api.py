@@ -2548,3 +2548,171 @@ class TestReportVerifierHardening:
         src = open(os.path.join(_APP_ROOT, "report.py")).read()
         body = src[src.index("def collect("):src.index("def latest(")]
         assert "not live for this project yet" in body and "FROM expenditure_records WHERE project=%s" in body and "rows is not None" in body
+
+
+class TestSpeakerMap:
+    """Issue #106: Speaker N to members, per meeting. Synthetic names only."""
+
+    LINES = [
+        "We should plan the feed purchase for the new batch before the rains start",
+        "The supplier quoted a fair price for the grower mash and the starter mash",
+        "Please confirm the delivery date with the transport person before Friday",
+        "The shed roof still leaks near the east corner and needs urgent repair work",
+        "Let us record the vaccination dates for every batch in the shared register",
+        "We agreed to review the egg collection numbers at the next monthly meeting",
+    ]
+
+    def _two_source(self, shared=False):
+        dia, named = [], []
+        for i, line in enumerate(self.LINES):
+            who = "Alpha" if (shared or i % 2 == 0) else "Bravo"
+            label = "Speaker 1" if (shared and i % 2 == 0) or (not shared and i % 2 == 0) else "Speaker 2"
+            dia.append("[%s] %s" % (label, line))
+            named.append("%s: %s today" % (who, line))
+        return ("[SOURCE: Audio (diarized by speaker): a.mp3]\n" + "\n".join(dia) +
+                "\n\n[SOURCE: Pasted text]\n" + "\n".join(named))
+
+    def test_split_sources_with_markers_maps_back_to_the_stored_text(self):
+        import speaker_map as sm
+        t = self._two_source()
+        parts = sm.split_sources(t)
+        assert [p["kind"] for p in parts] == ["diarized", "named"]
+        for p in parts:
+            assert t[p["start"]:p["end"]] == p["text"]
+        for turn in sm.turns_of(parts[0]):
+            assert t[turn["start"]:turn["end"]] == turn["text"]
+
+    def test_split_sources_without_markers_infers_kind(self):
+        import speaker_map as sm
+        assert sm.split_sources("[Speaker 1] hello there everyone\n[Speaker 2] good morning")[0]["kind"] == "diarized"
+        assert sm.split_sources("Alpha: hello there everyone\nBravo: good morning")[0]["kind"] == "named"
+        assert sm.split_sources("just some plain notes")[0]["kind"] == "other"
+        assert sm.split_sources("") == []
+
+    def test_align_counts_per_label_and_one_named_turn_matches_once(self):
+        import speaker_map as sm
+        parts = sm.split_sources(self._two_source())
+        dia, named = sm.turns_of(parts[0]), sm.turns_of(parts[1])
+        a = sm.align(dia, named)
+        assert a["counts"]["Speaker 1"] == {"Alpha": 3} and a["counts"]["Speaker 2"] == {"Bravo": 3}
+        assert a["top"]["Speaker 1"] == {"name": "Alpha", "agree": 3, "total": 3}
+        assert sum(sum(c.values()) for c in a["counts"].values()) == 6
+        one = sm.align([dia[0], dia[0]], [named[0]])
+        assert sum(sum(c.values()) for c in one["counts"].values()) == 1
+
+    def test_suggest_proposes_an_attendee_and_never_confirms(self):
+        import speaker_map as sm
+        p = sm.proposals_for_transcript(self._two_source(), attendees=["Alpha", "Bravo"], members=["Alpha", "Bravo", "Charlie"])
+        assert p["Speaker 1"]["member"] == "Alpha" and p["Speaker 1"]["state"] == "suggested"
+        assert "3 of 3 overlapping lines say Alpha" in p["Speaker 1"]["evidence"]["text"]
+        assert 1 <= len(p["Speaker 1"]["evidence"]["samples"]) <= 3
+        assert all(v["state"] != "confirmed" for v in p.values())
+
+    def test_two_voices_under_one_tactiq_name_are_shared(self):
+        import speaker_map as sm
+        t = self._two_source(shared=True)
+        # both voices appear under one display name
+        t = t.replace("[Speaker 1] " + self.LINES[1], "[Speaker 2] " + self.LINES[1])
+        p = sm.proposals_for_transcript(t, attendees=["Alpha", "Bravo"], members=["Alpha", "Bravo"])
+        assert {v["state"] for v in p.values()} == {"shared"} and all(v["member"] is None for v in p.values())
+
+    def test_a_non_attendee_is_never_proposed(self):
+        import speaker_map as sm
+        p = sm.proposals_for_transcript(self._two_source(), attendees=["Bravo"], members=["Alpha", "Bravo"])
+        assert p["Speaker 1"]["member"] is None and p["Speaker 1"]["state"] == "unknown"
+        assert p["Speaker 2"]["member"] == "Bravo"
+
+    def test_thin_evidence_is_unknown(self):
+        import speaker_map as sm
+        t = "[SOURCE: Audio (diarized by speaker): a.mp3]\n[Speaker 1] " + self.LINES[0] + "\n\n[SOURCE: Pasted text]\nAlpha: " + self.LINES[0]
+        p = sm.proposals_for_transcript(t, attendees=["Alpha"], members=["Alpha"])
+        assert p["Speaker 1"]["state"] == "unknown" and p["Speaker 1"]["member"] is None
+
+    def test_account_or_device_is_never_evidence(self):
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        fn = src[src.index("def suggest("):src.index("# ── storage")]
+        for word in ("payload", "request", "ip_address", "user_agent", "login"):
+            assert word not in fn
+        assert '"confirmed"' not in fn.split('"""')[2] and "'confirmed'" not in fn.split('"""')[2]
+
+    def test_attribute_never_resolves_an_unconfirmed_label(self):
+        import speaker_map as sm
+        rows = [{"meeting_id": 1, "speaker_label": "Speaker 3", "speaker": "Legacy"},
+                {"meeting_id": 1, "speaker_label": "Speaker 1"}, {"meeting_id": 1, "speaker_label": "Speaker 2"},
+                {"meeting_id": 1, "speaker_label": None}]
+        m = {(1, "Speaker 1"): {"state": "confirmed", "member": "Alpha"}, (1, "Speaker 2"): {"state": "shared", "member": None}}
+        out = sm.attribute(rows, m)
+        assert [(r["speaker"], r["attribution"]) for r in out] == [(None, "unattributed"), ("Alpha", "confirmed"), (None, "shared"), (None, "unattributed")]
+
+    def test_trace_and_register_use_attribute(self):
+        src = open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
+        for fn in ("def trace(", "def register("):
+            body = src[src.index(fn):]
+            body = body[:body.index("\ndef ", 5)] if "\ndef " in body[5:] else body
+            assert "_sm.attribute(" in body and "confirmed_map(" in body
+
+    def test_report_evidence_never_names_an_unconfirmed_speaker(self):
+        import speaker_map as sm, report as rp
+        rows = sm.attribute([{"id": 1, "meeting_id": 1, "speaker_label": "Speaker 1", "speaker": "Legacy", "statement": "Buy feed",
+                              "status": "agreed", "meeting_date": "2026-01-10", "links": []}], {})
+        pack = rp.build_evidence_pack("p", rows, [], [], [], None, [], __import__("datetime").date(2026, 2, 1))
+        item = next(i for i in pack["items"] if i["id"] == "D1")
+        assert item["speaker"] is None and item["attribution"] == "unattributed"
+        out = rp.verify_report("## Summary\nLegacy said we should buy feed [D1].\n", pack, names=["Legacy"])
+        assert out["stripped"]
+        shared = sm.attribute([dict(rows[0])], {(1, "Speaker 1"): {"state": "shared", "member": None}})
+        item = next(i for i in rp.build_evidence_pack("p", shared, [], [], [], None, [], __import__("datetime").date(2026, 2, 1))["items"] if i["id"] == "D1")
+        assert item["speaker"] is None and "no person named" in item["attribution"]
+
+    def test_check_stores_the_raw_label_without_needing_a_member_name(self):
+        import decision_trace as dt, json
+        text = "[Speaker 3] We agree to buy fifty widgets from the supplier next week.\n[Speaker 1] Fine by me."
+        raw = json.dumps({"decisions": [{"project_id": "p", "statement": "Buy widgets", "status": "agreed",
+                                         "quote": "We agree to buy fifty widgets from the supplier next week."}]})
+        out = dt.check(raw, text, ["Alpha"], ["p"])
+        assert out[0]["speaker_label"] == "Speaker 3" and out[0]["speaker"] is None
+
+    def test_label_for_offset_and_backfill_function_is_idempotent_by_construction(self):
+        import speaker_map as sm
+        t = self._two_source()
+        off = t.index(self.LINES[1] + "\n")
+        assert sm.label_for_offset(t, off) == "Speaker 2"
+        assert sm.label_for_offset(t, off) == sm.label_for_offset(t, off)
+        assert sm.label_for_offset(t, None) is None and sm.label_for_offset("", 0) is None
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        body = src[src.index("def backfill_decision_labels"):]
+        assert "speaker_label IS NULL" in body and "confirm" not in body[:body.index("def backfill_suggestions")].lower().replace("never confirms", "")
+
+    def test_suggestion_upsert_never_overwrites_a_person(self):
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        body = src[src.index("def store_suggestions"):src.index("def confirm_label")]
+        assert "confirmed_by IS NULL" in body and "'suggested','unknown'" in body
+
+    def test_routes_are_before_the_spa_and_the_put_is_jwt_only_and_commits(self):
+        src = open(os.path.join(_APP_ROOT, "main.py")).read()
+        assert src.index("def meeting_speaker_set") < src.index("def spa_fallback")
+        put = src[src.index("def meeting_speaker_set"):src.index("def meeting_speakers_suggest")]
+        assert "_internal_key_ok" not in put and "_auth_verify(" in put
+        assert "attendees_of" in put
+        sm = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        cl = sm[sm.index("def confirm_label"):sm.index("def speakers_view")]
+        assert "with _db()" in cl and "_q(" not in cl
+        assert "meeting_ids" not in cl and "confirmed_by" in cl and "speaker_map_log" in cl
+
+    def test_put_route_refuses_the_internal_key(self, monkeypatch):
+        import main as m
+        monkeypatch.setenv("KIMFAM_INTERNAL_KEY", "k")
+        r = TestClient(app).put("/api/meetings/1/speakers/Speaker%201", headers={"X-Internal-Key": "k"}, json={"state": "unknown"})
+        assert r.status_code == 401
+
+    def test_private_meetings_are_excluded(self):
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        assert 'private_clause("m.id")' in src
+        assert "speaker_map.py" in open(os.path.join(_APP_ROOT, "tests", "test_api.py")).read()
+
+    def test_tables_use_an_advisory_lock_and_no_truncate(self):
+        src = open(os.path.join(_APP_ROOT, "speaker_map.py")).read()
+        assert "pg_advisory_xact_lock" in src and "TRUNCATE" not in src.upper().replace("NEVER TRUNCATE", "")
+        for col in ("meeting_speakers", "speaker_map_log", "suggested_by", "confirmed_at"):
+            assert col in src
+        assert "speaker_label" in open(os.path.join(_APP_ROOT, "decision_trace.py")).read()
