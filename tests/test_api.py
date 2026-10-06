@@ -1433,7 +1433,7 @@ class TestDecisionTrace:
             def __init__(s, boom): s.boom = boom
             def execute(s, sql, *a):
                 ran.append(sql)
-                if s.boom and ("ALTER TABLE" in sql or "actions_meeting_id_idx" in sql):
+                if s.boom and ("ALTER TABLE meetings" in sql or "actions_meeting_id_idx" in sql):
                     raise RuntimeError("must be owner")
             def __enter__(s): return s
             def __exit__(s, *a): return False
