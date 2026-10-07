@@ -7110,8 +7110,8 @@ def meeting_speakers_suggest(meeting_id: int, request: Request):
 
 
 # ── Updates a member sends to Hillary by WhatsApp DM, logged on the matching action (internal key only) ──
-@app.get("/api/internal/open-actions")
-def internal_open_actions(request: Request, assignee: str):
+@app.get("/api/internal/actions/open")
+def dm_open_actions(request: Request, assignee: str):
     """WhatsApp agent only (internal key): the open actions held by one member, so a DM update can be matched to one.
     Ref, description, deadline, project and the latest update text (shortened). Never public."""
     from fastapi import HTTPException as _HE
@@ -7133,8 +7133,8 @@ class _DmUpdateIn(_BaseModel):
     source_ref: str
 
 
-@app.post("/api/internal/action-update")
-def internal_action_update(body: _DmUpdateIn, request: Request):
+@app.post("/api/internal/actions/dm-update")
+def dm_action_update(body: _DmUpdateIn, request: Request):
     """WhatsApp agent only (internal key): log a member's DM update on an action. Adds a dated comment attributed to the
     member 'via Hillary'; moves open to in_progress like the normal route; NEVER closes or edits the action. source_ref
     (the message id) makes a replay a no-op. Returns {'ok', 'duplicate'}."""
