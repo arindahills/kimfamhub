@@ -7109,6 +7109,57 @@ def meeting_speakers_suggest(meeting_id: int, request: Request):
     return out
 
 
+# ── Updates a member sends to Hillary by WhatsApp DM, logged on the matching action (internal key only) ──
+@app.get("/api/internal/open-actions")
+def internal_open_actions(request: Request, assignee: str):
+    """WhatsApp agent only (internal key): the open actions held by one member, so a DM update can be matched to one.
+    Ref, description, deadline, project and the latest update text (shortened). Never public."""
+    from fastapi import HTTPException as _HE
+    from db import query as _q
+    if not _internal_key_ok(request):
+        raise _HE(status_code=401, detail="Internal key required")
+    rows = _q("SELECT a.ref, a.description, a.deadline, a.project_id, a.status, "
+              "(SELECT text FROM action_updates u WHERE u.action_id=a.id ORDER BY u.created_at DESC, u.id DESC LIMIT 1) AS latest "
+              "FROM actions a WHERE a.status IN ('open','in_progress') AND (a.assignee=%s OR %s = ANY(a.assignees)) ORDER BY a.deadline NULLS LAST, a.ref",
+              (assignee, assignee))
+    return [{"ref": r["ref"], "description": r["description"], "deadline": str(r["deadline"]) if r["deadline"] else None,
+             "project_id": r["project_id"], "status": r["status"], "latest_update": (r["latest"] or "")[:240]} for r in rows]
+
+
+class _DmUpdateIn(_BaseModel):
+    action_ref: str
+    text: str
+    reported_by: str
+    source_ref: str
+
+
+@app.post("/api/internal/action-update")
+def internal_action_update(body: _DmUpdateIn, request: Request):
+    """WhatsApp agent only (internal key): log a member's DM update on an action. Adds a dated comment attributed to the
+    member 'via Hillary'; moves open to in_progress like the normal route; NEVER closes or edits the action. source_ref
+    (the message id) makes a replay a no-op. Returns {'ok', 'duplicate'}."""
+    from fastapi import HTTPException as _HE
+    from db import query as _q, execute as _x
+    import auth as _auth
+    if not _internal_key_ok(request):
+        raise _HE(status_code=401, detail="Internal key required")
+    ref, text, src = body.action_ref.strip(), " ".join(body.text.split())[:1200], body.source_ref.strip()[:120]
+    if not ref or not text or not src:
+        raise _HE(status_code=400, detail="action_ref, text and source_ref required")
+    if not any(x["name"] == body.reported_by for x in _auth.MEMBERS):
+        raise _HE(status_code=403, detail="Unknown reporter")
+    a = _q("SELECT id, status FROM actions WHERE ref=%s", (ref,))
+    if not a:
+        raise _HE(status_code=404, detail="Action not found")
+    if _q("SELECT 1 FROM action_updates WHERE action_id=%s AND new_value=%s", (a[0]["id"], "wa:" + src)):
+        return {"ok": True, "duplicate": True, "action_id": ref}
+    _x("INSERT INTO action_updates (action_id, author, text, type, new_value) VALUES (%s,%s,%s,'comment',%s)",
+       (a[0]["id"], body.reported_by + " (via Hillary)", text, "wa:" + src))
+    if a[0]["status"] == "open":
+        _x("UPDATE actions SET status='in_progress' WHERE id=%s", (a[0]["id"],))
+    return {"ok": True, "duplicate": False, "action_id": ref}
+
+
 # ── Project ledger API (ADR-032) ───────────────────────────────────────────────────────────────
 _LEDGER_TABLE = {"expense": "ledger_expenses", "sale": "ledger_sales", "loss": "ledger_losses", "stock": "ledger_stock"}
 _LEDGER_WRITERS = ("Solomon",)   # plus admins (Dad, Hillary, Hellen)

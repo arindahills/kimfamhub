@@ -2828,3 +2828,31 @@ class TestSpeakerMap:
         assert no["A"]["member"] is None and no["A"]["state"] == "unknown"
         none = sm.suggest(["A"], al, ["Alpha"], None, [], None, None)
         assert none["A"]["member"] is None
+
+
+class TestInternalActionUpdate:
+    """A member's DM update is logged on an action through the internal key only."""
+
+    def _src(self):
+        return open(os.path.join(_APP_ROOT, "main.py")).read()
+
+    def test_routes_need_the_internal_key_and_write_through_execute(self):
+        src = self._src()
+        for name in ("def internal_open_actions", "def internal_action_update"):
+            a = src.index(name)
+            assert "_internal_key_ok(request)" in src[a:a + 700]
+        a = src.index("def internal_action_update")
+        body = src[a:a + 2600]
+        assert "_x(\"INSERT INTO action_updates" in body and "db import query as _q, execute as _x" in body
+        assert "UPDATE actions SET status='in_progress'" in body and "closed" not in body.lower()
+
+    def test_replay_is_a_no_op_and_reporter_must_be_a_member(self):
+        body = self._src()[self._src().index("def internal_action_update"):][:2600]
+        assert '"wa:" + src' in body and "duplicate" in body and "Unknown reporter" in body
+
+    def test_anonymous_calls_are_refused(self):
+        from fastapi.testclient import TestClient
+        c = TestClient(app)
+        assert c.get("/api/internal/open-actions?assignee=X").status_code == 401
+        r = c.post("/api/internal/action-update", json={"action_ref": "A", "text": "t", "reported_by": "X", "source_ref": "1"})
+        assert r.status_code == 401
