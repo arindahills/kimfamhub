@@ -699,7 +699,7 @@ async def _ai_complete(prompt: str, claude_timeout: int = 150) -> str:
         try:
             env = dict(_os.environ); env["HOME"] = "/root"
             proc = await _aio.create_subprocess_exec(
-                "claude", "-p", prompt, "--model", "claude-haiku-4-5-20251001",
+                "claude", "-p", prompt, "--model", "haiku",
                 stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL, env=env)
             stdout, _ = await _aio.wait_for(proc.communicate(), timeout=claude_timeout)
             if proc.returncode == 0:
@@ -3704,7 +3704,7 @@ async def _summarize_doc_text(rel: str, text: str) -> str:
         + "\n\n--- KimFam context ---\n" + context
         + "\n\n--- Document ---\n" + text[:14000]
     )
-    return (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+    return (await _ask_claude_async(prompt, model="haiku", timeout=60) or "").strip()
 
 @app.get("/api/docs/summary")
 async def doc_summary(request: Request, path: str = "", refresh: bool = False):
@@ -4044,7 +4044,7 @@ async def _score_proposal(text: str) -> dict | None:
         "\n\n=== PROPOSAL TO SCORE ===\n" + (text or "(empty)")
     )
     # Claude only, per the family's instruction (it holds the framework context).
-    raw = await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=220)
+    raw = await _ask_claude_async(prompt, model="haiku", timeout=220)
     if not raw:
         return None
     raw = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
@@ -5613,7 +5613,7 @@ async def agent_classify_doc(request: Request):
         "\"confidence\": a number 0.0-1.0, \"reason\": one short sentence}.\n\nDocument follows:\n\n"
         + text[:12000]
     )
-    raw_out = (await _ask_claude_async(prompt, model="claude-haiku-4-5-20251001", timeout=60) or "").strip()
+    raw_out = (await _ask_claude_async(prompt, model="haiku", timeout=60) or "").strip()
     import json as _json, re as _re
     m = _re.search(r"\{.*\}", raw_out, _re.DOTALL)
     try:
