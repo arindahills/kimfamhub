@@ -2856,3 +2856,38 @@ class TestInternalActionUpdate:
         assert c.get("/api/internal/actions/open?assignee=X").status_code == 401
         r = c.post("/api/internal/actions/dm-update", json={"action_ref": "A", "text": "t", "reported_by": "X", "source_ref": "1"})
         assert r.status_code == 401
+
+
+class TestPoolDropsDeadConnections:
+    def test_get_conn_pings_and_replaces_a_dead_connection(self):
+        src = open(os.path.join(_APP_ROOT, "db.py")).read()
+        a = src.index("def get_conn")
+        body = src[a:src.index("def release_conn")]
+        assert "SELECT 1" in body and "close=True" in body and "conn.closed" in body and "conn.rollback()" in body
+
+    def test_dead_connection_is_replaced_not_returned(self, monkeypatch):
+        import db as _db
+
+        class Cur:
+            def __init__(s, bad): s.bad = bad
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def execute(s, q):
+                if s.bad: raise Exception("SSL connection has been closed unexpectedly")
+
+        class Conn:
+            closed = 0
+            def __init__(s, bad): s.bad = bad
+            def cursor(s): return Cur(s.bad)
+            def rollback(s): pass
+
+        class Pool:
+            maxconn = 3
+            def __init__(s): s.q = [Conn(True), Conn(False)]; s.discarded = 0
+            def getconn(s): return s.q.pop(0)
+            def putconn(s, c, close=False): s.discarded += 1 if close else 0
+
+        pool = Pool()
+        monkeypatch.setattr(_db, "_pool", pool)
+        c = _db.get_conn()
+        assert c.bad is False and pool.discarded == 1

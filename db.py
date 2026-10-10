@@ -7,6 +7,23 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://kimfam:Kanyoga%40123
 _pool = pool.ThreadedConnectionPool(2, 10, DATABASE_URL)
 
 def get_conn():
+    """A live connection. The server (or a network device) drops idle SSL connections, and the pool would hand one out
+    dead: the next request then failed with 'SSL connection has been closed unexpectedly' (500 on 10 Oct 2026). Each
+    connection is pinged before use; a dead one is discarded and replaced."""
+    for _ in range(_pool.maxconn + 1):
+        conn = _pool.getconn()
+        try:
+            if conn.closed:
+                raise psycopg2.InterfaceError("closed")
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()
+            return conn
+        except Exception:
+            try:
+                _pool.putconn(conn, close=True)
+            except Exception:
+                pass
     return _pool.getconn()
 
 def release_conn(conn):
